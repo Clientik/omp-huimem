@@ -1,0 +1,4 @@
+{
+  "_schema": "Машинное состояние задач. JSON, а не markdown: Anthropic сообщает, что модель реже ошибочно перезаписывает JSON-файл. Статусы: todo | doing | done | blocked.",
+  "tasks": []
+}

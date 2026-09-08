@@ -1,0 +1,12 @@
+node_modules/
+.memory/runtime/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+.env
+.env.*
+*.log
+*.tgz
+
+# dist is committed so GitHub installs need no build hook.

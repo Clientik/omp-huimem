@@ -1,0 +1,5 @@
+# No background LLM extraction. Configure your main model in OMP.
+memory:
+  backend: 'off'
+advisor:
+  enabled: false
