@@ -1,95 +1,77 @@
 # omp-huimem
 
-Project-local memory for **oh-my-pi (OMP)**. One extension, plain project files,
-SQLite evidence history, and seven optional bundled skills. No server, embedding
-service, background model, or runtime npm dependencies.
+**Память проекта для [oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi): что решили, почему, где искать и что осталось сделать.**
 
-**Preview release. Tested with OMP 18.1.5.** This adapter uses OMP APIs;
-upstream Pi is not currently supported.
+После перезапуска агент получает сохранённые знания о проекте. Текущее состояние лежит в читаемых файлах, история и свидетельства — в локальной SQLite. Расширение помогает отличать подтверждённые решения от предположений и замечать устаревшие записи.
 
-## Install
+Один плагин. Без отдельного сервера, embeddings и фоновой нейросети. Работает с основной моделью OMP, в том числе локальной.
 
-Requires OMP with a configured model. Local models are supported.
+> **Предварительная версия 0.1.0.** Проверена с OMP 18.1.5. Обычный Pi пока не поддерживается. Плагин помогает уменьшить потерю контекста; отсутствие галлюцинаций не гарантирует.
+
+## Для кого
+
+Для разработчиков, которые ведут проект с ИИ и не хотят в каждой сессии заново объяснять архитектуру. Особенно полезно, если основная локальная модель занимает доступные ресурсы и запускать дополнительную модель ради памяти неудобно.
+
+## Что даёт
+
+- **Знания рядом с кодом.** Факты, решения и задачи можно открыть, исправить и хранить в Git.
+- **Источник у записи.** Реестр проверяет цитату пользователя или содержимое файла. ID сообщения и хеш вычисляет код.
+- **Историю исправлений.** Новое решение получает следующую версию записи. Старое остаётся в истории.
+- **Видимое устаревание.** Изменился источник или основные документы — запись получает `STALE` и требует проверки.
+- **Ограниченный контекст.** Расширение передаёт блок до 8000 символов, а не весь архив. Полные источники агент читает по необходимости.
+
+## Установка
+
+Нужен OMP с настроенной основной моделью:
 
 ```sh
 omp plugin install github:Clientik/omp-huimem#v0.1.0
 ```
 
-OMP installs GitHub/npm plugins into its user plugin directory. In OMP 18.1.5,
-`--scope project` is not supported for this installation route. Project data still
-lives in the working project's `.memory`, not inside the installed package.
+Один раз скопируйте **содержимое `starter/`** из репозитория в корень нового проекта. В существующем проекте объедините файлы с текущими настройками. Запустите `omp` из корня и выполните:
 
-For a new project, copy the **contents** of `starter/` into its root once. For an
-existing project, merge those files carefully. Do not overwrite existing knowledge
-or model settings. Start `omp` in that root, then check `/project-memory-status`.
-Ask the agent to use the bundled `initmem` skill. Configure architecture rules for your project.
-
-Do not load this plugin together with an older `.omp/extensions/project-memory.ts`.
-Both register the same tool and event handlers. Preserve `.memory` when upgrading.
-
-### Direct local loading
-
-```sh
-omp --extension /absolute/path/omp-huimem/dist/index.js
+```text
+/project-memory-status
 ```
 
-This loads the extension only. Copy the bundled skills into `.omp/skills` to use
-them with this route. Direct bundle loading was tested with a real local model.
-`omp plugin link` failed with a Windows symlink EPERM in our environment; it is not
-the recommended installation path. GitHub installation uses a different OMP path.
+Попросите агента использовать skill `initmem` для заполнения карты по реальному коду. Архитектурные запреты задайте под свой проект.
 
-## What is remembered
+**Статус установки:** команда GitHub соответствует механизму OMP, но полный установочный прогон пока не прошёл нашу приёмку. Прямая загрузка расширения проверена. Подробности и запасной способ — в [руководстве](docs/GUIDE.md).
 
-| Layer | Location | Purpose |
-| --- | --- | --- |
-| Current facts | `.memory/MEMORY.md` | Authoritative current state |
-| Decisions | `.memory/adr/` | Choices, reasons and evidence |
-| Tasks | `.memory/todo.json` | Work state |
-| Navigation and invariants | `.memory/PROJECT.md`, `architecture.json` | Where to look and what to preserve |
-| Evidence and episodes | `.memory/runtime/state.sqlite` | Versioned records, transcript capture, checkpoints |
+## Где что хранится
 
-The extension automatically captures episodes and supplies a bounded memory block
-before requests (up to 8000 characters). The **main model** still has to maintain
-meaningful facts and decisions. There is no second model and no forced continuation
-at session end. The starter disables OMP's separate `mnemopi` memory backend.
+| Файл | Содержание |
+| --- | --- |
+| `.memory/MEMORY.md` | Актуальные факты и ограничения |
+| `.memory/adr/` | Решения и причины |
+| `.memory/todo.json` | Задачи и их состояние |
+| `.memory/PROJECT.md` | Карта кода и рабочие команды |
+| `.memory/architecture.json` | Проверяемые архитектурные запреты |
+| `.memory/DESIGN.md` | Договорённости о дизайне интерфейса |
+| `.memory/runtime/state.sqlite` | Эпизоды, версии свидетельств и сводки |
 
-`project_memory` is directly visible to the model. User evidence uses an exact
-quote and an extension-supplied episode ID. File evidence is checked against the
-file and hashed by the extension. Corrections preserve the record ID and increment
-its version. Changed authoritative files mark old records `STALE`.
+В новом проекте две служебные папки: `.memory` и `.omp`. `AGENTS.md` и `.gitignore` — обычные файлы корня. Код установленного плагина хранится отдельно от данных проекта.
 
-## Development
+## Пример работы
 
-With Bun installed:
+Вы говорите: «Используем PostgreSQL, потому что нужны транзакции между заказами и оплатами».
 
-```sh
-bun run build
-bun run check
-```
+Расширение сохраняет сообщение. Агент обновляет факты и решение, затем может записать свидетельство в реестр. В новой сессии расширение передаёт краткий контекст, чтобы агент мог восстановить выбор и причину.
 
-No dependency installation is required to bundle or run the tests. OMP supplies
-its extension API at runtime; the source import is type-only. `dist/index.js` is
-committed for GitHub installation. CI checks source tests, bundle tests, package
-contents and that the committed bundle matches the source.
+Если решение изменилось, агент исправляет документы и создаёт новую версию записи. При противоречии нужно проверить первоисточник: старая цитата сама по себе не делает старое решение актуальным.
 
-## Limits and status
+**Запись истории автоматическая; выделение важных знаний зависит от основной модели.** Второй LLM-процесс не запускается.
 
-20 source tests and 8 bundle tests passed. A real local Qwen model passed one
-four-session sequence: save decisions, recall, correct a decision, recall again.
-The first save needed two validation retries. This is not a broad reliability study.
+## Документация
 
-Quote checks do not establish semantic truth or causal reasoning. Architecture
-checks require project-specific configuration and are not an OS sandbox. Branch
-isolation, real compaction, crash recovery and concurrent OMP sessions need more
-live testing. File writes and SQLite do not form one transaction. History has no
-automatic retention policy. Transcripts may contain sensitive information; runtime
-is gitignored. Stop sessions before backing it up, including SQLite WAL files.
+- [Руководство пользователя](docs/GUIDE.md) — установка, работа, ошибки, перенос и отключение.
+- [Как работают слои](docs/LAYERS.md) — источники, история, версии, поиск, архитектура и расход контекста.
+- [Сравнение подходов](docs/COMPARISON.md) — преимущества и компромиссы.
+- [Результаты проверок](docs/VALIDATION.md) — что подтверждено тестами, а что ещё нет.
+- [Разработка и публикация](docs/PUBLISHING.md) — сборка и выпуск; [источники по OMP](docs/OMP-SOURCES.md).
 
-See [validation](docs/VALIDATION.md) and [publishing](docs/PUBLISHING.md).
-The package is intentionally marked `private` to prevent accidental npm publication;
-GitHub distribution does not require npm publication.
+## Разработка и лицензии
 
-## License
+С установленным Bun: `bun run build` собирает расширение, `bun run check` запускает 28 тестов и проверку пакета. Дополнительные runtime npm-зависимости не нужны. Сборка включена в репозиторий.
 
-MIT for the memory code. Bundled third-party skills retain their MIT notices in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and `licenses/`.
+Код и семь bundled skills распространяются с [MIT-лицензиями](THIRD_PARTY_NOTICES.md). Поле `private` в package.json предотвращает случайную публикацию в npm и не мешает распространению через GitHub.
