@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import assert from 'node:assert/strict';
 
 const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
-assert.equal(manifest.name, 'pi-huimem');
+assert.equal(manifest.name, 'omp-huimem');
 assert.deepEqual(manifest.omp.extensions, ['./dist/index.js']);
 assert.equal(Object.keys(manifest.dependencies ?? {}).length, 0);
 for (const path of manifest.files) assert(existsSync(path), `Missing package file: ${path}`);

@@ -1,6 +1,6 @@
 # Project memory
 
-Install pi-huimem in OMP, then run omp from this project root.
+Install omp-huimem in OMP, then run omp from this project root.
 MEMORY.md holds current facts; adr/ holds decisions and reasons; todo.json holds
 tasks; PROJECT.md maps the project. architecture.json starts unconfigured: populate
 it with agreed, verifiable rules. Do not claim architectural validation before that.

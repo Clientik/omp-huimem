@@ -1,4 +1,4 @@
-# pi-huimem: OMP package and publication
+# omp-huimem: OMP package and publication
 
 Checked 2026-09-08 against official upstream main and locally captured source commit `1adcef9762b065c0cef15703fd3e78ecaaa52a3b`. Installed OMP reported 18.1.5 in prior testing. Source compatibility is not proof of a successful installation on this machine.
 
@@ -8,7 +8,7 @@ Use a native OMP package at the root of the GitHub repository. Commit the compil
 
 ```json
 {
-  "name": "pi-huimem",
+  "name": "omp-huimem",
   "version": "0.1.0",
   "type": "module",
   "files": ["dist", "skills", "starter", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "licenses"],
@@ -21,7 +21,7 @@ Manifest `omp` is used before legacy `pi`; the loader resolves declared extensio
 After publishing the repository and a matching tag:
 
 ```sh
-omp plugin install github:Clientik/pi-huimem#v0.1.0
+omp plugin install github:Clientik/omp-huimem#v0.1.0
 omp plugin list --json
 omp plugin doctor
 ```
@@ -48,7 +48,7 @@ This verifies repository-level licenses, not a byte-for-byte audit of every copi
 
 ## Pi compatibility boundary
 
-The requested repository name is now `Clientik/pi-huimem`; that name does not establish compatibility. Current code must be described as OMP-only:
+The requested repository name is now `Clientik/omp-huimem`; that name does not establish compatibility. Current code must be described as OMP-only:
 
 - Adapter uses OMP `pi.zod`; current upstream Pi documentation uses TypeBox tool parameters.
 - `execute(id, params, signal, onUpdate, ctx)` matches the documented Pi signature, but that alone does not make the adapter portable.

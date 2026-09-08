@@ -1,18 +1,18 @@
-# pi-huimem
+# omp-huimem
 
 Project-local memory for **oh-my-pi (OMP)**. One extension, plain project files,
 SQLite evidence history, and seven optional bundled skills. No server, embedding
 service, background model, or runtime npm dependencies.
 
-**Preview release. Tested with OMP 18.1.5.** The `pi-` name does not establish
-compatibility with upstream Pi; this adapter uses OMP APIs.
+**Preview release. Tested with OMP 18.1.5.** This adapter uses OMP APIs;
+upstream Pi is not currently supported.
 
 ## Install
 
 Requires OMP with a configured model. Local models are supported.
 
 ```sh
-omp plugin install github:Clientik/pi-huimem#v0.1.0
+omp plugin install github:Clientik/omp-huimem#v0.1.0
 ```
 
 OMP installs GitHub/npm plugins into its user plugin directory. In OMP 18.1.5,
@@ -30,7 +30,7 @@ Both register the same tool and event handlers. Preserve `.memory` when upgradin
 ### Direct local loading
 
 ```sh
-omp --extension /absolute/path/pi-huimem/dist/index.js
+omp --extension /absolute/path/omp-huimem/dist/index.js
 ```
 
 This loads the extension only. Copy the bundled skills into `.omp/skills` to use
