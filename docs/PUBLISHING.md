@@ -8,8 +8,8 @@ GitHub release process:
 
 1. Run `bun run check` and inspect the changes, license notices and package contents.
 2. Commit the source and generated dist/index.js together.
-3. Push the repository and tag v0.1.0; keep the first release marked pre-release.
-4. Install with `omp plugin install github:Clientik/omp-huimem#v0.1.0`.
+3. Push the repository and tag v0.2.0; keep the first release marked pre-release.
+4. Install with `omp plugin install github:Clientik/omp-huimem#v0.2.0`.
 5. In a disposable project, check discovery, /project-memory-status and a save/recall.
 
 GitHub hosting and release creation do not imply npm publication or successful

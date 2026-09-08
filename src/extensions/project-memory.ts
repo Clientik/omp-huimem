@@ -1,12 +1,26 @@
 import type { ExtensionAPI } from '@oh-my-pi/pi-coding-agent';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve, relative } from 'node:path';
 import { MemoryStore, architectureCheck } from '../memory/core';
 
 const textOf = (content: any): string => typeof content === 'string' ? content :
   Array.isArray(content) ? content.filter(x => x?.type === 'text').map(x => x.text).join('\n') : '';
 const reads = new Set(['read','grep','find','glob','ls','project_memory']);
+// ПАМЯТЬ ВКЛЮЧАЕТСЯ ЯВНО, ПО ПРОЕКТУ. Расширение ставится глобально и грузится всюду,
+// где запущен omp. Без этой проверки оно заводило `.memory/runtime/state.sqlite` в любом
+// каталоге — в том числе в чужих репозиториях, где память не нужна, а `.gitignore` её не
+// исключает: полная стенограмма сессий оказывалась под git. ЗАМЕРЕНО 2026-09-08 на голом
+// каталоге: база создавалась, 2 эпизода записаны, при `versions=0, checkpoints=0` —
+// записывать было некуда, канонических файлов нет.
+// Маркер — именно `MEMORY.md`, а не каталог `.memory/`: каталог мог остаться от прежних
+// самозапусков, и такие проекты должны погаснуть сами.
+// Так же устроены образцы: Claude Code и Codex читают файлы, которые разработчик положил
+// в репозиторий, и не создают состояние в произвольном каталоге на первом запуске.
+const ENABLE_MARKER = '.memory/MEMORY.md';
+const deployed = (ctx: any) => existsSync(resolve(ctx.cwd, ENABLE_MARKER));
+const NOT_ENABLED = 'PROJECT_MEMORY_NOT_ENABLED: no ' + ENABLE_MARKER + ' in this project. ' +
+  'Project memory is off here and no database is created. Copy the plugin starter/ into the project root to enable it.';
 const memoryWrapper = (event: any) => event.toolName === 'write' &&
   (event.input?.path === 'xd://project_memory' || event.details?.xdev?.tool === 'project_memory');
 
@@ -14,7 +28,7 @@ const memoryWrapper = (event: any) => event.toolName === 'write' &&
 export default function install(pi: ExtensionAPI) {
   const z = pi.zod;
   let store: MemoryStore | undefined, root = '', error = '', run = '', generation = 0;
-  let query = '', sourceEpisode = '', lastNotice = '';
+  let query = '', sourceEpisode = '', lastNotice = '', active = false;
   let policyAtStart: string | undefined;
   const recentSources: { episode: string; role: string }[] = [];
   function notify(ctx: any, message: string) {
@@ -50,6 +64,10 @@ export default function install(pi: ExtensionAPI) {
     }
   }
   pi.on('before_agent_start', async (event: any, ctx) => {
+    // Пересчитываем на каждом запросе, а не один раз при загрузке: развернув starter,
+    // память получаешь со следующего сообщения, без перезапуска omp.
+    active = deployed(ctx);
+    if (!active) { store?.close(); store = undefined; root = ''; error = ''; return; }
     run = randomUUID(); generation = 0; recentSources.length = 0;
     query = event.prompt ?? ''; sourceEpisode = '';
     // Keep the baseline across prompts in the same project, not just one turn.
@@ -61,6 +79,7 @@ export default function install(pi: ExtensionAPI) {
     catch (e) { healthFailure(ctx,e); }
   });
   pi.on('message_end', async (event: any, ctx) => {
+    if (!active) return;
     if (event.message?.role !== 'assistant') return;
     const text = textOf(event.message.content);
     if (!text.trim()) return;
@@ -71,6 +90,7 @@ export default function install(pi: ExtensionAPI) {
     } catch (e) { healthFailure(ctx,e); }
   });
   pi.on('context', async (event: any, ctx) => {
+    if (!active) return;
     let content: string;
     try {
       const s = get(ctx);
@@ -108,6 +128,7 @@ export default function install(pi: ExtensionAPI) {
       { role: 'custom', customType: 'project-memory-context', content, display: false, timestamp: Date.now() }] };
   });
   pi.on('tool_call', async (event: any, ctx) => {
+    if (!active) return;
     if (reads.has(event.toolName) || memoryWrapper(event)) return;
     try { get(ctx).probe(); } catch (e) { healthFailure(ctx,e); }
     if (error) return { block: true, reason: error + '; restore memory storage before mutation.' };
@@ -119,10 +140,12 @@ export default function install(pi: ExtensionAPI) {
     }
   });
   pi.on('tool_result', async (event: any) => {
+    if (!active) return;
     // Conservative invalidation: unknown tools may mutate, even if they return an error.
     if (!reads.has(event.toolName) && !memoryWrapper(event)) generation++;
   });
   pi.on('session_stop', async (_event: any, ctx) => {
+    if (!active) return;
     try {
       const s = get(ctx); s.probe();
       const arch = check(ctx);
@@ -146,6 +169,7 @@ export default function install(pi: ExtensionAPI) {
     } catch (e) { healthFailure(ctx,e); }
   });
   pi.on('session_before_compact', async (_event: any, ctx) => {
+    if (!active) return;
     // Episodes are persisted on message_end; no extra LLM call or competing compactor.
     try { get(ctx).probe(); } catch (e) { healthFailure(ctx,e); return { cancel: true }; }
   });
@@ -165,6 +189,8 @@ export default function install(pi: ExtensionAPI) {
       })).optional(),
     }),
     async execute(_id, p: any, _signal, _update, ctx) {
+      // Проверяем состояние здесь, а не по флагу: инструмент могут вызвать до первого запроса.
+      if (!deployed(ctx)) return { content: [{ type: 'text', text: NOT_ENABLED }], details: { error: NOT_ENABLED }, isError: true };
       try {
         const s = get(ctx); let data: any;
         switch (p.op) {
@@ -207,6 +233,10 @@ export default function install(pi: ExtensionAPI) {
     },
   });
   pi.registerCommand('project-memory-status', { description: 'Show project memory health', handler: async (_args, ctx) => {
+    if (!deployed(ctx)) {
+      pi.sendMessage({ customType: 'project-memory-status', content: JSON.stringify({ enabled: false, reason: NOT_ENABLED }), display: true });
+      return;
+    }
     try { const text = JSON.stringify({ ...get(ctx).status(), architecture: check(ctx), error });
       pi.sendMessage({ customType: 'project-memory-status', content: text, display: true });
     } catch (e) { healthFailure(ctx,e); }

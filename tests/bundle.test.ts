@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MemoryStore } from '../src/memory/core';
 import install from '../dist/index.js';
@@ -59,6 +59,10 @@ test('repeated starts/stops cannot schedule continuation', async () => {
 
 function fixture() {
   const dir = mkdtempSync(join(import.meta.dir, 'extension-test-'));
+  // Память включается только в развёрнутом проекте: фикстура отражает то состояние,
+  // в котором расширение вообще работает. Голый каталог проверяется отдельным тестом.
+  mkdirSync(join(dir, '.memory'), { recursive: true });
+  writeFileSync(join(dir, '.memory/MEMORY.md'), '# Память проекта');
   const handlers: any = {}, tools: any = {}, notices: any[] = [];
   const chain: any = new Proxy(() => chain, { get: () => chain });
   const pi: any = { zod: chain, on: (n: string, fn: any) => handlers[n] = fn,
@@ -132,4 +136,31 @@ test('direct policy edits are blocked and shell policy drift fails stop check', 
     // на видимое уведомление.
     expect(f.notices.some(x => String(x).includes('POLICY_CHANGED'))).toBe(true);
   } finally {f.clean();}
+});
+
+// ЗАМЕРЕНО 2026-09-08 на голом каталоге: расширение заводило `.memory/runtime/state.sqlite`
+// в любом проекте, где запущен omp, включая чужие репозитории без `.gitignore` для неё.
+test('project without the marker stays inert: no database, no context, no notices', async () => {
+  const f = fixture(); try {
+    rmSync(join(f.dir, '.memory/MEMORY.md'));   // каталог остался, канонического файла нет
+    await f.handlers.before_agent_start({ prompt: 'What does main.py do?' }, f.ctx);
+    expect(await f.handlers.context({ messages: [] }, f.ctx)).toBeUndefined();
+    await f.handlers.message_end({ message: { role: 'assistant', content: 'an answer' } }, f.ctx);
+    expect(await f.handlers.session_stop({}, f.ctx)).toBeUndefined();
+    expect(f.notices).toEqual([]);
+    expect(existsSync(join(f.dir, '.memory/runtime/state.sqlite'))).toBe(false);
+    const denied = await f.tools.project_memory.execute('x', { op: 'status' }, null, null, f.ctx);
+    expect(denied.isError).toBe(true);
+    expect(String(denied.content[0].text)).toContain('PROJECT_MEMORY_NOT_ENABLED');
+  } finally { f.clean(); }
+});
+test('deploying the marker enables memory on the next prompt, without a restart', async () => {
+  const f = fixture(); try {
+    rmSync(join(f.dir, '.memory/MEMORY.md'));
+    await f.handlers.before_agent_start({ prompt: 'first' }, f.ctx);
+    expect(await f.handlers.context({ messages: [] }, f.ctx)).toBeUndefined();
+    writeFileSync(join(f.dir, '.memory/MEMORY.md'), '# Память проекта');
+    await f.handlers.before_agent_start({ prompt: 'second' }, f.ctx);
+    expect(JSON.stringify(await f.handlers.context({ messages: [] }, f.ctx))).toContain('sourceEpisode');
+  } finally { f.clean(); }
 });

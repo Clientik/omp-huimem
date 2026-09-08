@@ -1,7 +1,7 @@
 // @bun
 // src/extensions/project-memory.ts
 import { randomUUID as randomUUID2 } from "crypto";
-import { readFileSync as readFileSync2 } from "fs";
+import { existsSync, readFileSync as readFileSync2 } from "fs";
 import { resolve as resolve2, relative as relative2 } from "path";
 
 // src/memory/core.ts
@@ -310,11 +310,14 @@ function architectureCheck(root, policy) {
 var textOf = (content) => typeof content === "string" ? content : Array.isArray(content) ? content.filter((x) => x?.type === "text").map((x) => x.text).join(`
 `) : "";
 var reads = new Set(["read", "grep", "find", "glob", "ls", "project_memory"]);
+var ENABLE_MARKER = ".memory/MEMORY.md";
+var deployed = (ctx) => existsSync(resolve2(ctx.cwd, ENABLE_MARKER));
+var NOT_ENABLED = "PROJECT_MEMORY_NOT_ENABLED: no " + ENABLE_MARKER + " in this project. " + "Project memory is off here and no database is created. Copy the plugin starter/ into the project root to enable it.";
 var memoryWrapper = (event) => event.toolName === "write" && (event.input?.path === "xd://project_memory" || event.details?.xdev?.tool === "project_memory");
 function install(pi) {
   const z = pi.zod;
   let store, root = "", error = "", run = "", generation = 0;
-  let query = "", sourceEpisode = "", lastNotice = "";
+  let query = "", sourceEpisode = "", lastNotice = "", active = false;
   let policyAtStart;
   const recentSources = [];
   function notify(ctx, message) {
@@ -372,6 +375,14 @@ function install(pi) {
     }
   }
   pi.on("before_agent_start", async (event, ctx) => {
+    active = deployed(ctx);
+    if (!active) {
+      store?.close();
+      store = undefined;
+      root = "";
+      error = "";
+      return;
+    }
     run = randomUUID2();
     generation = 0;
     recentSources.length = 0;
@@ -395,6 +406,8 @@ function install(pi) {
     }
   });
   pi.on("message_end", async (event, ctx) => {
+    if (!active)
+      return;
     if (event.message?.role !== "assistant")
       return;
     const text = textOf(event.message.content);
@@ -410,6 +423,8 @@ function install(pi) {
     }
   });
   pi.on("context", async (event, ctx) => {
+    if (!active)
+      return;
     let content;
     try {
       const s = get(ctx);
@@ -439,6 +454,8 @@ Do not claim memory or work was verified.`;
     ] };
   });
   pi.on("tool_call", async (event, ctx) => {
+    if (!active)
+      return;
     if (reads.has(event.toolName) || memoryWrapper(event))
       return;
     try {
@@ -456,10 +473,14 @@ Do not claim memory or work was verified.`;
     }
   });
   pi.on("tool_result", async (event) => {
+    if (!active)
+      return;
     if (!reads.has(event.toolName) && !memoryWrapper(event))
       generation++;
   });
   pi.on("session_stop", async (_event, ctx) => {
+    if (!active)
+      return;
     try {
       const s = get(ctx);
       s.probe();
@@ -478,6 +499,8 @@ Do not claim memory or work was verified.`;
     }
   });
   pi.on("session_before_compact", async (_event, ctx) => {
+    if (!active)
+      return;
     try {
       get(ctx).probe();
     } catch (e) {
@@ -513,6 +536,8 @@ Do not claim memory or work was verified.`;
       })).optional()
     }),
     async execute(_id, p, _signal, _update, ctx) {
+      if (!deployed(ctx))
+        return { content: [{ type: "text", text: NOT_ENABLED }], details: { error: NOT_ENABLED }, isError: true };
       try {
         const s = get(ctx);
         let data;
@@ -574,6 +599,10 @@ Do not claim memory or work was verified.`;
     }
   });
   pi.registerCommand("project-memory-status", { description: "Show project memory health", handler: async (_args, ctx) => {
+    if (!deployed(ctx)) {
+      pi.sendMessage({ customType: "project-memory-status", content: JSON.stringify({ enabled: false, reason: NOT_ENABLED }), display: true });
+      return;
+    }
     try {
       const text = JSON.stringify({ ...get(ctx).status(), architecture: check(ctx), error });
       pi.sendMessage({ customType: "project-memory-status", content: text, display: true });

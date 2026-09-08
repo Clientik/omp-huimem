@@ -9,7 +9,7 @@
 
 在不同会话之间保留项目知识，无需运行第二个模型。当前事实保存在可读文件中，证据和版本历史保存在本地 SQLite 中。只需一个 OMP 扩展，无需独立的记忆服务器、向量嵌入服务或后台 LLM。
 
-> **预览版 v0.1.0，已在 OMP 18.1.5 上测试。** 暂不支持原版 Pi。这个插件帮助恢复和检查项目上下文，但不能消除模型幻觉。
+> **预览版 v0.2.0，已在 OMP 18.1.5 上测试。** 暂不支持原版 Pi。这个插件帮助恢复和检查项目上下文，但不能消除模型幻觉。
 
 ## 适合谁？
 
@@ -26,10 +26,12 @@
 需要安装 [OMP](https://github.com/can1357/oh-my-pi) 并配置主模型，也支持本地模型。
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.1.0
+omp plugin install github:Clientik/omp-huimem#v0.2.0
 ```
 
-将 `starter/` 的**内容**一次性复制到新项目根目录，包括隐藏文件。现有项目请合并配置，不要覆盖已有知识。进入项目根目录启动 `omp`，然后执行：
+插件按用户级安装，因此会在你打开的所有项目中加载。**但记忆按项目显式启用：** 若没有 `.memory/MEMORY.md`，扩展保持静默——不建数据库、不注入上下文、不发出提示，`project_memory` 返回 `PROJECT_MEMORY_NOT_ENABLED`。这样其他仓库不会被改动，也不会出现其 `.gitignore` 未覆盖的数据库文件。
+
+将 `starter/` 的**内容**一次性复制到新项目根目录，包括隐藏文件。现有项目请合并配置，不要覆盖已有知识。记忆将在你的下一条消息生效，无需重启 OMP。进入项目根目录启动 `omp`，然后执行：
 
 ```text
 /project-memory-status
@@ -37,10 +39,10 @@ omp plugin install github:Clientik/omp-huimem#v0.1.0
 
 让代理使用 `initmem` skill，根据真实代码填写项目地图。架构规则需要针对项目设置；初始模板没有预设规则。
 
-**安装状态：** GitHub 命令符合 OMP 的包机制，但完整安装流程尚未通过我们的验收测试。已验证的备用方式是直接加载：
+**安装状态：** 已在 Windows + OMP 18.1.5 上完整验证 GitHub 安装流程——插件安装、注册并在实际会话中运行。直接加载同样可用：
 
 ```sh
-git clone --branch v0.1.0 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.2.0 https://github.com/Clientik/omp-huimem.git
 # 在工作项目中运行，使用克隆仓库的绝对路径：
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```
@@ -85,6 +87,6 @@ OMP 18.1.5 的原生 GitHub 安装作用于用户级，不能通过 `--scope pro
 
 详细用户文档目前为俄语：[使用指南](../GUIDE.md)、[分层说明](../LAYERS.md)、[方案比较](../COMPARISON.md)、[测试结果](../VALIDATION.md)。英文开发资料：[发布流程](../PUBLISHING.md)、[OMP 来源](../OMP-SOURCES.md)。
 
-安装 Bun 后，`bun run build` 构建扩展，`bun run check` 执行 28 项测试及包检查。其中 8 项是在构建产物上重复运行适配器测试。无需额外运行时 npm 依赖，构建产物已包含在仓库中。
+安装 Bun 后，`bun run build` 构建扩展，`bun run check` 执行 32 项测试及包检查。其中 8 项是在构建产物上重复运行适配器测试。无需额外运行时 npm 依赖，构建产物已包含在仓库中。
 
 保留全部七个 skills。代码及配套 skills 包含 [MIT 许可声明](../../THIRD_PARTY_NOTICES.md)。package.json 的 `private` 用于防止意外发布到 npm，不影响 GitHub 分发。

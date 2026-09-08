@@ -9,7 +9,7 @@
 
 Keep project knowledge across sessions without running another model. Current facts live in readable files; evidence and revision history live in local SQLite. One OMP extension, no memory server, embeddings service, or background LLM.
 
-> **Preview v0.1.0 · Tested with OMP 18.1.5.** Upstream Pi is not supported. Memory makes project context easier to recover and inspect; it does not eliminate hallucinations.
+> **Preview v0.2.0 · Tested with OMP 18.1.5.** Upstream Pi is not supported. Memory makes project context easier to recover and inspect; it does not eliminate hallucinations.
 
 ## Why use it?
 
@@ -26,10 +26,12 @@ For developers working with an AI agent who want to stop explaining the same pro
 You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model. Local models are supported.
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.1.0
+omp plugin install github:Clientik/omp-huimem#v0.2.0
 ```
 
-Copy the **contents of `starter/`** into a new project's root once, including hidden files. For an existing project, merge them with your current knowledge and configuration. Start `omp` in that root and run:
+Installation is user-scoped, so the extension loads in every project you open with OMP. **Memory itself is opt-in per project:** without a `.memory/MEMORY.md` the extension stays inert — no database, no injected context, no notices — and `project_memory` answers `PROJECT_MEMORY_NOT_ENABLED`. Other repositories stay untouched, with no database file their `.gitignore` does not cover.
+
+Copy the **contents of `starter/`** into a new project's root once, including hidden files. For an existing project, merge them with your current knowledge and configuration. Memory becomes active on your next message; restarting OMP is not required. Start `omp` in that root and run:
 
 ```text
 /project-memory-status
@@ -37,10 +39,10 @@ Copy the **contents of `starter/`** into a new project's root once, including hi
 
 Ask the agent to use the `initmem` skill to map the actual code. Define architecture rules for your project; the starter deliberately has none configured.
 
-**Installation status:** the GitHub command follows OMP's documented package mechanism; a full installer acceptance test is still pending. Direct loading has been tested:
+**Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
 ```sh
-git clone --branch v0.1.0 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.2.0 https://github.com/Clientik/omp-huimem.git
 # Run from your working project, using the cloned repository's absolute path:
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```
@@ -96,6 +98,6 @@ Developer references in English: [publishing](docs/PUBLISHING.md) and [OMP sourc
 
 ## Development and license
 
-With Bun installed, `bun run build` produces the extension and `bun run check` runs 28 tests plus package checks. Eight tests repeat adapter checks against the bundle. No runtime npm dependencies are required; the built entry is committed.
+With Bun installed, `bun run build` produces the extension and `bun run check` runs 32 tests plus package checks. Eight tests repeat adapter checks against the bundle. No runtime npm dependencies are required; the built entry is committed.
 
 All seven skills are retained. Code and bundled skills include [MIT license notices](THIRD_PARTY_NOTICES.md). `private` in package.json prevents accidental npm publication; GitHub distribution is supported.
