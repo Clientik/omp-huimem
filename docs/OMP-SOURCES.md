@@ -9,7 +9,7 @@ Use a native OMP package at the root of the GitHub repository. Commit the compil
 ```json
 {
   "name": "omp-huimem",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "type": "module",
   "files": ["dist", "skills", "starter", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "licenses"],
   "omp": { "extensions": ["./dist/index.js"] }
@@ -21,7 +21,7 @@ Manifest `omp` is used before legacy `pi`; the loader resolves declared extensio
 After publishing the repository and a matching tag:
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.2.2
+omp plugin install github:Clientik/omp-huimem#v0.3.0
 omp plugin list --json
 omp plugin doctor
 ```

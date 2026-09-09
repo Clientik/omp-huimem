@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MemoryStore } from '../src/memory/core';
 import install from '../dist/index.js';
@@ -63,15 +63,16 @@ function fixture() {
   // в котором расширение вообще работает. Голый каталог проверяется отдельным тестом.
   mkdirSync(join(dir, '.memory'), { recursive: true });
   writeFileSync(join(dir, '.memory/MEMORY.md'), '# Память проекта');
-  const handlers: any = {}, tools: any = {}, notices: any[] = [];
+  const handlers: any = {}, tools: any = {}, notices: any[] = [], commands: any = {};
   const chain: any = new Proxy(() => chain, { get: () => chain });
   const pi: any = { zod: chain, on: (n: string, fn: any) => handlers[n] = fn,
-    registerTool: (t: any) => tools[t.name] = t, registerCommand: () => {},
+    registerTool: (t: any) => tools[t.name] = t,
+    registerCommand: (n: string, d: any) => commands[n] = d,
     sendMessage: (m: any) => notices.push(m) };
   const ctx: any = { cwd: dir, hasUI: true, ui: { notify: (s: string) => notices.push(s) },
     sessionManager: { getSessionId: () => 'session-test' } };
   install(pi);
-  return { dir, handlers, tools, ctx, notices, clean() { handlers.session_shutdown?.({},ctx); rmSync(dir,{recursive:true,force:true}); } };
+  return { dir, handlers, tools, ctx, notices, commands, clean() { handlers.session_shutdown?.({},ctx); rmSync(dir,{recursive:true,force:true}); } };
 }
 test('automatic prompt capture, recall, stop checkpoint, bounded retry', async () => {
   const f = fixture(); try {
@@ -162,5 +163,60 @@ test('deploying the marker enables memory on the next prompt, without a restart'
     writeFileSync(join(f.dir, '.memory/MEMORY.md'), '# Память проекта');
     await f.handlers.before_agent_start({ prompt: 'second' }, f.ctx);
     expect(JSON.stringify(await f.handlers.context({ messages: [] }, f.ctx))).toContain('sourceEpisode');
+  } finally { f.clean(); }
+});
+
+// Команда настроек: подкоманды вместо диалогов ctx.ui, форма которых из документации
+// и минифицированного бинарника OMP не извлекается (замерена только арность).
+test('/huimem shows state, and refuses a project that is not deployed', async () => {
+  const f = fixture(); try {
+    const cmd = f.commands.huimem;
+    expect(cmd).toBeTruthy();
+    await cmd.handler('', f.ctx);
+    const shown = String(f.notices.at(-1)?.content ?? '');
+    expect(shown).toContain('huimem');
+    expect(shown).toContain('recall');
+    rmSync(join(f.dir, '.memory/MEMORY.md'));
+    await cmd.handler('', f.ctx);
+    expect(String(f.notices.at(-1)?.content ?? '')).toContain('PROJECT_MEMORY_NOT_ENABLED');
+  } finally { f.clean(); }
+});
+test('/huimem clamps an out-of-range limit and says so instead of failing quietly', async () => {
+  const read = (dir: string) => JSON.parse(readFileSync(join(dir, '.memory/settings.json'), 'utf8'));
+  const f = fixture(); try {
+    const cmd = f.commands.huimem;
+    await cmd.handler('recall 4000', f.ctx);
+    expect(read(f.dir).recallBudget).toBe(4000);
+    await cmd.handler('recall 99999', f.ctx);
+    expect(read(f.dir).recallBudget).toBe(12000);
+    expect(String(f.notices.at(-1)?.content ?? '')).toContain('12000');
+    await cmd.handler('reset', f.ctx);
+    expect(read(f.dir).recallBudget).toBe(3200);
+    await cmd.handler('нетакой', f.ctx);
+    expect(String(f.notices.at(-1)?.content ?? '')).toContain('Unknown subcommand');
+  } finally { f.clean(); }
+});
+test('configured injection limit actually bounds the injected block', async () => {
+  const f = fixture(); try {
+    writeFileSync(join(f.dir, '.memory/MEMORY.md'), '# Память проекта' + ' факт проекта.'.repeat(600));
+    await f.handlers.before_agent_start({ prompt: 'факт' }, f.ctx);
+    const wide: any = await f.handlers.context({ messages: [] }, f.ctx);
+    const wideLen = wide.messages.find((m: any) => m.customType === 'project-memory-context').content.length;
+    writeFileSync(join(f.dir, '.memory/settings.json'), JSON.stringify({ injectionLimit: 2000 }));
+    await f.handlers.before_agent_start({ prompt: 'факт' }, f.ctx);
+    const tight: any = await f.handlers.context({ messages: [] }, f.ctx);
+    const tightLen = tight.messages.find((m: any) => m.customType === 'project-memory-context').content.length;
+    expect(tightLen).toBeLessThanOrEqual(2000);
+    expect(wideLen).toBeGreaterThan(tightLen);
+  } finally { f.clean(); }
+});
+test('a corrupt settings file falls back to defaults without breaking the turn', async () => {
+  const f = fixture(); try {
+    writeFileSync(join(f.dir, '.memory/settings.json'), 'это не json');
+    await f.handlers.before_agent_start({ prompt: 'x' }, f.ctx);
+    const out: any = await f.handlers.context({ messages: [] }, f.ctx);
+    expect(JSON.stringify(out)).toContain('sourceEpisode');
+    await f.commands.huimem.handler('', f.ctx);
+    expect(String(f.notices.at(-1)?.content ?? '')).toContain('3200');
   } finally { f.clean(); }
 });
