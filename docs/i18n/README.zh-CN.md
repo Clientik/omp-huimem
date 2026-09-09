@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../assets/huimem.png" alt="huimem" width="560">
+  <img src="../assets/huimem.png" alt="huimem" width="392">
 </p>
 <h1 align="center">omp-huimem</h1>
 <p align="center">为 oh-my-pi 保存项目决策、原因与下一步工作。</p>

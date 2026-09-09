@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/huimem.png" alt="huimem" width="560">
+  <img src="docs/assets/huimem.png" alt="huimem" width="392">
 </p>
 <h1 align="center">omp-huimem</h1>
 <p align="center">Project memory for oh-my-pi. Decisions, reasons, and the next step.</p>

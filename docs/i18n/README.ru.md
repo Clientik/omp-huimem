@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../assets/huimem.png" alt="huimem" width="560">
+  <img src="../assets/huimem.png" alt="huimem" width="392">
 </p>
 <h1 align="center">omp-huimem</h1>
 <p align="center">Память проекта: решения, причины и следующий шаг.</p>
