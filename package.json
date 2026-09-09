@@ -1,6 +1,6 @@
 {
   "name": "omp-huimem",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "Project-local memory for oh-my-pi. File authority, versioned evidence, no background LLM.",

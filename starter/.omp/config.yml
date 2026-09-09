@@ -1,5 +1,44 @@
-# No background LLM extraction. Configure your main model in OMP.
+# Настройки проекта, а не машины. Модели, провайдеры, темы и ключи остаются
+# в ~/.omp/agent/config.yml и сюда не попадают — иначе шаблон не перенести.
+# Проектный файл перекрывает глобальный (проверено 2026-09-09).
+
+# Один автоматический писатель стенограммы — само расширение. Отдельный backend
+# памяти OMP выключен, чтобы они не дублировали друг друга.
 memory:
   backend: 'off'
+
+# Пассивный ревьюер отключён: он тратит контекст на каждом ходу.
 advisor:
   enabled: false
+
+providers:
+  # Извлечение текста статьи вместо всей страницы с навигацией, подвалом и
+  # base64-картинками. ЗАМЕРЕНО 2026-09-09 на двух живых страницах:
+  # 21 865 -> 6 153 байта (-72%) и 30 415 -> 24 034 токена (-21%),
+  # заголовок, автор и содержание сохранены.
+  # Если trafilatura в системе нет, OMP молча откатывается на native —
+  # проверено отдельно на заведомо отсутствующем бэкенде, код возврата 0.
+  # GitHub и Wikipedia сюда не попадают: у них свои методы (github-raw, wikipedia).
+  fetch: trafilatura
+  autoThinkingMaxEffort: high
+
+# Дерево файлов не вставляется в контекст: на большом репозитории это чистый расход.
+includeWorkspaceTree: false
+
+defaultThinkingLevel: auto
+
+edit:
+  mode: hashline
+
+compaction:
+  thresholdPercent: 55
+  methodOrder:
+    - remote
+    - snapcompact
+    - handoff
+    - shake
+    - soft
+  handoffSaveToDisk: true
+  # Прежнее чтение файла вытесняется новым вместо хранения обеих копий.
+  supersedeReads: true
+  dropUseless: true
