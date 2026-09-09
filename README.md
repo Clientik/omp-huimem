@@ -9,7 +9,7 @@
 
 Keep project knowledge across sessions without running another model. Current facts live in readable files; evidence and revision history live in local SQLite. One OMP extension, no memory server, embeddings service, or background LLM.
 
-> **Preview v0.2.1 · Tested with OMP 18.1.5.** Upstream Pi is not supported. Memory makes project context easier to recover and inspect; it does not eliminate hallucinations.
+> **Preview v0.2.2 · Tested with OMP 18.1.5.** Upstream Pi is not supported. Memory makes project context easier to recover and inspect; it does not eliminate hallucinations.
 
 ## Why use it?
 
@@ -26,7 +26,7 @@ For developers working with an AI agent who want to stop explaining the same pro
 You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model. Local models are supported.
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.2.1
+omp plugin install github:Clientik/omp-huimem#v0.2.2
 ```
 
 Installation is user-scoped, so the extension loads in every project you open with OMP. **Memory itself is opt-in per project:** without a `.memory/MEMORY.md` the extension stays inert — no database, no injected context, no notices — and `project_memory` answers `PROJECT_MEMORY_NOT_ENABLED`. Other repositories stay untouched, with no database file their `.gitignore` does not cover.
@@ -42,7 +42,7 @@ Ask the agent to use the `initmem` skill to map the actual code. Define architec
 **Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
 ```sh
-git clone --branch v0.2.1 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.2.2 https://github.com/Clientik/omp-huimem.git
 # Run from your working project, using the cloned repository's absolute path:
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```
@@ -62,6 +62,8 @@ Native GitHub installation in OMP 18.1.5 is user-scoped; `--scope project` does 
 | `.memory/architecture.json` | Explicit, testable architecture restrictions |
 | `.memory/DESIGN.md` | UI design agreements |
 | `.memory/runtime/state.sqlite` | Episodes, evidence versions, and checkpoint summaries |
+| `.omp/RULES.md` | Short hard requirements, re-attached near the current turn |
+| `AGENTS.md` | Background and conventions, given once when the session opens |
 
 A starter project has two support folders, `.memory` and `.omp`, plus root `AGENTS.md` and `.gitignore` files. Installed plugin code is separate from project data.
 

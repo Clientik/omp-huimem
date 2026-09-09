@@ -12,4 +12,11 @@ assert(!existsSync('starter/.memory/runtime'), 'Starter must not contain runtime
 const config = readFileSync('starter/.omp/config.yml', 'utf8');
 assert(config.includes("backend: 'off'"));
 assert(!config.includes('beellama') && !config.includes('127.0.0.1'));
+// Sticky rules are a separate layer from AGENTS.md: OMP re-attaches RULES.md near the
+// current turn, so it survives a long conversation. Losing this file loses that layer.
+assert(readFileSync('starter/.omp/RULES.md', 'utf8').trim().length > 0, 'Starter must ship non-empty sticky rules');
+// Unconfigured make targets must FAIL. An earlier version echoed "TODO" and returned 0,
+// so an agent could run `make test`, get success, and report checks as passed.
+const make = readFileSync('starter/Makefile', 'utf8');
+assert(make.includes('exit 2'), 'Unconfigured make targets must fail, not exit 0');
 console.log('Package manifest, seven skills, starter and dependency checks passed.');
