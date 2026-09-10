@@ -7,10 +7,14 @@ it with agreed, verifiable rules. Do not claim architectural validation before t
 
 The extension captures episodes and injects bounded relevant context automatically.
 The main model maintains semantic knowledge and commits evidence via project_memory.
+Each commit also publishes RECORDS.md from the registry without another model call.
+Do not edit that generated snapshot or cite it as independent evidence. Keep manually
+maintained facts and architecture in MEMORY.md and ADRs. /huimem shows publication
+status; /huimem sync retries pending publication without repeating a commit.
 Use exact source quotes. Changed authority files mark old registry records STALE;
 verify the source before creating a new version with the same ID.
 
-No background LLM is needed. memory.backend is off in the starter config; merge
+Neither mnemopi nor a background LLM is needed. memory.backend is off in the starter config; merge
 this setting with existing OMP settings and retain your own provider configuration.
 Seven skills are included in the plugin. Run /project-memory-status to diagnose it.
 Do not load a second copy of the extension. Runtime SQLite is local and gitignored.

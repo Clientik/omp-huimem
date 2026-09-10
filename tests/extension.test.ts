@@ -1,8 +1,71 @@
-import { test, expect } from 'bun:test';
+import { describe, test, expect } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MemoryStore } from '../src/memory/core';
-import install from '../src/extensions/project-memory';
+import installSource from '../src/extensions/project-memory';
+import installBundle from '../dist/index.js';
+
+describe('source adapter', () => adapterContract(installSource));
+describe('built bundle', () => adapterContract(installBundle));
+
+function adapterContract(install: typeof installSource) {
+
+test('ADR read results retain original content and add provenance warning only for documents',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Why?'},f.ctx);
+    const content=[{type:'text',text:'Accepted. More retries trigger deduplication.'}];
+    const event={toolName:'read',input:{path:'.memory/adr/0001.md'},content,isError:false};
+    const result=await f.handlers.tool_result(event,f.ctx);
+    expect(result.content[0].text).toContain('DOCUMENT_PROVENANCE');
+    expect(result.content.slice(1)).toEqual(content);
+    expect(event.content).toEqual(content);
+    expect(await f.handlers.tool_result({...event,input:{path:'src/a.ts'}},f.ctx)).toBeUndefined();
+    expect(await f.handlers.tool_result({...event,isError:true},f.ctx)).toBeUndefined();
+  } finally { f.clean(); }
+});
+
+test('session pause rejects all commits, permits reads, and resumes explicitly',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Use SQLite'},f.ctx);
+    await f.commands.huimem.handler('pause',f.ctx);
+    const result=await f.tools.project_memory.execute('x',{op:'commit',changes:[],summary:'should not save'},null,null,f.ctx);
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain('COMMITS_PAUSED');
+    const s=new MemoryStore(f.dir);
+    expect(s.latestCheckpoint()).toBeNull(); s.close();
+    expect((await f.tools.project_memory.execute('r',{op:'recall'},null,null,f.ctx)).isError).not.toBe(true);
+    await f.handlers.before_agent_start({prompt:'Next question'},f.ctx);
+    expect((await f.tools.project_memory.execute('y',{op:'commit',changes:[{}],summary:'blocked'},null,null,f.ctx)).isError).toBe(true);
+    await f.commands.huimem.handler('resume',f.ctx);
+    expect((await f.tools.project_memory.execute('z',{op:'commit',changes:[],summary:'explicitly resumed'},null,null,f.ctx)).isError).not.toBe(true);
+  } finally { f.clean(); }
+});
+
+test('setup explains independence from mnemopi and sync does not invent records',async()=>{
+  const f=fixture(); try {
+    await f.commands.huimem.handler('',f.ctx);
+    expect(JSON.stringify(f.notices)).toContain('No mnemopi');
+    await f.commands.huimem.handler('sync',f.ctx);
+    expect(JSON.stringify(f.notices)).toContain('Readable registry: empty');
+    expect(existsSync(join(f.dir,'.memory/RECORDS.md'))).toBe(false);
+    rmSync(join(f.dir,'.memory/MEMORY.md'));
+    await f.commands.huimem.handler('',f.ctx);
+    expect(JSON.stringify(f.notices)).toContain('mnemopi is NOT required');
+  } finally { f.clean(); }
+});
+
+test('native compaction guidance works on resume and stays inert without deployment', async () => {
+  const f=fixture(); try {
+    const event={type:'session.compacting',messages:[{role:'user',content:'A decision'}]};
+    const result=await f.handlers['session.compacting'](event,f.ctx);
+    expect(Object.keys(result)).toEqual(['context']);
+    expect(result.context.join(' ')).toContain('Quote the original user rationale exactly');
+    expect(result.context.join(' ').length).toBeLessThan(600);
+    expect(event.messages).toEqual([{role:'user',content:'A decision'}]);
+    rmSync(join(f.dir,'.memory/MEMORY.md'));
+    expect(await f.handlers['session.compacting'](event,f.ctx)).toBeUndefined();
+  } finally { f.clean(); }
+});
 
 test('essential tool saves current user decision without asking model for an episode ID', async () => {
   const f=fixture(); try {
@@ -208,6 +271,13 @@ test('configured injection limit actually bounds the injected block', async () =
     const tightLen = tight.messages.find((m: any) => m.customType === 'project-memory-context').content.length;
     expect(tightLen).toBeLessThanOrEqual(2000);
     expect(wideLen).toBeGreaterThan(tightLen);
+    const s=new MemoryStore(f.dir);
+    try {
+      expect(s.lastContext().characters).toBe(tightLen);
+      expect(s.lastContext().truncated).toBe(true);
+    } finally { s.close(); }
+    await f.commands.huimem.handler('context',f.ctx);
+    expect(JSON.stringify(f.notices)).toContain('Last prepared memory block');
   } finally { f.clean(); }
 });
 test('a corrupt settings file falls back to defaults without breaking the turn', async () => {
@@ -220,3 +290,5 @@ test('a corrupt settings file falls back to defaults without breaking the turn',
     expect(String(f.notices.at(-1)?.content ?? '')).toContain('3200');
   } finally { f.clean(); }
 });
+
+}

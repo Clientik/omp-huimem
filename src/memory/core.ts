@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { resolve, relative, isAbsolute } from 'node:path';
+import { projectionStatus, stageProjection, syncProjection } from './projection';
 
 export type Source = { episode?: string; path?: string; hash?: string; quote: string };
 export type Change = { id: string; kind: string; text: string; status: string; expectedVersion: number; authorityHash?: string;
@@ -19,6 +20,8 @@ export function safePath(root: string, path: string): string {
 }
 function sourceText(root: string, path: string) {
   const full = safePath(root, path);
+  if(relative(realpathSync(root),full).replaceAll('\\','/').toLowerCase()==='.memory/records.md')
+    throw new Error('SOURCE_DERIVED: RECORDS.md is a generated view; use the original episode or file as evidence');
   if (statSync(full).size > 1024 * 1024) throw new Error('SOURCE: file exceeds 1 MiB');
   return readFileSync(full, 'utf8');
 }
@@ -41,14 +44,43 @@ export class MemoryStore {
         CREATE TABLE IF NOT EXISTS checkpoints (run TEXT PRIMARY KEY, summary TEXT, time TEXT);
         CREATE TABLE IF NOT EXISTS health (id INTEGER PRIMARY KEY CHECK(id=1), lastWrite TEXT);`);
       const version = this.db.query("SELECT value FROM meta WHERE key='schema'").get() as any;
-      if (version && version.value !== '1') throw new Error('UNSUPPORTED_SCHEMA');
-      this.db.query("INSERT OR IGNORE INTO meta VALUES ('schema','1')").run();
+      if (version && !['1','2'].includes(version.value)) throw new Error('UNSUPPORTED_SCHEMA');
+      this.db.transaction(()=>{
+        this.db.exec('CREATE TABLE IF NOT EXISTS projection(id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL, last_hash TEXT)');
+        this.db.exec('CREATE TABLE IF NOT EXISTS context_receipts(seq INTEGER PRIMARY KEY, run TEXT NOT NULL, hash TEXT NOT NULL, characters INTEGER NOT NULL, truncated INTEGER NOT NULL, records TEXT NOT NULL, time TEXT NOT NULL)');
+        if(version?.value==='1') stageProjection(this.db);
+        this.db.query("INSERT OR REPLACE INTO meta VALUES ('schema','2')").run();
+      }).immediate();
       const check = this.db.query('PRAGMA quick_check').get() as any;
       if (check.quick_check !== 'ok') throw new Error('DATABASE_INTEGRITY');
       this.probe();
+      this.sync();
     } catch (e) { this.db.close(); throw e; }
   }
   close() { if (!this.closed) { this.db.close(); this.closed = true; } }
+  sync() { return syncProjection(this.db,this.root); }
+  recordContext(run:string,content:string,registryOffset:number,truncated:boolean) {
+    const records:{id:string;version:number}[]=[];
+    for(const line of content.slice(registryOffset).split('\n')) {
+      try {
+        const r=JSON.parse(line);
+        if(typeof r.id==='string' && Number.isInteger(r.version) && typeof r.kind==='string')
+          records.push({id:r.id,version:r.version});
+      } catch { /* Partial rows are not counted as fully supplied records. */ }
+    }
+    const digest=hash(content);
+    this.db.transaction(()=>{
+      const last=this.db.query('SELECT run,hash FROM context_receipts ORDER BY seq DESC LIMIT 1').get() as any;
+      if(last?.run===run && last?.hash===digest) return;
+      this.db.query('INSERT INTO context_receipts(run,hash,characters,truncated,records,time) VALUES(?,?,?,?,?,?)')
+        .run(run,digest,content.length,Number(truncated),JSON.stringify(records),new Date().toISOString());
+      this.db.exec('DELETE FROM context_receipts WHERE seq NOT IN (SELECT seq FROM context_receipts ORDER BY seq DESC LIMIT 100)');
+    }).immediate();
+  }
+  lastContext() {
+    const r=this.db.query('SELECT run,hash,characters,truncated,records,time FROM context_receipts ORDER BY seq DESC LIMIT 1').get() as any;
+    return r ? {...r,truncated:Boolean(r.truncated),records:JSON.parse(r.records)} : null;
+  }
   probe() { this.db.query('INSERT OR REPLACE INTO health VALUES (1,?)').run(new Date().toISOString()); }
   capture(session: string, role: string, text: string) {
     if (!['user', 'assistant'].includes(role)) throw new Error('SOURCE_ROLE');
@@ -80,7 +112,10 @@ export class MemoryStore {
       try { parts.push(path + '\n' + sourceText(this.root,path)); }
       catch(e: any) { if(e.code === 'ENOENT') parts.push(path+'\n[MISSING]'); else throw e; }
     }
-    return { hash: hash(parts.join('\n')), paths, preview: parts.map(p=>p.slice(0,900)).join('\n').slice(0,2400) };
+    return { hash: hash(parts.join('\n')), paths, preview: parts.map((p,i)=>
+      paths[i].replaceAll('\\','/').startsWith('.memory/adr/')
+        ? paths[i].replaceAll('\\','/')+'\n[Document available on demand; accepted status does not verify its explanations.]'
+        : p.slice(0,900)).join('\n').slice(0,2400) };
   }
   checkpoint(run: string) { return this.db.query('SELECT * FROM checkpoints WHERE run=?').get(run) as any; }
   latestCheckpoint() { return this.db.query('SELECT * FROM checkpoints ORDER BY time DESC LIMIT 1').get() as any; }
@@ -137,9 +172,10 @@ export class MemoryStore {
       for (const c of changes) this.db.query('INSERT INTO versions VALUES (?,?,?,?)').run(c.id, c.expectedVersion + 1, JSON.stringify({...c,authorityHash}), time);
       if (authorityHash !== this.authority().hash) throw new Error('AUTHORITY_CHANGED: reread canonical files and retry');
       this.db.query('INSERT OR REPLACE INTO checkpoints VALUES (?,?,?)').run(run, summary, time);
+      if(changes.length) stageProjection(this.db);
       this.probe();
     }).immediate();
-    return { saved: changes.length, checkpoint: run };
+    return { saved: changes.length, checkpoint: run, projection: this.sync() };
   }
   recall(query: string, budget = 6000) {
     const authorityHash = this.authority().hash;
@@ -160,7 +196,11 @@ export class MemoryStore {
     for (const r of records) {
       const line = JSON.stringify({ id: r.c.id, version: r.version, kind: r.c.kind, status: r.c.status,
         freshness: r.stale ? 'STALE: recheck source before use' : 'source unchanged or conversation',
-        text: r.c.text, rationale: r.c.rationale, source: r.c.source, links: r.c.links }) + '\n';
+        ...(r.c.kind === 'decision' ? {
+          sourceRole: r.c.source.episode ? this.episode(r.c.source.episode)?.role ?? 'unknown' : 'file',
+          claimScope: 'Quote is evidence of what the source said, not proof of additional explanations. Unverified interpretation available via recall by ID/history.',
+        } : { text: r.c.text }),
+        rationale: r.c.rationale, source: r.c.source, links: r.c.links }) + '\n';
       if (out.length + line.length + 70 > budget) { out += '[More records omitted: use project_memory recall with narrower query.]'; break; }
       out += line;
     }
@@ -169,7 +209,8 @@ export class MemoryStore {
   status() {
     return { records: (this.db.query('SELECT COUNT(DISTINCT id) n FROM versions').get() as any).n,
       episodes: (this.db.query('SELECT COUNT(*) n FROM episodes').get() as any).n,
-      lastWrite: (this.db.query('SELECT lastWrite FROM health WHERE id=1').get() as any)?.lastWrite };
+      lastWrite: (this.db.query('SELECT lastWrite FROM health WHERE id=1').get() as any)?.lastWrite,
+      projection: projectionStatus(this.db,this.root) };
   }
 }
 export function architectureCheck(root: string, policy: any) {

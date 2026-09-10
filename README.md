@@ -9,7 +9,7 @@
 
 Keep project knowledge across sessions without running another model. Current facts live in readable files; evidence and revision history live in local SQLite. One OMP extension, no memory server, embeddings service, or background LLM.
 
-> **Preview v0.3.0 · Tested with OMP 18.1.5.** Upstream Pi is not supported. Memory makes project context easier to recover and inspect; it does not eliminate hallucinations.
+> **Preview v0.4.0 · Tested with OMP 18.1.5.** Upstream Pi is not supported. Memory makes project context easier to recover and inspect; it does not eliminate hallucinations.
 
 ## Why use it?
 
@@ -25,8 +25,12 @@ For developers working with an AI agent who want to stop explaining the same pro
 
 You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model. Local models are supported.
 
+**mnemopi is not required.** huimem uses its own local SQLite through OMP's runtime. Keep `memory.backend: off` from the starter; no separate memory service or model is needed.
+
+**Development checkout:** commits now automatically publish `.memory/RECORDS.md`, a readable registry snapshot. `/huimem` shows its sync state; `/huimem sync` retries publication without another model call. `/huimem context` shows the last prepared memory block's size, hash and complete record IDs/versions; it does not prove the model used them. The diagnostic log retains at most 100 entries without copying fact text. These changes are not yet included in the tagged v0.4.0 release. Existing databases migrate to schema 2; back up `.memory` with OMP stopped before upgrading. Schema 1 plugin versions cannot open the migrated database.
+
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.3.0
+omp plugin install github:Clientik/omp-huimem#v0.4.0
 ```
 
 Installation is user-scoped, so the extension loads in every project you open with OMP. **Memory itself is opt-in per project:** without a `.memory/MEMORY.md` the extension stays inert — no database, no injected context, no notices — and `project_memory` answers `PROJECT_MEMORY_NOT_ENABLED`. Other repositories stay untouched, with no database file their `.gitignore` does not cover.
@@ -42,7 +46,7 @@ Ask the agent to use the `initmem` skill to map the actual code. Define architec
 **Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
 ```sh
-git clone --branch v0.3.0 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.4.0 https://github.com/Clientik/omp-huimem.git
 # Run from your working project, using the cloned repository's absolute path:
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```
@@ -62,6 +66,7 @@ there is no backend-registration API for extensions. It runs alongside any of th
 | Location | Purpose |
 | --- | --- |
 | `.memory/MEMORY.md` | Current facts and constraints |
+| `.memory/RECORDS.md` | Generated registry snapshot; do not edit or use as independent evidence (development checkout) |
 | `.memory/adr/` | Decisions and their reasons |
 | `.memory/todo.json` | Tasks and their state |
 | `.memory/PROJECT.md` | Code map and working commands |
@@ -106,6 +111,6 @@ Developer references in English: [publishing](docs/PUBLISHING.md) and [OMP sourc
 
 ## Development and license
 
-With Bun installed, `bun run build` produces the extension and `bun run check` runs 32 tests plus package checks. Eight tests repeat adapter checks against the bundle. No runtime npm dependencies are required; the built entry is committed.
+With Bun installed, `bun run build` produces the extension and `bun run check` runs tests plus package checks. One adapter contract runs against both source and bundle; see VALIDATION.md for current counts. No runtime npm dependencies are required; the built entry is committed.
 
 All seven skills are retained. Code and bundled skills include [MIT license notices](THIRD_PARTY_NOTICES.md). `private` in package.json prevents accidental npm publication; GitHub distribution is supported.

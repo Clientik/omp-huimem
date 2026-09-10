@@ -24,6 +24,51 @@ const fact = (s: MemoryStore, text = 'Платежи: Stripe', version = 0) => {
   return { id: 'payments', kind: 'fact', text, status: 'active', expectedVersion: version,
     source: { episode, quote: text } };
 };
+
+test('context receipts track complete registry rows after final truncation, not canonical lookalikes',()=>withStore(s=>{
+  const fake='{"id":"fake","version":99,"kind":"decision"}\n';
+  const row='{"id":"payments","version":2,"kind":"decision"}\n';
+  const content=fake+row+'{"id":"cut';
+  s.recordContext('run:1',content,fake.length,true);
+  const receipt=s.lastContext();
+  expect(receipt.records).toEqual([{id:'payments',version:2}]);
+  expect(receipt.characters).toBe(content.length);
+  expect(receipt.truncated).toBe(true);
+  expect(receipt.hash).toHaveLength(64);
+  expect(JSON.stringify(receipt)).not.toContain('fake');
+}));
+
+test('context receipts deduplicate consecutive identical blocks and retain only the latest 100',()=>withStore(s=>{
+  for(let i=0;i<105;i++) s.recordContext('run:'+i,'block '+i,0,false);
+  s.recordContext('run:104','block 104',0,false);
+  expect((s.db.query('SELECT COUNT(*) n FROM context_receipts').get() as any).n).toBe(100);
+  expect(s.lastContext().run).toBe('run:104');
+}));
+test('recall distinguishes accepted evidence from an unsupported decision interpretation', () => withStore(s => {
+  const quote = 'Use 7 retries. Gateway window is 19 minutes.';
+  const episode = s.capture('s', 'user', quote);
+  s.commit('r', [{ id: 'retries', kind: 'decision', status: 'accepted', expectedVersion: 0,
+    text: 'More than 7 retries would trigger deduplication.', rationale: 'Gateway window is 19 minutes.',
+    source: { episode, quote } }], 'saved');
+  const record = s.recall('retries').split('\n').filter(l => l.startsWith('{')).map(l => JSON.parse(l))[0];
+  expect(record.source.quote).toBe(quote);
+  expect(record.text).toBeUndefined();
+  expect(record.interpretation).toBeUndefined();
+  expect(record.sourceRole).toBe('user');
+  expect(s.current('retries')?.text).toBe('More than 7 retries would trigger deduplication.');
+  expect(s.recall('retries')).not.toContain('would trigger');
+}));
+test('ADR prose stays inspectable but is excluded from automatic preview',()=>withStore((s,dir)=>{
+  mkdirSync(join(dir,'.memory/adr'));
+  const path=join(dir,'.memory/adr/0001-retries.md');
+  writeFileSync(path,'Accepted: unsupported explanation');
+  const before=s.authority();
+  expect(before.preview).toContain('.memory/adr/0001-retries.md');
+  expect(before.preview).not.toContain('unsupported explanation');
+  writeFileSync(path,'Accepted: different explanation');
+  expect(s.authority().hash).not.toBe(before.hash);
+  expect(readFileSync(path,'utf8')).toContain('different explanation');
+}));
 test('restart retains records and checkpoints', () => withStore((s, dir) => {
   s.commit('run', [fact(s)], 'next: test'); s.close();
   const reopened = new MemoryStore(dir);

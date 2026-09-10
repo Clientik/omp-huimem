@@ -15,16 +15,22 @@ export type CommandDeps = {
   store: (ctx: any) => any;
   architecture: (ctx: any) => { configured: boolean; ok: boolean; failures: string[] };
   health: () => string;
+  commitsPaused: (ctx: any) => boolean;
+  setPaused: (ctx: any, value: boolean) => void;
 };
 
 const HELP = [
   'Usage:',
+  '  /huimem pause        block commits in this project for this OMP process',
+  '  /huimem resume       allow commits again',
   '  /huimem              memory state for this project',
   '  /huimem recall <N>   recall budget in characters (' + LIMITS.recallBudget.min + '–' + LIMITS.recallBudget.max + ')',
   '  /huimem limit <N>    injected context limit in characters (' + LIMITS.injectionLimit.min + '–' + LIMITS.injectionLimit.max + ')',
   '  /huimem arch         architecture rules and the check result',
   '  /huimem omp          OMP settings that affect memory',
   '  /huimem reset        restore the default limits',
+  '  /huimem sync         retry publishing .memory/RECORDS.md from saved records',
+  '  /huimem context      inspect the latest memory block prepared for OMP',
 ].join('\n');
 
 // Показываем, но не трогаем: это чужой конфиг, его меняет сам OMP.
@@ -50,12 +56,32 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       if (!deps.deployed(ctx)) {
         return say(
           'Project memory is OFF here.\n' + deps.notEnabled +
+          '\nRequires OMP and a configured main model. mnemopi is NOT required; huimem uses its own local SQLite.' +
           '\n\nOnce deployed it turns on with your next message; no restart needed.',
         );
       }
 
       const cfg = readSettings(ctx.cwd);
+      if(verb==='pause' || verb==='resume') {
+        deps.setPaused(ctx,verb==='pause');
+        return say(verb==='pause'
+          ? 'Commits PAUSED for this project in this OMP process. Records and checkpoints cannot be saved through project_memory. Transcript capture, diagnostics and file tools remain active. Restart clears the pause.'
+          : 'Commits enabled for this project in this OMP process.');
+      }
       const settingsFileExists = existsSync(resolve(ctx.cwd, SETTINGS_PATH));
+      if (verb === 'context') {
+        try {
+          const receipt=deps.store(ctx).lastContext();
+          return say(receipt ? 'Last prepared memory block (not proof the model used it):\n'+JSON.stringify(receipt,null,2)
+            : 'No memory block has been prepared for this project yet.');
+        } catch(e) { return say('Context trace unavailable: '+String(e)); }
+      }
+      if (verb === 'sync') {
+        try {
+          const result=deps.store(ctx).sync();
+          return say(`Readable registry: ${result.state}\n${result.path}` + (result.error ? '\n'+result.error : ''));
+        } catch(e) { return say('Sync failed: '+String(e)); }
+      }
 
       const setNumber = (field: 'recallBudget' | 'injectionLimit', limit: typeof LIMITS.recallBudget) => {
         const n = Number(value);
@@ -116,19 +142,24 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       if (verb) return say(`Unknown subcommand: ${verb}\n\n` + HELP);
 
       // Без аргументов — состояние.
-      let counts = 'unavailable';
+      let counts = 'unavailable', projection='unavailable';
       try {
         const s = deps.store(ctx);
         const st = s.status();
-        counts = Object.entries(st).map(([k, v]) => `${k}=${v}`).join(' · ');
+        const {projection: view,...metrics}=st;
+        counts = Object.entries(metrics).map(([k, v]) => `${k}=${v}`).join(' · ');
+        projection = view.state + (view.error ? ' — '+view.error : '');
       } catch (e) { counts = 'ERROR: ' + String(e); }
       const a = deps.architecture(ctx);
       const err = deps.health();
       return say(
         [
           'huimem project memory',
+          `Commits:            ${deps.commitsPaused(ctx) ? 'PAUSED (this process)' : 'enabled'}`,
+          'Requires OMP + a main model. No mnemopi, memory server or additional model required.',
           '',
           `Storage:            ${counts}`,
+          `Readable registry:  ${projection}`,
           `Architecture:       ${a.configured ? (a.ok ? 'configured, no violation' : 'VIOLATIONS: ' + a.failures.join('; ')) : 'not configured'}`,
           `Recall budget:      ${cfg.recallBudget} characters`,
           `Injection limit:    ${cfg.injectionLimit} characters`,

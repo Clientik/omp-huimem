@@ -1,5 +1,6 @@
 node_modules/
 .memory/runtime/
+.memory/.records-*.tmp
 *.sqlite
 *.sqlite-*
 *.db
@@ -8,5 +9,12 @@ node_modules/
 .env.*
 *.log
 *.tgz
+
+# Local editor/OS and Python cache files are not part of the plugin.
+.DS_Store
+Thumbs.db
+desktop.ini
+__pycache__/
+*.pyc
 
 # dist is committed so GitHub installs need no build hook.

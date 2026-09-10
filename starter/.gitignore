@@ -1,3 +1,4 @@
 .memory/runtime/
 .omp/memory/*.db
 .omp/memory/*.db-*
+.memory/.records-*.tmp
