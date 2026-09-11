@@ -24,6 +24,25 @@ test('ADR read results retain original content and add provenance warning only f
   } finally { f.clean(); }
 });
 
+// Пометка адресует блок основания, а не файл. Прежний вариант накрывал документ целиком
+// и три живых прогона подряд не помешал модели приписать пользователю дописанную причину.
+test('the provenance marker distinguishes a document with a quoted basis from one without',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Why?'},f.ctx);
+    const mark=async(text:string)=>(await f.handlers.tool_result(
+      {toolName:'read',input:{path:'.memory/adr/0001.md'},content:[{type:'text',text}],isError:false},f.ctx)).content[0].text;
+    const contract=['# 0001','','## Основание','> «нужна доставка хотя бы один раз»','',
+      '## Последствия','Дедупликация при большом числе попыток.'].join('\n');
+    const withBasis=await mark(contract);
+    expect(withBasis).toContain('only the 1 quoted line(s)');
+    // Раздел «Последствия» цитируемым не становится, даже будучи внутри принятого ADR.
+    expect(withBasis).toContain('is not verified by acceptance');
+    const legacy=await mark('# 0002\n\n- Статус: принято\n\nПри большем числе попыток срабатывает дедупликация.');
+    expect(legacy).toContain('NO basis section');
+    expect(legacy).not.toContain('quoted line(s)');
+  } finally { f.clean(); }
+});
+
 test('session pause rejects all commits, permits reads, and resumes explicitly',async()=>{
   const f=fixture(); try {
     await f.handlers.before_agent_start({prompt:'Use SQLite'},f.ctx);

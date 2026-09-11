@@ -9,7 +9,7 @@
 
 在不同会话之间保留项目知识，无需运行第二个模型。当前事实保存在可读文件中，证据和版本历史保存在本地 SQLite 中。只需一个 OMP 扩展，无需独立的记忆服务器、向量嵌入服务或后台 LLM。
 
-> **预览版 v0.4.0，已在 OMP 18.1.5 上测试。** 暂不支持原版 Pi。这个插件帮助恢复和检查项目上下文，但不能消除模型幻觉。
+> **预览版 v0.4.1，已在 OMP 18.1.5 上测试。** 暂不支持原版 Pi。这个插件帮助恢复和检查项目上下文，但不能消除模型幻觉。
 
 ## 适合谁？
 
@@ -27,10 +27,10 @@
 
 **不需要 mnemopi。** huimem 通过 OMP 运行时使用自己的本地 SQLite。保留 starter 中的 `memory.backend: off`；无需额外的记忆服务或模型。
 
-**开发版本：** commit 会自动更新 `.memory/RECORDS.md`，作为记录库的可读快照。`/huimem` 显示同步状态，`/huimem sync` 无需调用模型即可重试写入。`/huimem context` 显示最近准备的记忆块大小、哈希及完整记录的 ID 和版本，但不能证明模型使用了这些事实。诊断日志最多保留 100 条，不复制事实正文。此功能尚未包含在 v0.4.0 标签版本中。数据库将迁移到 schema 2；升级前请停止 OMP 并备份 `.memory`，schema 1 的旧插件无法打开迁移后的数据库。
+**开发版本：** commit 会自动更新 `.memory/RECORDS.md`，作为记录库的可读快照。`/huimem` 显示同步状态，`/huimem sync` 无需调用模型即可重试写入。`/huimem context` 显示最近准备的记忆块大小、哈希及完整记录的 ID 和版本，但不能证明模型使用了这些事实。诊断日志最多保留 100 条，不复制事实正文。此功能尚未包含在 v0.4.1 标签版本中。数据库将迁移到 schema 2；升级前请停止 OMP 并备份 `.memory`，schema 1 的旧插件无法打开迁移后的数据库。
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.4.0
+omp plugin install github:Clientik/omp-huimem#v0.4.1
 ```
 
 插件按用户级安装，因此会在你打开的所有项目中加载。**但记忆按项目显式启用：** 若没有 `.memory/MEMORY.md`，扩展保持静默——不建数据库、不注入上下文、不发出提示，`project_memory` 返回 `PROJECT_MEMORY_NOT_ENABLED`。这样其他仓库不会被改动，也不会出现其 `.gitignore` 未覆盖的数据库文件。
@@ -46,7 +46,7 @@ omp plugin install github:Clientik/omp-huimem#v0.4.0
 **安装状态：** 已在 Windows + OMP 18.1.5 上完整验证 GitHub 安装流程——插件安装、注册并在实际会话中运行。直接加载同样可用：
 
 ```sh
-git clone --branch v0.4.0 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.4.1 https://github.com/Clientik/omp-huimem.git
 # 在工作项目中运行，使用克隆仓库的绝对路径：
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```
