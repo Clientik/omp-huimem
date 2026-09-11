@@ -503,8 +503,10 @@ function writeSettings(root, next) {
 var BASIS_HEADING = /^#{1,6}\s*(\u043E\u0441\u043D\u043E\u0432\u0430\u043D\u0438\u0435|basis|evidence|source|\u4F9D\u636E)(?![\p{L}\p{N}])/iu;
 var HEADING = /^#{1,6}\s/;
 function readBasis(text) {
-  const lines = text.split(`
+  let lines = text.split(`
 `);
+  if (/^\[[^\]\r\n]+#[a-zA-Z0-9]+\]\s*$/.test(lines[0] ?? ""))
+    lines = lines.slice(1).map((line) => line.replace(/^\d+:/, ""));
   const start = lines.findIndex((l) => BASIS_HEADING.test(l.trim()));
   if (start < 0)
     return { section: false, quotes: [] };
@@ -519,13 +521,13 @@ function readBasis(text) {
   }
   return { section: true, quotes };
 }
-var TAIL = " Cite the quoted basis when answering why; anything beyond it stays unverified even if the document reads as settled." + " The original source.quote in project_memory remains the primary evidence. Content below is preserved unchanged.]";
+var TAIL = " Verify attribution against the original user message (project_memory source.quote and its user episode), not Markdown formatting." + " If that evidence is unavailable, report attribution as unverified; do not invent or repair a quote. Content below is preserved unchanged.]";
 function provenanceNote(basis) {
   if (!basis.section)
-    return "[huimem DOCUMENT_PROVENANCE: this document has NO basis section, so it carries no user evidence at all." + " Its accepted status verifies none of its sentences. Do not attribute any reason here to the user;" + " if no original quote exists, say the basis is missing rather than supplying one." + TAIL;
+    return "[huimem DOCUMENT_PROVENANCE: NO basis section is visible in this excerpt; the rest of the document may contain one." + " Its accepted status verifies none of its sentences. This excerpt establishes no user attribution." + TAIL;
   if (!basis.quotes.length)
-    return "[huimem DOCUMENT_PROVENANCE: the basis section contains no verbatim quote, so this document carries no user evidence." + " Treat every sentence here, including the decision itself, as unverified interpretation." + TAIL;
-  return `[huimem DOCUMENT_PROVENANCE: only the ${basis.quotes.length} quoted line(s) under the basis heading are user evidence.` + " Every other sentence here \u2014 status, rationale prose, alternatives, consequences \u2014 is interpretation and is not verified by acceptance." + TAIL;
+    return "[huimem DOCUMENT_PROVENANCE: the visible basis section contains no verbatim quote; it may be incomplete." + " User attribution is unverified." + TAIL;
+  return `[huimem DOCUMENT_PROVENANCE: ${basis.quotes.length} quoted line(s) are visible under a basis heading, but their authorship is unverified. They are document claims, not authenticated user evidence.` + " Every other sentence here \u2014 status, rationale prose, alternatives, consequences \u2014 is interpretation and is not verified by acceptance." + TAIL;
 }
 
 // src/ui/huimem-command.ts

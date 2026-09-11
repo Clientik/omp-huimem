@@ -5,9 +5,8 @@
 // Обзор arXiv:2606.04990 называет это provenance-role collapse и указывает причину:
 // атрибуция уровня документа «masks unsupported sub-claims» — статус «принято»
 // распространяется на каждое предложение.
-// Поэтому цитируемым объявляется только блок основания. У документа без такого блока
-// цитируемой части нет вовсе: он не объявляется ложным, он перестаёт быть источником
-// авторитета. Ложность по несовпадению строк не выводится — это отдельный класс ошибок.
+// Блок основания выделяет заявленные цитаты, но не подтверждает их авторство.
+// Без сверки с исходным сообщением даже оформленная цитата остаётся непроверенной.
 
 // Заголовок ищется на нескольких языках: содержимое стартового набора русское,
 // документация репозитория трёхъязычная, и механизм не должен зависеть от языка.
@@ -19,7 +18,11 @@ const HEADING = /^#{1,6}\s/;
 export type Basis = { section: boolean; quotes: string[] };
 
 export function readBasis(text: string): Basis {
-  const lines = text.split('\n');
+  let lines = text.split('\n');
+  // OMP read wraps the excerpt in [path#hash] and prefixes lines with N:.
+  // Decode only that envelope; never strip numbers from ordinary Markdown.
+  if (/^\[[^\]\r\n]+#[a-zA-Z0-9]+\]\s*$/.test(lines[0] ?? ''))
+    lines = lines.slice(1).map(line => line.replace(/^\d+:/, ''));
   const start = lines.findIndex(l => BASIS_HEADING.test(l.trim()));
   if (start < 0) return { section: false, quotes: [] };
   const quotes: string[] = [];
@@ -33,17 +36,16 @@ export function readBasis(text: string): Basis {
 }
 
 const TAIL =
-  ' Cite the quoted basis when answering why; anything beyond it stays unverified even if the document reads as settled.' +
-  ' The original source.quote in project_memory remains the primary evidence. Content below is preserved unchanged.]';
+  ' Verify attribution against the original user message (project_memory source.quote and its user episode), not Markdown formatting.' +
+  ' If that evidence is unavailable, report attribution as unverified; do not invent or repair a quote. Content below is preserved unchanged.]';
 
 export function provenanceNote(basis: Basis): string {
   if (!basis.section)
-    return '[huimem DOCUMENT_PROVENANCE: this document has NO basis section, so it carries no user evidence at all.' +
-      ' Its accepted status verifies none of its sentences. Do not attribute any reason here to the user;' +
-      ' if no original quote exists, say the basis is missing rather than supplying one.' + TAIL;
+    return '[huimem DOCUMENT_PROVENANCE: NO basis section is visible in this excerpt; the rest of the document may contain one.' +
+      ' Its accepted status verifies none of its sentences. This excerpt establishes no user attribution.' + TAIL;
   if (!basis.quotes.length)
-    return '[huimem DOCUMENT_PROVENANCE: the basis section contains no verbatim quote, so this document carries no user evidence.' +
-      ' Treat every sentence here, including the decision itself, as unverified interpretation.' + TAIL;
-  return `[huimem DOCUMENT_PROVENANCE: only the ${basis.quotes.length} quoted line(s) under the basis heading are user evidence.` +
+    return '[huimem DOCUMENT_PROVENANCE: the visible basis section contains no verbatim quote; it may be incomplete.' +
+      ' User attribution is unverified.' + TAIL;
+  return `[huimem DOCUMENT_PROVENANCE: ${basis.quotes.length} quoted line(s) are visible under a basis heading, but their authorship is unverified. They are document claims, not authenticated user evidence.` +
     ' Every other sentence here — status, rationale prose, alternatives, consequences — is interpretation and is not verified by acceptance.' + TAIL;
 }

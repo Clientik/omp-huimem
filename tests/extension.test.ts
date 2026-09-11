@@ -33,8 +33,9 @@ test('the provenance marker distinguishes a document with a quoted basis from on
       {toolName:'read',input:{path:'.memory/adr/0001.md'},content:[{type:'text',text}],isError:false},f.ctx)).content[0].text;
     const contract=['# 0001','','## Основание','> «нужна доставка хотя бы один раз»','',
       '## Последствия','Дедупликация при большом числе попыток.'].join('\n');
-    const withBasis=await mark(contract);
-    expect(withBasis).toContain('only the 1 quoted line(s)');
+    const withBasis=await mark('[.memory/adr/0001.md#0750]\n'+contract.split('\n').map((line,i)=>`${i+1}:${line}`).join('\n'));
+    expect(withBasis).toContain('1 quoted line(s)');
+    expect(withBasis).toContain('authorship is unverified');
     // Раздел «Последствия» цитируемым не становится, даже будучи внутри принятого ADR.
     expect(withBasis).toContain('is not verified by acceptance');
     const legacy=await mark('# 0002\n\n- Статус: принято\n\nПри большем числе попыток срабатывает дедупликация.');

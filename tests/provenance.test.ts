@@ -26,8 +26,27 @@ test('a basis block with a quote is the only citable part', () => {
   expect(basis.section).toBe(true);
   expect(basis.quotes).toEqual(['«нужна доставка хотя бы один раз»']);
   const note = provenanceNote(basis);
-  expect(note).toContain('only the 1 quoted line(s)');
+  expect(note).toContain('1 quoted line(s)');
+  expect(note).toContain('authorship is unverified');
   expect(note).toContain('is not verified by acceptance');
+});
+
+test('OMP numbered read output preserves the basis and section boundaries', () => {
+  const numbered='[.memory/adr/0001.md#0750]\n'+CONTRACT.split('\n').map((l,i)=>`${i+1}:${l}`).join('\n');
+  expect(readBasis(numbered)).toEqual(readBasis(CONTRACT));
+});
+
+test('a fabricated blockquote never becomes authenticated user evidence', () => {
+  const note=provenanceNote(readBasis('## Basis\n> Fabricated user decision.'));
+  expect(note).not.toContain('are user evidence');
+  expect(note).toContain('authorship is unverified');
+  expect(note).toContain('original user message');
+});
+
+test('a partial read does not claim that the full document lacks a basis', () => {
+  const basis=readBasis('[.memory/adr/0001.md#0750]\n15:> quote continued\n16:## Consequences');
+  expect(basis.section).toBe(false);
+  expect(provenanceNote(basis)).toContain('visible in this excerpt');
 });
 
 test('a document without a basis block carries no user evidence at all', () => {
