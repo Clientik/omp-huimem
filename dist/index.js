@@ -254,7 +254,7 @@ class MemoryStore {
       return null;
     const data = JSON.parse(row.data);
     let freshness = "source unchanged or conversation";
-    if (data.authorityHash !== this.authority().hash)
+    if (this.authorityChanged(data, this.authority()))
       freshness = "STALE";
     if (data.source.path) {
       try {
@@ -268,6 +268,9 @@ class MemoryStore {
   }
   history(id) {
     return this.db.query("SELECT version,data,time FROM versions WHERE id=? ORDER BY version").all(id);
+  }
+  authorityChanged(c, authority) {
+    return c.kind === "fact" && c.source.path && c.sourcePolicyHash ? c.sourcePolicyHash !== authority.policyHash : c.authorityHash !== authority.hash;
   }
   authority() {
     const paths = [
@@ -290,8 +293,10 @@ class MemoryStore {
           throw e;
       }
     }
+    const policyHash = hash2(parts.filter((_, i) => [".memory/MEMORY.md", ".memory/PROJECT.md", ".memory/architecture.json"].includes(paths[i])).join(`
+`));
     return { hash: hash2(parts.join(`
-`)), paths, preview: parts.map((p, i) => paths[i].replaceAll("\\", "/").startsWith(".memory/adr/") ? paths[i].replaceAll("\\", "/") + `
+`)), policyHash, paths, preview: parts.map((p, i) => paths[i].replaceAll("\\", "/").startsWith(".memory/adr/") ? paths[i].replaceAll("\\", "/") + `
 [Document available on demand; accepted status does not verify its explanations.]` : p.slice(0, 900)).join(`
 `).slice(0, 2400) };
   }
@@ -364,7 +369,7 @@ class MemoryStore {
     if (scrub(summary) !== summary)
       throw new Error("SECRET_PATTERN");
     this.db.transaction(() => {
-      const authorityHash = this.authority().hash;
+      const { hash: authorityHash, policyHash } = this.authority();
       if (new Set(changes.map((c) => c.id)).size !== changes.length)
         throw new Error("DUPLICATE_ID");
       for (const c of changes) {
@@ -377,7 +382,11 @@ class MemoryStore {
       }
       const time = new Date().toISOString();
       for (const c of changes)
-        this.db.query("INSERT INTO versions VALUES (?,?,?,?)").run(c.id, c.expectedVersion + 1, JSON.stringify({ ...c, authorityHash }), time);
+        this.db.query("INSERT INTO versions VALUES (?,?,?,?)").run(c.id, c.expectedVersion + 1, JSON.stringify({
+          ...c,
+          authorityHash,
+          sourcePolicyHash: c.kind === "fact" && c.source.path ? policyHash : undefined
+        }), time);
       if (authorityHash !== this.authority().hash)
         throw new Error("AUTHORITY_CHANGED: reread canonical files and retry");
       this.db.query("INSERT OR REPLACE INTO checkpoints VALUES (?,?,?)").run(run, summary, time);
@@ -388,14 +397,14 @@ class MemoryStore {
     return { saved: changes.length, checkpoint: run, projection: this.sync() };
   }
   recall(query, budget = 6000) {
-    const authorityHash = this.authority().hash;
+    const authority = this.authority();
     budget = Math.max(0, Math.min(12000, budget));
     const rows = this.db.query(`SELECT v.data,v.version FROM versions v JOIN
       (SELECT id,MAX(version) version FROM versions GROUP BY id) n ON v.id=n.id AND v.version=n.version`).all();
     const terms = query.toLocaleLowerCase().match(/[\p{L}\p{N}_-]{2,}/gu) ?? [];
     const records = rows.map((row) => {
       const c = JSON.parse(row.data);
-      let stale = c.authorityHash !== authorityHash;
+      let stale = Boolean(this.authorityChanged(c, authority));
       if (c.source.path) {
         try {
           stale = stale || hash2(sourceText(this.root, c.source.path)) !== c.source.hash;

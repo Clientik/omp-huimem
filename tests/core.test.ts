@@ -25,6 +25,48 @@ const fact = (s: MemoryStore, text = 'Платежи: Stripe', version = 0) => {
     source: { episode, quote: text } };
 };
 
+test('file facts ignore unrelated ADR and task edits but track source and global policy',()=>withStore((s,dir)=>{
+  writeFileSync(join(dir,'app.ts'),'const db="sqlite";');
+  const c={id:'db',kind:'fact',status:'active',text:'Uses sqlite',expectedVersion:0,source:s.fileSource('app.ts','sqlite')};
+  s.commit('a',[c],'saved');
+  mkdirSync(join(dir,'.memory/adr'));
+  writeFileSync(join(dir,'.memory/adr/other.md'),'Unrelated choice');
+  writeFileSync(join(dir,'.memory/todo.json'),'[]');
+  expect(s.current('db')?.freshness).not.toBe('STALE');
+  expect(s.recall('db')).not.toContain('STALE: recheck');
+  writeFileSync(join(dir,'.memory/architecture.json'),'{"configured":false}');
+  expect(s.current('db')?.freshness).toBe('STALE');
+  s.commit('b',[{...c,expectedVersion:1}],'rechecked');
+  writeFileSync(join(dir,'app.ts'),'const db="postgres";');
+  expect(s.current('db')?.freshness).toBe('STALE');
+}));
+
+test('legacy file facts keep conservative invalidation until explicitly revised',()=>withStore((s,dir)=>{
+  writeFileSync(join(dir,'app.ts'),'sqlite');
+  s.commit('a',[{id:'db',kind:'fact',status:'active',text:'sqlite',expectedVersion:0,source:s.fileSource('app.ts','sqlite')}],'saved');
+  const row=s.db.query('SELECT data FROM versions WHERE id=?').get('db') as any;
+  const old=JSON.parse(row.data); delete old.sourcePolicyHash;
+  s.db.query('UPDATE versions SET data=? WHERE id=?').run(JSON.stringify(old),'db');
+  writeFileSync(join(dir,'.memory/todo.json'),'[]');
+  expect(s.current('db')?.freshness).toBe('STALE');
+  expect(s.recall('db')).toContain('STALE: recheck');
+}));
+
+test('file freshness survives reopening and detects a deleted source',()=>withStore((s,dir)=>{
+  writeFileSync(join(dir,'app.ts'),'sqlite');
+  s.commit('a',[{id:'db',kind:'fact',status:'active',text:'sqlite',expectedVersion:0,source:s.fileSource('app.ts','sqlite'),sourcePolicyHash:'forged'}],'saved');
+  expect(s.current('db')?.sourcePolicyHash).not.toBe('forged');
+  s.close();
+  const reopened=new MemoryStore(dir);
+  try {
+    writeFileSync(join(dir,'.memory/todo.json'),'[]');
+    expect(reopened.current('db')?.freshness).not.toBe('STALE');
+    rmSync(join(dir,'app.ts'));
+    expect(reopened.current('db')?.freshness).toBe('STALE');
+    expect(reopened.recall('db')).toContain('STALE: recheck');
+  } finally { reopened.close(); }
+}));
+
 test('context receipts track complete registry rows after final truncation, not canonical lookalikes',()=>withStore(s=>{
   const fake='{"id":"fake","version":99,"kind":"decision"}\n';
   const row='{"id":"payments","version":2,"kind":"decision"}\n';

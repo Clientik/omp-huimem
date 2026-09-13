@@ -5,7 +5,7 @@ import { resolve, relative, isAbsolute } from 'node:path';
 import { projectionStatus, stageProjection, syncProjection } from './projection';
 
 export type Source = { episode?: string; path?: string; hash?: string; quote: string };
-export type Change = { id: string; kind: string; text: string; status: string; expectedVersion: number; authorityHash?: string;
+export type Change = { id: string; kind: string; text: string; status: string; expectedVersion: number; authorityHash?: string; sourcePolicyHash?: string;
   source: Source; rationale?: string; links?: string[] };
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 export const scrub = (s: string) => s.replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9._-]{16,})\b/g, '[REDACTED]')
@@ -99,11 +99,15 @@ export class MemoryStore {
     if (!row) return null;
     const data = JSON.parse(row.data) as Change;
     let freshness = 'source unchanged or conversation';
-    if (data.authorityHash !== this.authority().hash) freshness = 'STALE';
+    if (this.authorityChanged(data, this.authority())) freshness = 'STALE';
     if (data.source.path) { try { if (hash(sourceText(this.root,data.source.path)) !== data.source.hash) freshness = 'STALE'; } catch { freshness = 'STALE'; } }
     return { ...data, version: row.version, freshness };
   }
   history(id: string) { return this.db.query('SELECT version,data,time FROM versions WHERE id=? ORDER BY version').all(id); }
+  private authorityChanged(c: Change, authority: {hash:string; policyHash:string}) {
+    return c.kind==='fact' && c.source.path && c.sourcePolicyHash
+      ? c.sourcePolicyHash!==authority.policyHash : c.authorityHash!==authority.hash;
+  }
   authority() {
     const paths = ['.memory/MEMORY.md','.memory/todo.json','.memory/PROJECT.md','.memory/architecture.json',
       ...new Bun.Glob('.memory/adr/**/*.md').scanSync({cwd:this.root,onlyFiles:true,followSymlinks:false})].sort();
@@ -112,7 +116,8 @@ export class MemoryStore {
       try { parts.push(path + '\n' + sourceText(this.root,path)); }
       catch(e: any) { if(e.code === 'ENOENT') parts.push(path+'\n[MISSING]'); else throw e; }
     }
-    return { hash: hash(parts.join('\n')), paths, preview: parts.map((p,i)=>
+    const policyHash=hash(parts.filter((_,i)=>['.memory/MEMORY.md','.memory/PROJECT.md','.memory/architecture.json'].includes(paths[i])).join('\n'));
+    return { hash: hash(parts.join('\n')), policyHash, paths, preview: parts.map((p,i)=>
       paths[i].replaceAll('\\','/').startsWith('.memory/adr/')
         ? paths[i].replaceAll('\\','/')+'\n[Document available on demand; accepted status does not verify its explanations.]'
         : p.slice(0,900)).join('\n').slice(0,2400) };
@@ -161,7 +166,7 @@ export class MemoryStore {
     if (summary.length > 2000) throw new Error('INVALID_CHECKPOINT: summary longer than 2000 characters');
     if (scrub(summary) !== summary) throw new Error('SECRET_PATTERN');
     this.db.transaction(() => {
-      const authorityHash = this.authority().hash;
+      const {hash:authorityHash,policyHash} = this.authority();
       if (new Set(changes.map(c => c.id)).size !== changes.length) throw new Error('DUPLICATE_ID');
       for (const c of changes) {
         this.validate(c);
@@ -169,7 +174,8 @@ export class MemoryStore {
         for (const link of c.links ?? []) if (!this.current(link) && !changes.some(x => x.id === link)) throw new Error('MISSING_LINK');
       }
       const time = new Date().toISOString();
-      for (const c of changes) this.db.query('INSERT INTO versions VALUES (?,?,?,?)').run(c.id, c.expectedVersion + 1, JSON.stringify({...c,authorityHash}), time);
+      for (const c of changes) this.db.query('INSERT INTO versions VALUES (?,?,?,?)').run(c.id, c.expectedVersion + 1, JSON.stringify({...c,authorityHash,
+        sourcePolicyHash:c.kind==='fact' && c.source.path ? policyHash : undefined}), time);
       if (authorityHash !== this.authority().hash) throw new Error('AUTHORITY_CHANGED: reread canonical files and retry');
       this.db.query('INSERT OR REPLACE INTO checkpoints VALUES (?,?,?)').run(run, summary, time);
       if(changes.length) stageProjection(this.db);
@@ -178,14 +184,14 @@ export class MemoryStore {
     return { saved: changes.length, checkpoint: run, projection: this.sync() };
   }
   recall(query: string, budget = 6000) {
-    const authorityHash = this.authority().hash;
+    const authority = this.authority();
     budget = Math.max(0, Math.min(12000, budget));
     const rows = this.db.query(`SELECT v.data,v.version FROM versions v JOIN
       (SELECT id,MAX(version) version FROM versions GROUP BY id) n ON v.id=n.id AND v.version=n.version`).all() as any[];
     const terms = query.toLocaleLowerCase().match(/[\p{L}\p{N}_-]{2,}/gu) ?? [];
     const records = rows.map(row => {
       const c = JSON.parse(row.data) as Change;
-      let stale = c.authorityHash !== authorityHash;
+      let stale = Boolean(this.authorityChanged(c, authority));
       if (c.source.path) { try { stale = stale || hash(sourceText(this.root, c.source.path)) !== c.source.hash; } catch { stale = true; } }
       const score = terms.reduce((n, t) => n + ((c.text + ' ' + c.id + ' ' + (c.rationale ?? '')).toLocaleLowerCase().includes(t) ? 1 : 0), 0);
       const pinned = c.status === 'accepted' || ['doing','blocked','todo'].includes(c.status);
