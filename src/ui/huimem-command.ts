@@ -71,9 +71,11 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       const settingsFileExists = existsSync(resolve(ctx.cwd, SETTINGS_PATH));
       if (verb === 'context') {
         try {
-          const receipt=deps.store(ctx).lastContext();
-          return say(receipt ? 'Last prepared memory block (not proof the model used it):\n'+JSON.stringify(receipt,null,2)
-            : 'No memory block has been prepared for this project yet.');
+          const store=deps.store(ctx);
+          const receipt=store.lastContext(), retrieval=store.lastRetrieval();
+          return say((receipt ? 'Last prepared memory block (not proof the model used it):\n'+JSON.stringify(receipt,null,2)
+            : 'No memory block has been prepared for this project yet.')+
+            '\nLatest retrieval (may be a different run; JS character counts, not tokens):\n'+JSON.stringify(retrieval,null,2));
         } catch(e) { return say('Context trace unavailable: '+String(e)); }
       }
       if (verb === 'sync') {
