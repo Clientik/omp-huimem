@@ -2,7 +2,7 @@
 // src/extensions/project-memory.ts
 import { randomUUID as randomUUID3 } from "crypto";
 import { existsSync as existsSync2, readFileSync as readFileSync5 } from "fs";
-import { resolve as resolve5, relative as relative3 } from "path";
+import { resolve as resolve6, relative as relative4 } from "path";
 
 // src/memory/core.ts
 import { Database } from "bun:sqlite";
@@ -509,6 +509,34 @@ function writeSettings(root, next) {
 }
 
 // src/memory/provenance.ts
+import { realpathSync as realpathSync3 } from "fs";
+import { resolve as resolve4, relative as relative3, isAbsolute as isAbsolute3 } from "path";
+function isAdrRead(root, input) {
+  try {
+    const base = realpathSync3(root);
+    let candidate = resolve4(base, input);
+    try {
+      candidate = realpathSync3(candidate);
+    } catch (e) {
+      if (!["ENOENT", "ENOTDIR", "EINVAL"].includes(e.code))
+        return false;
+      candidate = resolve4(base, input.replace(/:\d+(?:-\d+)?$/, ""));
+      try {
+        candidate = realpathSync3(candidate);
+      } catch (inner) {
+        if (inner.code !== "ENOENT")
+          return false;
+      }
+    }
+    const rel = relative3(base, candidate).replaceAll("\\", "/");
+    if (isAbsolute3(rel) || rel === ".." || rel.startsWith("../"))
+      return false;
+    const comparable = process.platform === "win32" ? rel.toLowerCase() : rel;
+    return comparable.startsWith(".memory/adr/") && comparable.endsWith(".md");
+  } catch {
+    return false;
+  }
+}
 var BASIS_HEADING = /^#{1,6}\s*(\u043E\u0441\u043D\u043E\u0432\u0430\u043D\u0438\u0435|basis|evidence|source|\u4F9D\u636E)(?![\p{L}\p{N}])/iu;
 var HEADING = /^#{1,6}\s/;
 function readBasis(text) {
@@ -541,7 +569,7 @@ function provenanceNote(basis) {
 
 // src/ui/huimem-command.ts
 import { existsSync, readFileSync as readFileSync4 } from "fs";
-import { resolve as resolve4 } from "path";
+import { resolve as resolve5 } from "path";
 var HELP = [
   "Usage:",
   "  /huimem pause        block commits in this project for this OMP process",
@@ -583,7 +611,7 @@ Once deployed it turns on with your next message; no restart needed.`);
         deps.setPaused(ctx, verb === "pause");
         return say(verb === "pause" ? "Commits PAUSED for this project in this OMP process. Records and checkpoints cannot be saved through project_memory. Transcript capture, diagnostics and file tools remain active. Restart clears the pause." : "Commits enabled for this project in this OMP process.");
       }
-      const settingsFileExists = existsSync(resolve4(ctx.cwd, SETTINGS_PATH));
+      const settingsFileExists = existsSync(resolve5(ctx.cwd, SETTINGS_PATH));
       if (verb === "context") {
         try {
           const receipt = deps.store(ctx).lastContext();
@@ -623,7 +651,7 @@ ${result.path}` + (result.error ? `
         return say(`Limits restored to defaults: recall ${saved.recallBudget}, injection ${saved.injectionLimit}.`);
       }
       if (verb === "arch") {
-        const path = resolve4(ctx.cwd, ".memory/architecture.json");
+        const path = resolve5(ctx.cwd, ".memory/architecture.json");
         const a2 = deps.architecture(ctx);
         let body;
         try {
@@ -698,13 +726,13 @@ var textOf = (content) => typeof content === "string" ? content : Array.isArray(
 `) : "";
 var reads = new Set(["read", "grep", "find", "glob", "ls", "project_memory"]);
 var ENABLE_MARKER = ".memory/MEMORY.md";
-var deployed = (ctx) => existsSync2(resolve5(ctx.cwd, ENABLE_MARKER));
+var deployed = (ctx) => existsSync2(resolve6(ctx.cwd, ENABLE_MARKER));
 var NOT_ENABLED = "PROJECT_MEMORY_NOT_ENABLED: no " + ENABLE_MARKER + " in this project. " + "Project memory is off here and no database is created. Copy the plugin starter/ into the project root to enable it.";
 var memoryWrapper = (event) => event.toolName === "write" && (event.input?.path === "xd://project_memory" || event.details?.xdev?.tool === "project_memory");
 function install(pi) {
   const z = pi.zod;
   const pausedProjects = new Set;
-  const commitsPaused = (ctx) => pausedProjects.has(resolve5(ctx.cwd));
+  const commitsPaused = (ctx) => pausedProjects.has(resolve6(ctx.cwd));
   let store, root = "", error = "", run = "", generation = 0;
   let query = "", sourceEpisode = "", lastNotice = "", active = false;
   let policyAtStart;
@@ -745,7 +773,7 @@ function install(pi) {
   }
   function policyText(ctx) {
     try {
-      return readFileSync5(resolve5(ctx.cwd, ".memory/architecture.json"), "utf8");
+      return readFileSync5(resolve6(ctx.cwd, ".memory/architecture.json"), "utf8");
     } catch (e) {
       if (e.code === "ENOENT")
         return "";
@@ -871,7 +899,7 @@ Do not claim memory or work was verified.`;
       return { block: true, reason: error + "; restore memory storage before mutation." };
     const path = event.input?.path ?? event.input?.file_path;
     if (typeof path === "string") {
-      const rel = relative3(ctx.cwd, resolve5(ctx.cwd, path)).replaceAll("\\", "/").toLowerCase();
+      const rel = relative4(ctx.cwd, resolve6(ctx.cwd, path)).replaceAll("\\", "/").toLowerCase();
       if (rel === ".memory/records.md")
         return { block: true, reason: "Generated registry: use project_memory commit; /huimem sync retries publication. Keep manual notes in MEMORY.md or ADRs." };
       if (rel === ".memory/architecture.json" || rel.startsWith(".memory/runtime/") || rel.startsWith(".omp/memory/") || rel.startsWith(".omp/extensions/"))
@@ -885,8 +913,7 @@ Do not claim memory or work was verified.`;
       generation++;
     const path = event.input?.path ?? event.input?.file_path;
     if (event.toolName === "read" && !event.isError && typeof path === "string" && Array.isArray(event.content)) {
-      const rel = relative3(ctx.cwd, resolve5(ctx.cwd, path)).replaceAll("\\", "/").toLowerCase();
-      if (rel.startsWith(".memory/adr/") && rel.endsWith(".md")) {
+      if (isAdrRead(ctx.cwd, path)) {
         const text = event.content.filter((p) => p?.type === "text").map((p) => String(p.text)).join(`
 `);
         return { content: [{ type: "text", text: provenanceNote(readBasis(text)) }, ...event.content] };
@@ -1035,9 +1062,9 @@ Do not claim memory or work was verified.`;
     commitsPaused,
     setPaused: (ctx, value) => {
       if (value)
-        pausedProjects.add(resolve5(ctx.cwd));
+        pausedProjects.add(resolve6(ctx.cwd));
       else
-        pausedProjects.delete(resolve5(ctx.cwd));
+        pausedProjects.delete(resolve6(ctx.cwd));
     }
   });
   pi.registerCommand("project-memory-status", { description: "Show project memory health", handler: async (_args, ctx) => {

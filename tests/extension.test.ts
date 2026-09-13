@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { MemoryStore } from '../src/memory/core';
 import installSource from '../src/extensions/project-memory';
@@ -9,6 +9,25 @@ describe('source adapter', () => adapterContract(installSource));
 describe('built bundle', () => adapterContract(installBundle));
 
 function adapterContract(install: typeof installSource) {
+
+test('partial and aliased ADR reads get provenance without modifying the excerpt',async()=>{
+  const f=fixture(); try {
+    mkdirSync(join(f.dir,'.memory/adr'),{recursive:true});
+    writeFileSync(join(f.dir,'.memory/adr/0001.md'),'## Basis\n> quote\n## Consequences\nUnknown');
+    symlinkSync(join(f.dir,'.memory/adr'),join(f.dir,'adr-alias'),'junction');
+    await f.handlers.before_agent_start({prompt:'Read a fragment'},f.ctx);
+    const content=[{type:'text',text:'[.memory/adr/0001.md#0750]\n4:Unknown'}];
+    for(const path of ['.memory/adr/0001.md:4-4',join(f.dir,'.memory/adr/0001.md')+':4','adr-alias/0001.md:4-4']) {
+      const result=await f.handlers.tool_result({toolName:'read',input:{path},content,isError:false},f.ctx);
+      expect(result?.content[0].text).toContain('NO basis section is visible in this excerpt');
+      expect(result.content.slice(1)).toEqual(content);
+    }
+    mkdirSync(join(f.dir,'docs'));
+    writeFileSync(join(f.dir,'docs/outside.md'),'## Basis\n> quote');
+    symlinkSync(join(f.dir,'docs'),join(f.dir,'.memory/adr/outside-alias'),'junction');
+    expect(await f.handlers.tool_result({toolName:'read',input:{path:'.memory/adr/outside-alias/outside.md'},content,isError:false},f.ctx)).toBeUndefined();
+  } finally {f.clean();}
+});
 
 test('ADR read results retain original content and add provenance warning only for documents',async()=>{
   const f=fixture(); try {

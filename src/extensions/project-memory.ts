@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve, relative } from 'node:path';
 import { MemoryStore, architectureCheck } from '../memory/core';
 import { readSettings } from '../memory/settings';
-import { provenanceNote, readBasis } from '../memory/provenance';
+import { provenanceNote, readBasis, isAdrRead } from '../memory/provenance';
 import { registerSettingsCommand } from '../ui/huimem-command';
 
 const textOf = (content: any): string => typeof content === 'string' ? content :
@@ -167,10 +167,8 @@ export default function install(pi: ExtensionAPI) {
     if (!reads.has(event.toolName) && !memoryWrapper(event)) generation++;
     const path=event.input?.path ?? event.input?.file_path;
     if(event.toolName==='read' && !event.isError && typeof path==='string' && Array.isArray(event.content)) {
-      const rel=relative(ctx.cwd,resolve(ctx.cwd,path)).replaceAll('\\','/').toLowerCase();
-      if(rel.startsWith('.memory/adr/') && rel.endsWith('.md')) {
-        // Пометка адресует блок основания, а не файл: у документа без такого блока
-        // цитируемой части нет, и статус «принято» никого ни к чему не обязывает.
+      if(isAdrRead(ctx.cwd,path)) {
+        // Inspect only the returned excerpt. Never expand a partial read to the full file.
         const text=event.content.filter((p:any)=>p?.type==='text').map((p:any)=>String(p.text)).join('\n');
         return { content:[{type:'text',text:provenanceNote(readBasis(text))},...event.content] };
       }

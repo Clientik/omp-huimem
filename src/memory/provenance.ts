@@ -1,3 +1,26 @@
+import { realpathSync } from 'node:fs';
+import { resolve, relative, isAbsolute } from 'node:path';
+
+// Match the file identity, not just the spelling of the read argument. OMP may
+// append :line or :start-end; an existing literal filename takes precedence.
+export function isAdrRead(root: string, input: string): boolean {
+  try {
+    const base=realpathSync(root);
+    let candidate=resolve(base,input);
+    try { candidate=realpathSync(candidate); }
+    catch(e:any) {
+      if(!['ENOENT','ENOTDIR','EINVAL'].includes(e.code)) return false;
+      candidate=resolve(base,input.replace(/:\d+(?:-\d+)?$/, ''));
+      try { candidate=realpathSync(candidate); }
+      catch(inner:any) { if(inner.code!=='ENOENT') return false; }
+    }
+    const rel=relative(base,candidate).replaceAll('\\','/');
+    if(isAbsolute(rel) || rel==='..' || rel.startsWith('../')) return false;
+    const comparable=process.platform==='win32' ? rel.toLowerCase() : rel;
+    return comparable.startsWith('.memory/adr/') && comparable.endsWith('.md');
+  } catch { return false; }
+}
+
 // АТРИБУЦИЯ УРОВНЯ УТВЕРЖДЕНИЯ, А НЕ ДОКУМЕНТА.
 // Прежняя пометка накрывала файл целиком: «это текст документа, не сообщение
 // пользователя». Замерено 2026-09-10 тремя живыми прогонами: на старом ADR, где
