@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { LIMITS, REQUIRED_MAX, readSettings, writeSettings, SETTINGS_PATH } from '../memory/settings';
 import { apply, audit } from '../memory/adr-audit';
+import { initProject } from '../memory/starter';
 
 // Форма диалогов ctx.ui (select/confirm/input) из документации и бинарника OMP не
 // извлекается: доки перечисляют имена методов без сигнатур, бинарник минифицирован.
@@ -22,6 +23,7 @@ export type CommandDeps = {
 
 const HELP = [
   'Usage:',
+  '  /huimem init         enable memory in this project: create missing starter files, never overwrite',
   '  /huimem pause        block commits in this project for this OMP process',
   '  /huimem resume       allow commits again',
   '  /huimem              memory state for this project',
@@ -58,11 +60,31 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
 
       if (verb === 'help' || verb === '--help') return say(HELP);
 
+      // Память включается явной командой в выбранном проекте, а не сама в каждом каталоге:
+      // иначе база со стенограммой появлялась бы в чужих репозиториях (замерено 2026-09-08).
+      if (verb === 'init') {
+        const wasEnabled = deps.deployed(ctx);
+        let r;
+        try { r = initProject(ctx.cwd); } catch (e) { return say('Init failed: ' + String(e)); }
+        const merge = r.differs.filter(p => ['AGENTS.md', '.omp/config.yml', '.omp/RULES.md'].includes(p));
+        return say([
+          wasEnabled ? `Project memory was already enabled in ${r.root}; only missing files were added.`
+            : `Project memory ENABLED in ${r.root}. It works from your next message; no restart needed.`,
+          r.created.length ? 'Created:\n  ' + r.created.join('\n  ') : 'Created: nothing, every starter file already exists.',
+          r.differs.length ? 'Existing files kept as they are (not overwritten):\n  ' + r.differs.join('\n  ') : '',
+          merge.length ? 'These may lack the memory rules shipped in the plugin starter/: ' + merge.join(', ') + '. Merge them by hand if you want those rules.' : '',
+          r.gitignoreAdded.length ? '.gitignore: added ' + r.gitignoreAdded.join(', ') + ' so the local transcript database stays out of git.' : '.gitignore already excludes the memory database.',
+          '',
+          'Next: ask the agent to use the initmem skill to map the real code.',
+          'Architecture rules are not configured yet (/huimem arch); records you must never lose: /huimem require <id>.',
+        ].filter(Boolean).join('\n'));
+      }
+
       if (!deps.deployed(ctx)) {
         return say(
           'Project memory is OFF here.\n' + deps.notEnabled +
           '\nRequires OMP and a configured main model. mnemopi is NOT required; huimem uses its own local SQLite.' +
-          '\n\nOnce deployed it turns on with your next message; no restart needed.',
+          '\n\nStart omp in the project root and run /huimem init. Memory turns on with your next message; no restart needed.',
         );
       }
 

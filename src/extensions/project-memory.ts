@@ -24,7 +24,7 @@ const reads = new Set(['read','grep','find','glob','ls','project_memory']);
 const ENABLE_MARKER = '.memory/MEMORY.md';
 const deployed = (ctx: any) => existsSync(resolve(ctx.cwd, ENABLE_MARKER));
 const NOT_ENABLED = 'PROJECT_MEMORY_NOT_ENABLED: no ' + ENABLE_MARKER + ' in this project. ' +
-  'Project memory is off here and no database is created. Copy the plugin starter/ into the project root to enable it.';
+  'Project memory is off here and no database is created. Ask the user to run /huimem init in the project root to enable it.';
 const memoryWrapper = (event: any) => event.toolName === 'write' &&
   (event.input?.path === 'xd://project_memory' || event.details?.xdev?.tool === 'project_memory');
 

@@ -446,6 +446,31 @@ test('/huimem shows state, and refuses a project that is not deployed', async ()
     expect(String(f.notices.at(-1)?.content ?? '')).toContain('PROJECT_MEMORY_NOT_ENABLED');
   } finally { f.clean(); }
 });
+test('/huimem init enables memory in a bare project without copying the starter', async () => {
+  const last = (f: any) => String(f.notices.at(-1)?.content ?? '');
+  const f = fixture(); try {
+    rmSync(join(f.dir, '.memory'), { recursive: true, force: true });
+    await f.handlers.before_agent_start({ prompt: 'first' }, f.ctx);
+    expect(await f.handlers.context({ messages: [] }, f.ctx)).toBeUndefined();
+    const off = await f.tools.project_memory.execute('x', { op: 'status' }, null, null, f.ctx);
+    expect(String(off.content[0].text)).toContain('/huimem init');
+    await f.commands.huimem.handler('', f.ctx);
+    expect(last(f)).toContain('/huimem init');
+
+    await f.commands.huimem.handler('init', f.ctx);
+    expect(last(f)).toContain('Project memory ENABLED');
+    for (const path of ['.memory/MEMORY.md', '.memory/todo.json', '.omp/config.yml', '.omp/RULES.md', 'AGENTS.md'])
+      expect(existsSync(join(f.dir, path))).toBe(true);
+    expect(readFileSync(join(f.dir, '.gitignore'), 'utf8')).toContain('.memory/runtime/');
+    expect(existsSync(join(f.dir, '.memory/runtime'))).toBe(false);
+
+    await f.handlers.before_agent_start({ prompt: 'second' }, f.ctx);
+    expect(JSON.stringify(await f.handlers.context({ messages: [] }, f.ctx))).toContain('sourceEpisode');
+    await f.commands.huimem.handler('init', f.ctx);
+    expect(last(f)).toContain('already enabled');
+    expect(last(f)).toContain('Created: nothing');
+  } finally { f.clean(); }
+});
 test('/huimem clamps an out-of-range limit and says so instead of failing quietly', async () => {
   const read = (dir: string) => JSON.parse(readFileSync(join(dir, '.memory/settings.json'), 'utf8'));
   const f = fixture(); try {

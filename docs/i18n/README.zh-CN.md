@@ -25,7 +25,7 @@
 
 需要安装 [OMP](https://github.com/can1357/oh-my-pi) 并配置主模型，也支持本地模型。
 
-**不需要 mnemopi。** huimem 通过 OMP 运行时使用自己的本地 SQLite。保留 starter 中的 `memory.backend: off`；无需额外的记忆服务或模型。
+**不需要 mnemopi。** huimem 通过 OMP 运行时使用自己的本地 SQLite。`/huimem init` 会为项目设置 `memory.backend: off`；无需额外的记忆服务或模型。
 
 **可读记录库：** commit 会自动更新 `.memory/RECORDS.md`，作为记录库的可读快照。`/huimem` 显示同步状态，`/huimem sync` 无需调用模型即可重试写入。`/huimem context` 显示最近准备的记忆块大小、哈希及完整记录的 ID 和版本，但不能证明模型使用了这些事实。诊断日志最多保留 100 条，不复制事实正文。v0.3.x 及更早版本的数据库将迁移到 schema 2；升级前请停止 OMP 并备份 `.memory`，schema 1 的旧插件无法打开迁移后的数据库。
 
@@ -35,15 +35,20 @@
 omp plugin install github:Clientik/omp-huimem#v0.5.1
 ```
 
-插件按用户级安装，因此会在你打开的所有项目中加载。**但记忆按项目显式启用：** 若没有 `.memory/MEMORY.md`，扩展保持静默——不建数据库、不注入上下文、不发出提示，`project_memory` 返回 `PROJECT_MEMORY_NOT_ENABLED`。这样其他仓库不会被改动，也不会出现其 `.gitignore` 未覆盖的数据库文件。
+> [!IMPORTANT]
+> **开始使用前，请在项目中执行一次。** 在项目根目录打开 `omp` 并输入：
+>
+> ```text
+> /huimem init
+> ```
+>
+> 在此之前记忆处于关闭状态。该命令会根据内置 starter 创建 `.memory/`、`.omp/config.yml`、
+> `.omp/RULES.md`、`AGENTS.md`，并补充 `.gitignore` 条目。已有文件绝不会被覆盖，保留的文件会逐一列出。
+> 记忆从下一条消息开始生效：无需重启，也无需复制文件。
 
-将 `starter/` 的**内容**一次性复制到新项目根目录，包括隐藏文件。现有项目请合并配置，不要覆盖已有知识。记忆将在你的下一条消息生效，无需重启 OMP。进入项目根目录启动 `omp`，然后执行：
+插件按用户级安装，因此会在你打开的所有项目中加载，但在未执行 `/huimem init` 的项目中不做任何事——不建数据库、不注入上下文、不发出提示，`project_memory` 返回 `PROJECT_MEMORY_NOT_ENABLED`。这样其他仓库不会被改动，也不会出现其 `.gitignore` 未覆盖的会话记录数据库。启用标志是 `.memory/MEMORY.md`。
 
-```text
-/project-memory-status
-```
-
-让代理使用 `initmem` skill，根据真实代码填写项目地图。架构规则需要针对项目设置；初始模板没有预设规则。
+执行 `init` 后，让代理使用 `initmem` skill，根据真实代码填写项目地图。架构规则需要针对项目设置（`/huimem arch`）；默认没有预设规则。
 
 **安装状态：** 已在 Windows + OMP 18.1.5 上完整验证 GitHub 安装流程——插件安装、注册并在实际会话中运行。直接加载同样可用：
 

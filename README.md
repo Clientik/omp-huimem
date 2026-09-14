@@ -25,7 +25,7 @@ For developers working with an AI agent who want to stop explaining the same pro
 
 You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model. Local models are supported.
 
-**mnemopi is not required.** huimem uses its own local SQLite through OMP's runtime. Keep `memory.backend: off` from the starter; no separate memory service or model is needed.
+**mnemopi is not required.** huimem uses its own local SQLite through OMP's runtime. `/huimem init` sets `memory.backend: off` for the project; no separate memory service or model is needed.
 
 **Readable registry:** commits automatically publish `.memory/RECORDS.md`, a readable registry snapshot. `/huimem` shows its sync state; `/huimem sync` retries publication without another model call. `/huimem context` shows the last prepared memory block's size, hash and complete record IDs/versions; it does not prove the model used them. The diagnostic log retains at most 100 entries without copying fact text. Databases from v0.3.x or earlier migrate to schema 2; back up `.memory` with OMP stopped before upgrading. Schema 1 plugin versions cannot open the migrated database.
 
@@ -35,15 +35,21 @@ You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model
 omp plugin install github:Clientik/omp-huimem#v0.5.1
 ```
 
-Installation is user-scoped, so the extension loads in every project you open with OMP. **Memory itself is opt-in per project:** without a `.memory/MEMORY.md` the extension stays inert — no database, no injected context, no notices — and `project_memory` answers `PROJECT_MEMORY_NOT_ENABLED`. Other repositories stay untouched, with no database file their `.gitignore` does not cover.
+> [!IMPORTANT]
+> **To start, run this once in your project.** Open `omp` in the project root and type:
+>
+> ```text
+> /huimem init
+> ```
+>
+> Memory stays off until you do. The command creates `.memory/`, `.omp/config.yml`,
+> `.omp/RULES.md`, `AGENTS.md` and the `.gitignore` lines from the built-in starter. It never
+> overwrites a file you already have and lists the ones it kept. Memory works from your next
+> message; no restart and no copying needed.
 
-Copy the **contents of `starter/`** into a new project's root once, including hidden files. For an existing project, merge them with your current knowledge and configuration. Memory becomes active on your next message; restarting OMP is not required. Start `omp` in that root and run:
+Installation is user-scoped, so the extension loads in every project you open with OMP, but it does nothing where you have not run `/huimem init`: no database, no injected context, no notices, and `project_memory` answers `PROJECT_MEMORY_NOT_ENABLED`. Other repositories stay untouched, with no transcript database their `.gitignore` does not cover. The marker is `.memory/MEMORY.md`.
 
-```text
-/project-memory-status
-```
-
-Ask the agent to use the `initmem` skill to map the actual code. Define architecture rules for your project; the starter deliberately has none configured.
+After `init`, ask the agent to use the `initmem` skill to map the actual code. Define architecture rules for your project (`/huimem arch`); none are configured by default.
 
 **Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
