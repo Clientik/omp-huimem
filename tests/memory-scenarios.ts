@@ -17,7 +17,7 @@ export type Scenario = {
   forbiddenInAnswer: string[];
   modelPass: string;
   modelRun: boolean;
-  settings?: { injectionLimit?: number; recallBudget?: number };
+  settings?: { injectionLimit?: number; recallBudget?: number; required?: string[] };
   seed(dir: string): void;
   between?(dir: string): void;
 };
@@ -120,7 +120,8 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     // Длинное критическое правило против коротких второстепенных решений при малом бюджете поиска.
-    // Это измерение для пункта 3: плагин обязан сказать о пропуске, но пока не обязан спасти правило.
+    // Без явной отметки пользователя правило конкурирует на общих основаниях: плагин обязан сказать
+    // о пропуске, но не спасает его. Спасение — только для /huimem require (следующий сценарий).
     id: 'critical-rule-budget',
     question: 'Какие у нас правила про ключи и логи?',
     requiredIds: ['security-rule'],
@@ -139,6 +140,46 @@ export const SCENARIOS: Scenario[] = [
       decision(s, 'security-rule', long, 'утечка ключей через журналы', 'Ключи и секреты не пишутся в логи.');
       for (let i = 0; i < 10; i++)
         decision(s, `minor-${i}`, `Отступ ${i + 2} пробела в конфиге номер ${i}. Причина: единообразие.`, 'единообразие', `Отступ в конфиге ${i}.`);
+      s.close();
+    },
+  },
+  {
+    // То же правило, но пользователь отметил его обязательным (/huimem require security-rule).
+    id: 'critical-rule-required',
+    question: 'Поправь отступы в конфиге номер 3.',
+    requiredIds: ['security-rule'],
+    allowedBasis: ['ключи никогда не пишем в логи'],
+    forbiddenInBlock: [],
+    forbiddenInAnswer: [],
+    modelPass: '',
+    modelRun: false,
+    settings: { recallBudget: 1200, required: ['security-rule'] },
+    seed(dir) {
+      SCENARIOS.find(s => s.id === 'critical-rule-budget')!.seed(dir);
+      writeFileSync(join(dir, '.memory/settings.json'), JSON.stringify(this.settings));
+    },
+  },
+  {
+    // Текущая задача против накопленных принятых решений, не связанных с вопросом.
+    // Решения с ID раньше по алфавиту: при равном нулевом совпадении порядок решает ID.
+    id: 'task-displacement',
+    question: 'Продолжи работу: на чём мы остановились?',
+    requiredIds: ['task-invoices'],
+    allowedBasis: ['выгрузить НДС отдельной колонкой'],
+    forbiddenInBlock: [],
+    forbiddenInAnswer: [],
+    modelPass: '',
+    modelRun: false,
+    seed(dir) {
+      project(dir);
+      const s = new MemoryStore(dir);
+      for (let i = 0; i < 25; i++)
+        decision(s, `arch-${String(i).padStart(2, '0')}`, `Сервис ${i} хранит журнал в каталоге logs/${i}. Причина: раздельная ротация.`,
+          'раздельная ротация', `Журнал сервиса ${i} — logs/${i}.`);
+      const quote = 'Задача: экспорт счетов в CSV, нужно выгрузить НДС отдельной колонкой.';
+      const episode = s.capture('seed', 'user', quote);
+      s.commit('seed:task', [{ id: 'task-invoices', kind: 'task', status: 'doing', expectedVersion: 0,
+        text: 'Экспорт счетов в CSV: НДС отдельной колонкой.', source: { episode, quote } } as any], 'Следующий шаг: колонка НДС в экспорте счетов.');
       s.close();
     },
   },

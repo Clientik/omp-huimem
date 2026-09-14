@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { LIMITS, readSettings, writeSettings, SETTINGS_PATH } from '../memory/settings';
+import { LIMITS, REQUIRED_MAX, readSettings, writeSettings, SETTINGS_PATH } from '../memory/settings';
 import { apply, audit } from '../memory/adr-audit';
 
 // Форма диалогов ctx.ui (select/confirm/input) из документации и бинарника OMP не
@@ -29,6 +29,8 @@ const HELP = [
   '  /huimem limit <N>    injected context limit in characters (' + LIMITS.injectionLimit.min + '–' + LIMITS.injectionLimit.max + ')',
   '  /huimem arch         architecture rules and the check result',
   '  /huimem omp          OMP settings that affect memory',
+  '  /huimem require <id>    deliver this record every turn, even when unrelated to the question (max ' + REQUIRED_MAX + ')',
+  '  /huimem unrequire <id>  stop delivering it unconditionally',
   '  /huimem reset        restore the default limits',
   '  /huimem sync         retry publishing .memory/RECORDS.md from saved records',
   '  /huimem context      inspect the latest memory block prepared for OMP',
@@ -179,6 +181,25 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
         } catch (e) { return say('ADR audit failed: ' + String(e)); }
       }
 
+      // Обязательные записи задаёт только пользователь: модель не может объявить удобное ей
+      // правило необязательным, а файл настроек закрыт от её файловых инструментов.
+      if (verb === 'require' || verb === 'unrequire') {
+        if (!value) return say(`Required records: ${cfg.required.length ? cfg.required.join(', ') : 'none'}.\nUsage: /huimem ${verb} <id>`);
+        if (verb === 'unrequire') {
+          if (!cfg.required.includes(value)) return say(`${value} is not required. Required records: ${cfg.required.join(', ') || 'none'}.`);
+          const saved = writeSettings(ctx.cwd, { required: cfg.required.filter(id => id !== value) });
+          return say(`${value} is no longer required; it is still recalled when relevant. Required: ${saved.required.join(', ') || 'none'}.`);
+        }
+        if (cfg.required.includes(value)) return say(`${value} is already required.`);
+        if (cfg.required.length >= REQUIRED_MAX) return say(`At most ${REQUIRED_MAX} required records. Remove one with /huimem unrequire <id> first.`);
+        let record: any;
+        try { record = deps.store(ctx).current(value); } catch (e) { return say('Memory unavailable: ' + String(e)); }
+        if (!record) return say(`No record with id ${value}. Use the exact id shown in .memory/RECORDS.md.`);
+        if (record.status === 'retired') return say(`${value} is retired; a retired record cannot be required.`);
+        const saved = writeSettings(ctx.cwd, { required: [...cfg.required, value] });
+        return say(`Required: ${saved.required.join(', ')}. ${value} v${record.version} is delivered every turn from the next one; if the budget cannot hold it, the memory block names it. File: ${SETTINGS_PATH}`);
+      }
+
       if (verb) return say(`Unknown subcommand: ${verb}\n\n` + HELP);
 
       // Без аргументов — состояние.
@@ -203,6 +224,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
           `Architecture:       ${a.configured ? (a.ok ? 'configured, no violation' : 'VIOLATIONS: ' + a.failures.join('; ')) : 'not configured'}`,
           `Recall budget:      ${cfg.recallBudget} characters`,
           `Injection limit:    ${cfg.injectionLimit} characters`,
+          `Required records:   ${cfg.required.length ? cfg.required.join(', ') : 'none'}`,
           `Settings file:      ${settingsFileExists ? SETTINGS_PATH : 'none, defaults apply'}`,
           err ? `Health:             ${err}` : 'Health:             no errors',
           '',

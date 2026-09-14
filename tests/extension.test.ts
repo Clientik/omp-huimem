@@ -2,6 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { MemoryStore } from '../src/memory/core';
+import { LIMITS } from '../src/memory/settings';
 import installSource from '../src/extensions/project-memory';
 import installBundle from '../dist/index.js';
 
@@ -157,10 +158,13 @@ test('the final memory block stays within the limit and never cuts a record in h
   } finally { f.clean(); }
 });
 
-test('at the minimum allowed limit nothing is dropped without being named',async()=>{
+test('at the minimum allowed limit the required rules fit and nothing is dropped without being named',async()=>{
   const f=fixture(); try {
-    const content=await packedContext(f,2000);
-    expect(content.length).toBeLessThanOrEqual(2000);
+    const min=LIMITS.injectionLimit.min;
+    const content=await packedContext(f,min);
+    expect(content.length).toBeLessThanOrEqual(min);
+    expect(content).not.toContain('MEMORY_BUDGET_EXHAUSTED');
+    for(const rule of ['SOURCE ORDER:','CLAIM SCOPE:','project_memory commit is AVAILABLE']) expect(content).toContain(rule);
     for(const l of recordLines(content)) expect(()=>JSON.parse(l)).not.toThrow();
     const notice=(content.match(/\[MEMORY_BUDGET[^\]]*\]/)?.[0] ?? '').toLowerCase();
     expect(notice).not.toBe('');
@@ -457,17 +461,67 @@ test('/huimem clamps an out-of-range limit and says so instead of failing quietl
     expect(String(f.notices.at(-1)?.content ?? '')).toContain('Unknown subcommand');
   } finally { f.clean(); }
 });
+// Обязательные записи задаёт только пользователь; модель не может снять их правкой файла.
+test('/huimem require marks only existing active records, and the model cannot edit the list', async () => {
+  const read = (dir: string) => JSON.parse(readFileSync(join(dir, '.memory/settings.json'), 'utf8'));
+  const last = (f: any) => String(f.notices.at(-1)?.content ?? '');
+  const f = fixture(); try {
+    const s = new MemoryStore(f.dir);
+    const quote = 'Ключи никогда не пишем в логи. Причина: утечки.';
+    const episode = s.capture('seed', 'user', quote);
+    s.commit('seed', [{ id: 'security-rule', kind: 'decision', status: 'accepted', expectedVersion: 0, text: quote,
+      rationale: 'утечки', source: { episode, quote } } as any], 'seed');
+    const e2 = s.capture('seed', 'user', 'Старое. Причина: было.');
+    s.commit('seed2', [{ id: 'old', kind: 'decision', status: 'retired', expectedVersion: 0, text: 'old',
+      rationale: 'было', source: { episode: e2, quote: 'Старое. Причина: было.' } } as any], 'seed');
+    for (let i = 0; i < 12; i++) s.commit('seed-minor-' + i, [{ id: `minor-${String(i).padStart(2, '0')}`, kind: 'fact', status: 'active', expectedVersion: 0,
+      text: `Отступ ${i} в конфиге.`, source: { episode, quote } } as any], 'seed');
+    s.close();
+    const cmd = f.commands.huimem;
+    await cmd.handler('require nope', f.ctx);
+    expect(last(f)).toContain('No record with id nope');
+    expect(existsSync(join(f.dir, '.memory/settings.json'))).toBe(false);
+    await cmd.handler('require old', f.ctx);
+    expect(last(f)).toContain('retired');
+    await cmd.handler('require security-rule', f.ctx);
+    expect(read(f.dir).required).toEqual(['security-rule']);
+    await cmd.handler('reset', f.ctx);
+    expect(read(f.dir).required).toEqual(['security-rule']);
+    await cmd.handler('', f.ctx);
+    expect(last(f)).toContain('Required records:   security-rule');
+
+    await f.handlers.before_agent_start({ prompt: 'Поправь отступы в конфиге' }, f.ctx);
+    for (const path of ['.memory/settings.json', '.MEMORY/Settings.json'])
+      expect((await f.handlers.tool_call({ toolName: 'write', input: { path } }, f.ctx))?.block).toBe(true);
+    const delivered = async () => {
+      const out: any = await f.handlers.context({ messages: [] }, f.ctx);
+      const block = out.messages.find((m: any) => m.customType === 'project-memory-context').content as string;
+      return { block, ids: block.split('\n').filter(l => l.startsWith('{')).map(l => JSON.parse(l).id) };
+    };
+    const normal = await delivered();
+    expect(normal.ids[0]).toBe('security-rule');
+    expect(normal.ids).toContain('minor-00');
+    // Бюджет меньше самой короткой формы записи: правило не выдаётся, но названо.
+    writeFileSync(join(f.dir, '.memory/settings.json'), JSON.stringify({ recallBudget: 500, required: ['security-rule'] }));
+    const tiny = await delivered();
+    expect(tiny.ids).not.toContain('security-rule');
+    expect(tiny.block).toContain('REQUIRED records not shown in full: security-rule');
+
+    await cmd.handler('unrequire security-rule', f.ctx);
+    expect(read(f.dir).required).toEqual([]);
+  } finally { f.clean(); }
+});
 test('configured injection limit actually bounds the injected block', async () => {
   const f = fixture(); try {
     writeFileSync(join(f.dir, '.memory/MEMORY.md'), '# Память проекта' + ' факт проекта.'.repeat(600));
     await f.handlers.before_agent_start({ prompt: 'факт' }, f.ctx);
     const wide: any = await f.handlers.context({ messages: [] }, f.ctx);
     const wideLen = wide.messages.find((m: any) => m.customType === 'project-memory-context').content.length;
-    writeFileSync(join(f.dir, '.memory/settings.json'), JSON.stringify({ injectionLimit: 2000 }));
+    writeFileSync(join(f.dir, '.memory/settings.json'), JSON.stringify({ injectionLimit: LIMITS.injectionLimit.min }));
     await f.handlers.before_agent_start({ prompt: 'факт' }, f.ctx);
     const tight: any = await f.handlers.context({ messages: [] }, f.ctx);
     const tightLen = tight.messages.find((m: any) => m.customType === 'project-memory-context').content.length;
-    expect(tightLen).toBeLessThanOrEqual(2000);
+    expect(tightLen).toBeLessThanOrEqual(LIMITS.injectionLimit.min);
     expect(wideLen).toBeGreaterThan(tightLen);
     const s=new MemoryStore(f.dir);
     try {

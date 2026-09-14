@@ -63,6 +63,25 @@ function contract(install: typeof installSource) {
     } finally { rmSync(d.dir, { recursive: true, force: true }); }
   });
 
+  test('critical-rule-required: a user-required rule arrives first for an unrelated question, as an exact named excerpt', async () => {
+    const d = await newSession(install, SCENARIOS.find(s => s.id === 'critical-rule-required')!);
+    try {
+      const rule = d.records[0];
+      expect(rule.id).toBe('security-rule');
+      expect(rule.source.quote).toContain('ключи никогда не пишем в логи');
+      expect(rule.quoteClipped).toBeDefined();
+      expect(d.block).toContain('REQUIRED records not shown in full: security-rule');
+    } finally { rmSync(d.dir, { recursive: true, force: true }); }
+  });
+
+  test('task-displacement: current work is delivered before unrelated accepted decisions', async () => {
+    const d = await newSession(install, SCENARIOS.find(s => s.id === 'task-displacement')!);
+    try {
+      expect(d.records[0].id).toBe('task-invoices');
+      expect(d.block).toContain('Следующий шаг: колонка НДС в экспорте счетов.');
+    } finally { rmSync(d.dir, { recursive: true, force: true }); }
+  });
+
   test('critical-rule-budget: a skipped critical rule is never skipped silently', async () => {
     const d = await newSession(install, SCENARIOS.find(s => s.id === 'critical-rule-budget')!);
     try {

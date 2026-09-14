@@ -89,3 +89,81 @@ test('direct ID diagnostics report missing records and bound receipt retention',
   s.recordIdRetrieval('last','a',s.current('a'));
   expect(s.lastRetrieval().candidates[0]).toMatchObject({id:'a',selectionBasis:['explicit-id'],reason:'selected'});
 }));
+
+// Разделение обязательных правил и памяти по задаче (пункт 3, 14 сентября).
+function decide(s:MemoryStore,id:string,quote:string,rationale:string,status='accepted',version=0) {
+  const episode=s.capture('test','user',quote);
+  s.commit('test',[{id,kind:'decision',status,text:quote,rationale,expectedVersion:version,source:{episode,quote}}],'saved');
+}
+const rows=(text:string)=>text.split('\n').filter(l=>l.startsWith('{')).map(l=>JSON.parse(l));
+
+test('short words inside other words no longer rank unrelated decisions above current work',()=>fixture(s=>{
+  for(let i=0;i<25;i++) decide(s,`arch-${String(i).padStart(2,'0')}`,`Журнал сервиса ${i} — logs/${i}. Причина: ротация.`,'ротация');
+  const quote='Задача: экспорт счетов в CSV.',episode=s.capture('test','user',quote);
+  s.commit('test',[{id:'task-invoices',kind:'task',status:'doing',text:quote,expectedVersion:0,source:{episode,quote}}],'task');
+  const result=s.recallDetailed('на чём мы остановились',1200);
+  expect(rows(result.text)[0].id).toBe('task-invoices');
+  expect(result.candidates.find(c=>c.id==='arch-00')!.score).toBe(0);
+}));
+
+test('matching compares word starts and still finds inflected forms and id parts',()=>fixture(s=>{
+  save(s,'retry-limit','Ключи не пишутся в логи.');
+  save(s,'other','Отступы в конфиге.');
+  const result=s.recallDetailed('ключей логов limit');
+  expect(result.candidates[0]).toMatchObject({id:'retry-limit',score:3});
+  expect(result.candidates.find(c=>c.id==='other')!.reason).toBe('no-match');
+}));
+
+test('a STALE record yields to a fresh one at equal score but stays visible',()=>fixture((s,root)=>{
+  writeFileSync(join(root,'a.txt'),'timeout 5');
+  const source=s.fileSource('a.txt','timeout 5');
+  s.commit('test',[{id:'a-timeout',kind:'fact',status:'active',text:'timeout stale',expectedVersion:0,source}],'file');
+  save(s,'b-timeout','timeout fresh');
+  writeFileSync(join(root,'a.txt'),'timeout 9');
+  const full=s.recallDetailed('timeout');
+  expect(rows(full.text).map(r=>[r.id,r.freshness.startsWith('STALE')])).toEqual([['b-timeout',false],['a-timeout',true]]);
+  const one=s.recallDetailed('timeout',full.text.indexOf('\n')+1+full.text.split('\n')[1].length+1+80);
+  expect(rows(one.text).map(r=>r.id)).toEqual(['b-timeout']);
+}));
+
+test('required records come first, keep an exact quote prefix when clipped, and are named when not shown in full',()=>fixture(s=>{
+  const long='Правило безопасности: ключи никогда не пишем в логи. '+'Секреты не попадают в журналы и трассировки. '.repeat(30)+'Причина: утечки.';
+  decide(s,'security-rule',long,'утечки');
+  for(let i=0;i<5;i++) decide(s,`minor-${i}`,`Отступ ${i} в конфиге. Причина: единообразие.`,'единообразие');
+  const plain=s.recallDetailed('отступ в конфиге',1200);
+  expect(rows(plain.text).map(r=>r.id)).not.toContain('security-rule');
+  const result=s.recallDetailed('отступ в конфиге',1200,['security-rule']);
+  expect(result.text.length).toBeLessThanOrEqual(1200);
+  const [rule]=rows(result.text);
+  expect(rule.id).toBe('security-rule');
+  expect(long.startsWith(rule.source.quote)).toBe(true);
+  expect(rule.source.quote).toContain('ключи никогда не пишем в логи');
+  expect(rule.quoteClipped).toContain(`of ${long.length} characters`);
+  expect(result.text).toContain('[REQUIRED records not shown in full: security-rule.');
+  expect(result.candidates[0]).toMatchObject({id:'security-rule',reason:'quote-clipped'});
+  expect(result.candidates[0].selectionBasis).toContain('required');
+  s.recordRetrieval('run','context',result,result.text);
+  expect(s.lastRetrieval().candidates[0].finalBlock).toBe('quote-clipped');
+  // Где половина бюджета достижима, обязательная запись не занимает больше неё,
+  // и записи по вопросу остаются в выдаче.
+  const mid=s.recallDetailed('отступ в конфиге',3000,['security-rule']);
+  const midRows=rows(mid.text);
+  expect(JSON.stringify(midRows[0]).length+1).toBeLessThanOrEqual(1500);
+  expect(midRows[0].quoteClipped).toBeDefined();
+  expect(midRows.filter(r=>r.id.startsWith('minor-')).length).toBeGreaterThan(0);
+  // С достаточным бюджетом обязательная запись выдаётся целиком и без пометки.
+  const wide=s.recallDetailed('отступ в конфиге',12000,['security-rule']);
+  expect(rows(wide.text)[0].source.quote).toBe(long);
+  expect(wide.text).not.toContain('REQUIRED records not shown');
+  expect(rows(wide.text).length).toBe(6);
+}));
+
+test('missing and retired required records are named, never silently dropped',()=>fixture(s=>{
+  decide(s,'old-rule','Старое правило. Причина: было нужно.','было нужно');
+  decide(s,'old-rule','Старое правило. Причина: было нужно.','было нужно','retired',1);
+  save(s,'fact','unrelated');
+  const result=s.recallDetailed('something',3200,['nope','old-rule']);
+  expect(result.text).toContain('nope (missing)');
+  expect(result.text).toContain('old-rule (retired)');
+  expect(rows(result.text).map(r=>r.id)).not.toContain('old-rule');
+}));

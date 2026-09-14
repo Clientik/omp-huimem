@@ -62,6 +62,13 @@ OMP 18.1.5 的原生 GitHub 安装作用于用户级，不能通过 `--scope pro
 `huimem` 无法在 `memory.backend` 中选择——该列表在 OMP 中是封闭枚举，也没有供扩展注册后端的
 API。它与其中任意一个并行工作。
 
+**必需记录：** `/huimem require <id>` 让该记录在每一轮都优先于问题匹配结果送达，即使问题与之无关；
+`/huimem unrequire <id>` 取消（最多 10 条）。该列表只能由用户设置：插件会阻止文件工具修改
+`.memory/settings.json`。必需记录最多占用召回预算的一半；更长的记录只显示其引文的原文开头，
+标记为 `quoteClipped`，并在 `REQUIRED records not shown in full` 提示中列出；不存在或已停用的 ID
+也会在其中列出。其余记录依次按问题匹配、当前 `doing`/`blocked` 任务、其他已接受的决策排序；
+同等排名时，STALE 记录让位于新鲜记录。
+
 ## 记忆分层
 
 | 位置 | 用途 |
