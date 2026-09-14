@@ -283,6 +283,11 @@ export default function install(pi: ExtensionAPI) {
                 if (source.hash && source.hash !== checked.hash) throw new Error('SOURCE: provided hash is stale; reread the file');
                 return {...change,source:checked};
               }
+              // ЗАМЕРЕНО 2026-09-14 (audit/model-fields-20260914, T-1): модель передала {quote} без origin,
+              // получила общее «SOURCE: exactly one source required» и повторила тот же вызов. Называем,
+              // чего не хватает; явные episode/path прежних вызовов по-прежнему принимаются.
+              if (!source.episode && !source.path)
+                throw new Error('SOURCE_ORIGIN_REQUIRED: add source.origin="user" with an exact quote from the current user message, or origin="file" with path and quote');
               return change; // Previously saved callers may still provide explicit verified IDs/hashes.
             });
             data = { ...s.commit(key(), changes, p.summary ?? '', { task: p.task, branch: gitBranch(ctx.cwd) }), architecture };

@@ -471,6 +471,19 @@ test('/huimem shows state, and refuses a project that is not deployed', async ()
     expect(String(f.notices.at(-1)?.content ?? '')).toContain('PROJECT_MEMORY_NOT_ENABLED');
   } finally { f.clean(); }
 });
+test('a source with a quote but no origin gets an error naming the missing origin, and nothing is saved', async () => {
+  const f = fixture(); try {
+    await f.handlers.before_agent_start({ prompt: 'Следующий шаг: колонка НДС.' }, f.ctx);
+    const change = { id: 'task-a', kind: 'task', status: 'doing', expectedVersion: 0, text: 'Колонка НДС' };
+    const missing = await f.tools.project_memory.execute('1', { op: 'commit', summary: 's', changes: [{ ...change, source: { quote: 'Следующий шаг: колонка НДС.' } }] }, null, null, f.ctx);
+    expect(missing.isError).toBe(true);
+    expect(String(missing.content[0].text)).toContain('SOURCE_ORIGIN_REQUIRED');
+    expect(String(missing.content[0].text)).toContain('origin="user"');
+    const s = new MemoryStore(f.dir); expect(s.current('task-a')).toBeNull(); s.close();
+    const fixed = await f.tools.project_memory.execute('2', { op: 'commit', summary: 's', changes: [{ ...change, source: { origin: 'user', quote: 'Следующий шаг: колонка НДС.' } }] }, null, null, f.ctx);
+    expect(fixed.isError).not.toBe(true);
+  } finally { f.clean(); }
+});
 test('dependsOn through the tool pins the basis, explains staleness on recall, and shows in RECORDS.md', async () => {
   const f = fixture(); try {
     const tool = f.tools.project_memory;

@@ -2198,6 +2198,8 @@ Do not claim memory or work was verified.`;
                   throw new Error("SOURCE: provided hash is stale; reread the file");
                 return { ...change, source: checked };
               }
+              if (!source.episode && !source.path)
+                throw new Error('SOURCE_ORIGIN_REQUIRED: add source.origin="user" with an exact quote from the current user message, or origin="file" with path and quote');
               return change;
             });
             data = { ...s.commit(key(), changes, p.summary ?? "", { task: p.task, branch: gitBranch(ctx.cwd) }), architecture };
