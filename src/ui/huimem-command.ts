@@ -171,7 +171,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
         const store = deps.store(ctx);
         const date = new Date().toISOString().slice(0, 10);
         const readEpisode = (id:string) => store.episode(id);
-        const stale = 'Decisions from conversation track the hash of canonical documents, so records linked to rewritten ADRs will show STALE afterwards. Their user quotes are unchanged.';
+        const stale = 'Decisions saved without dependsOn track the hash of all canonical documents and will show STALE afterwards; records with dependsOn only if they list a rewritten ADR. User quotes are unchanged.';
         const describe = (i: any) =>
           i.state === 'has-basis' ? `  OK       ${i.path} — already has a basis section`
           : i.state === 'conflict' ? `  CONFLICT ${i.path} — ${i.reason}; no migration written`

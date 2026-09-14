@@ -83,6 +83,13 @@ one is shown as the exact start of its quote, marked `quoteClipped`, and named i
 Other records are ranked by question match, then current `doing`/`blocked` tasks, then the
 remaining accepted decisions; at equal rank a STALE record yields to a fresh one.
 
+**Explainable staleness:** a record can list what it relies on, `dependsOn: [{id}]` or
+`[{path}]`; code pins the current version or file hash. Such a record turns STALE only when one
+of those changes, is retired or goes missing, and the reason is shown (`db changed: version
+1 -> 2`), also along a chain of records. Independent records are untouched. STALE clears only
+through a new version saved with the current basis. Records without `dependsOn`, including
+all older ones, keep the earlier rule: any canonical document change marks them STALE.
+
 **Parallel tasks:** a checkpoint summary belongs to a task when the commit changes exactly one
 task record or passes `task=<task id>`. The memory block then lists `Task checkpoints` under
 each task's ID, with the task that matches the request first, so the next step of one task

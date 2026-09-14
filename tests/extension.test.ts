@@ -447,6 +447,30 @@ test('/huimem shows state, and refuses a project that is not deployed', async ()
     expect(String(f.notices.at(-1)?.content ?? '')).toContain('PROJECT_MEMORY_NOT_ENABLED');
   } finally { f.clean(); }
 });
+test('dependsOn through the tool pins the basis, explains staleness on recall, and shows in RECORDS.md', async () => {
+  const f = fixture(); try {
+    const tool = f.tools.project_memory;
+    const say = async (prompt: string, change: any) => {
+      await f.handlers.before_agent_start({ prompt }, f.ctx);
+      return tool.execute('x', { op: 'commit', summary: 'saved', changes: [{ ...change, source: { origin: 'user', quote: prompt } }] }, null, null, f.ctx);
+    };
+    expect((await say('Берём PostgreSQL, потому что транзакции.', { id: 'db', kind: 'decision', status: 'accepted', expectedVersion: 0,
+      text: 'PostgreSQL', rationale: 'транзакции', dependsOn: [] })).isError).not.toBe(true);
+    expect((await say('ORM Drizzle, потому что PostgreSQL.', { id: 'orm', kind: 'decision', status: 'accepted', expectedVersion: 0,
+      text: 'Drizzle', rationale: 'PostgreSQL', dependsOn: [{ id: 'db' }] })).isError).not.toBe(true);
+    expect(readFileSync(join(f.dir, '.memory/RECORDS.md'), 'utf8')).toContain('Depends on: db v1');
+    writeFileSync(join(f.dir, '.memory/MEMORY.md'), '# Память проекта\nпостороннее изменение');
+    let orm = await tool.execute('r', { op: 'recall', id: 'orm' }, null, null, f.ctx);
+    expect(orm.details.freshness).not.toBe('STALE');
+    expect((await say('Переходим на SQLite, потому что один файл.', { id: 'db', kind: 'decision', status: 'accepted', expectedVersion: 1,
+      text: 'SQLite', rationale: 'один файл', dependsOn: [] })).isError).not.toBe(true);
+    orm = await tool.execute('r', { op: 'recall', id: 'orm' }, null, null, f.ctx);
+    expect(orm.details).toMatchObject({ freshness: 'STALE', staleReasons: ['db changed: version 1 -> 2'] });
+    const wrong = await say('Кеш Redis, потому что быстро.', { id: 'cache', kind: 'decision', status: 'accepted', expectedVersion: 0,
+      text: 'Redis', rationale: 'быстро', dependsOn: [{ id: 'db', version: 1 }] });
+    expect(String(wrong.content[0].text)).toContain('DEPENDENCY_VERSION');
+  } finally { f.clean(); }
+});
 test('commit task= ties a checkpoint to its task, recall by id returns it, and a wrong task is refused', async () => {
   const f = fixture(); try {
     mkdirSync(join(f.dir, '.git'));

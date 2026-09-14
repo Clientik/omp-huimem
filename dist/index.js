@@ -47,6 +47,7 @@ ${quote(c.rationale)}
 
 ` : "") + `Source: ${JSON.stringify(c.source.path ? { path: c.source.path, hash: c.source.hash } : { episode: c.source.episode })}
 ` + (c.links?.length ? `Related records: ${c.links.join(", ")}
+` : "") + (c.dependsOn?.length ? `Depends on: ${c.dependsOn.map((d) => d.path ?? `${d.id} v${d.version}`).join(", ")}
 ` : ""));
   }
   db.query("INSERT INTO projection(id,body,last_hash) VALUES(1,?,NULL) ON CONFLICT(id) DO UPDATE SET body=excluded.body").run(parts.join(`
@@ -321,22 +322,59 @@ class MemoryStore {
     return { path, hash: hash2(text), quote: quote2 };
   }
   current(id) {
-    const row = this.db.query("SELECT data,version FROM versions WHERE id=? ORDER BY version DESC LIMIT 1").get(id);
+    const row = this.latestRow(id);
     if (!row)
       return null;
-    const data = JSON.parse(row.data);
-    let freshness = "source unchanged or conversation";
-    if (this.authorityChanged(data, this.authority()))
-      freshness = "STALE";
-    if (data.source.path) {
+    const reasons = this.staleness(row.data, this.authority(), (dep) => this.latestRow(dep));
+    return {
+      ...row.data,
+      version: row.version,
+      freshness: reasons.length ? "STALE" : "source unchanged or conversation",
+      ...reasons.length ? { staleReasons: reasons } : {}
+    };
+  }
+  latestRow(id) {
+    const row = this.db.query("SELECT data,version FROM versions WHERE id=? ORDER BY version DESC LIMIT 1").get(id);
+    return row ? { version: row.version, data: JSON.parse(row.data) } : null;
+  }
+  staleness(c, authority, look, trail = new Set([c.id])) {
+    const reasons = [];
+    if (Array.isArray(c.dependsOn)) {
+      for (const d of c.dependsOn) {
+        if ("path" in d && typeof d.path === "string") {
+          try {
+            if (hash2(sourceText(this.root, d.path)) !== d.hash)
+              reasons.push(`file ${d.path} changed`);
+          } catch {
+            reasons.push(`file ${d.path} is missing or unreadable`);
+          }
+          continue;
+        }
+        const ref = d;
+        const dep = look(ref.id);
+        if (!dep)
+          reasons.push(`${ref.id} is missing`);
+        else if (dep.data.status === "retired")
+          reasons.push(`${ref.id} was retired in version ${dep.version}`);
+        else if (dep.version !== ref.version)
+          reasons.push(`${ref.id} changed: version ${ref.version} -> ${dep.version}`);
+        else if (!trail.has(ref.id)) {
+          const inner = this.staleness(dep.data, authority, look, new Set([...trail, ref.id]));
+          if (inner.length)
+            reasons.push(`${ref.id} is STALE (${inner[0]})`);
+        }
+      }
+    } else if (this.authorityChanged(c, authority))
+      reasons.push("canonical project documents changed since this record was saved");
+    if (c.source.path) {
       try {
-        if (hash2(sourceText(this.root, data.source.path)) !== data.source.hash)
-          freshness = "STALE";
+        if (hash2(sourceText(this.root, c.source.path)) !== c.source.hash)
+          reasons.push(`source ${c.source.path} changed`);
       } catch {
-        freshness = "STALE";
+        reasons.push(`source ${c.source.path} is missing or unreadable`);
       }
     }
-    return { ...data, version: row.version, freshness };
+    return reasons;
   }
   latestRecords() {
     return this.db.query(`SELECT v.id,v.version,v.data FROM versions v JOIN
@@ -453,6 +491,16 @@ class MemoryStore {
     }
     if (c.links && (!Array.isArray(c.links) || c.links.length > 20 || c.links.some((x) => typeof x !== "string")))
       throw new Error("INVALID_LINKS");
+    if (c.dependsOn !== undefined) {
+      if (!Array.isArray(c.dependsOn) || c.dependsOn.length > 20)
+        throw new Error("INVALID_DEPENDENCIES: dependsOn must be an array of at most 20 entries");
+      for (const d of c.dependsOn) {
+        if (typeof d?.id === "string" === (typeof d?.path === "string"))
+          throw new Error("INVALID_DEPENDENCIES: each entry needs exactly one of id or path");
+        if (d.id === c.id)
+          throw new Error("INVALID_DEPENDENCIES: a record cannot depend on itself");
+      }
+    }
   }
   commit(run, changes, summary, scope = {}) {
     if (!run)
@@ -479,12 +527,30 @@ class MemoryStore {
           if (!this.current(link) && !changes.some((x) => x.id === link))
             throw new Error("MISSING_LINK");
       }
+      const pin = (c) => c.dependsOn?.map((d) => {
+        if (typeof d.path === "string") {
+          const h = hash2(sourceText(this.root, d.path));
+          if (d.hash !== undefined && d.hash !== h)
+            throw new Error(`DEPENDENCY_HASH: ${d.path} changed; reread it`);
+          return { path: d.path, hash: h };
+        }
+        const own = changes.find((x) => x.id === d.id), stored = own ? null : this.latestRow(d.id);
+        if (!own && !stored)
+          throw new Error(`MISSING_DEPENDENCY: ${d.id}`);
+        const version = own ? own.expectedVersion + 1 : stored.version;
+        if ((own ?? stored.data).status === "retired")
+          throw new Error(`DEPENDENCY_RETIRED: ${d.id}`);
+        if (d.version !== undefined && d.version !== version)
+          throw new Error(`DEPENDENCY_VERSION: ${d.id} is at version ${version}; reread it`);
+        return { id: d.id, version };
+      });
       const time = new Date().toISOString();
       for (const c of changes)
         this.db.query("INSERT INTO versions VALUES (?,?,?,?)").run(c.id, c.expectedVersion + 1, JSON.stringify({
           ...c,
           authorityHash,
-          sourcePolicyHash: c.kind === "fact" && c.source.path ? policyHash : undefined
+          sourcePolicyHash: c.kind === "fact" && c.source.path ? policyHash : undefined,
+          dependsOn: pin(c)
         }), time);
       if (authorityHash !== this.authority().hash)
         throw new Error("AUTHORITY_CHANGED: reread canonical files and retry");
@@ -517,20 +583,18 @@ class MemoryStore {
       (SELECT id,MAX(version) version,COUNT(*) versionCount FROM versions GROUP BY id) n ON v.id=n.id AND v.version=n.version`).all();
     const terms = queryTerms(query);
     const requiredSet = new Set(required);
+    const latest = new Map(rows.map((row) => {
+      const data = JSON.parse(row.data);
+      return [data.id, { version: row.version, data }];
+    }));
     const records = rows.map((row) => {
-      const c = JSON.parse(row.data);
-      let stale = Boolean(this.authorityChanged(c, authority));
-      if (c.source.path) {
-        try {
-          stale = stale || hash2(sourceText(this.root, c.source.path)) !== c.source.hash;
-        } catch {
-          stale = true;
-        }
-      }
+      const c = latest.get(JSON.parse(row.data).id).data;
+      const staleBecause = this.staleness(c, authority, (id) => latest.get(id) ?? null);
+      const stale = staleBecause.length > 0;
       const score = termScore(terms, c.text + " " + c.id + " " + (c.rationale ?? ""));
       const pinned = c.status === "accepted" || ["doing", "blocked", "todo"].includes(c.status);
       const tier = requiredSet.has(c.id) ? 0 : score > 0 ? 1 : ["doing", "blocked"].includes(c.status) ? 2 : c.status === "todo" ? 3 : 4;
-      return { c, version: row.version, stale, score, pinned, tier, supersededVersions: row.versionCount - 1 };
+      return { c, version: row.version, stale, staleBecause, score, pinned, tier, supersededVersions: row.versionCount - 1 };
     });
     const eligible = records.filter((r) => r.c.status !== "retired" && (r.tier === 0 || r.score > 0 || r.pinned || terms.length === 0)).sort((a, b) => a.tier - b.tier || b.score - a.score || Number(a.stale) - Number(b.stale) || a.c.id.localeCompare(b.c.id));
     const reasons = new Map;
@@ -551,6 +615,7 @@ class MemoryStore {
       kind: r.c.kind,
       status: r.c.status,
       freshness: r.stale ? "STALE: recheck source before use" : "source unchanged or conversation",
+      ...r.stale && (r.c.dependsOn || r.staleBecause.some((x) => !x.startsWith("canonical"))) ? { staleBecause: r.staleBecause.slice(0, 3) } : {},
       ...r.tier === 0 ? { required: "set by the user; applies even when unrelated to the question" } : {},
       ...r.c.kind === "decision" ? {
         sourceRole: r.c.source.episode ? this.episode(r.c.source.episode)?.role ?? "unknown" : "file",
@@ -1451,7 +1516,7 @@ ${result.path}` + (result.error ? `
         const store = deps.store(ctx);
         const date = new Date().toISOString().slice(0, 10);
         const readEpisode = (id) => store.episode(id);
-        const stale = "Decisions from conversation track the hash of canonical documents, so records linked to rewritten ADRs will show STALE afterwards. Their user quotes are unchanged.";
+        const stale = "Decisions saved without dependsOn track the hash of all canonical documents and will show STALE afterwards; records with dependsOn only if they list a rewritten ADR. User quotes are unchanged.";
         const describe = (i) => i.state === "has-basis" ? `  OK       ${i.path} \u2014 already has a basis section` : i.state === "conflict" ? `  CONFLICT ${i.path} \u2014 ${i.reason}; no migration written` : i.state === "unverified" ? `  UNVERIFIED ${i.path} <- ${i.recordId} \u2014 ${i.reason}; no migration written` : i.state === "no-match" ? `  SKIP     ${i.path} \u2014 no accepted user decision names this document; nothing proposed` : i.state === "ambiguous" ? `  SKIP     ${i.path} \u2014 several decisions name it (${i.candidates.join(", ")}); nothing chosen` : `  MIGRATE  ${i.path}  <-  ${i.recordId} v${i.version}
            basis: ${i.quote.split(`
 `)[0].slice(0, 160)}
@@ -1982,7 +2047,7 @@ Do not claim memory or work was verified.`;
     name: "project_memory",
     label: "Project memory",
     loadMode: "essential",
-    description: 'Project memory: commit saves versions. Current user decisions: source={origin:"user",quote:"exact user words"}; code fills the episode ID. File observations: source={origin:"file",path:"relative path",quote:"exact file text"}; code fills the hash. Accepted decisions require user source and a rationale copied exactly from quote. Reuse id and expectedVersion for corrections. commit task=<task id> ties the summary (next step) to that task. recall/history/episodes/status read memory; recall id of a task also returns its last checkpoint. No background LLM.',
+    description: 'Project memory: commit saves versions. Current user decisions: source={origin:"user",quote:"exact user words"}; code fills the episode ID. File observations: source={origin:"file",path:"relative path",quote:"exact file text"}; code fills the hash. Accepted decisions require user source and a rationale copied exactly from quote. Reuse id and expectedVersion for corrections. commit task=<task id> ties the summary (next step) to that task. dependsOn=[{id} or {path}] lists the records or files a claim relies on; code pins their versions/hashes, and only a change of those marks the record STALE with a reason (without dependsOn any canonical document change does). STALE clears only through a new version saved with current dependencies. recall/history/episodes/status read memory; recall id of a task also returns its last checkpoint. No background LLM.',
     parameters: z.object({
       op: z.enum(["status", "recall", "episodes", "history", "evidence", "commit"]),
       query: z.string().optional(),
@@ -1999,6 +2064,7 @@ Do not claim memory or work was verified.`;
         expectedVersion: z.number().int().min(0),
         rationale: z.string().optional(),
         links: z.array(z.string()).optional(),
+        dependsOn: z.array(z.object({ id: z.string().optional(), version: z.number().int().optional(), path: z.string().optional(), hash: z.string().optional() })).optional(),
         source: z.object({ origin: z.enum(["user", "file", "episode"]).optional(), episode: z.string().optional(), path: z.string().optional(), hash: z.string().optional(), quote: z.string() })
       })).optional()
     }),

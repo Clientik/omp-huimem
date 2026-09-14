@@ -228,7 +228,7 @@ export default function install(pi: ExtensionAPI) {
   pi.registerTool({
     name: 'project_memory', label: 'Project memory',
     loadMode: 'essential',
-    description: 'Project memory: commit saves versions. Current user decisions: source={origin:"user",quote:"exact user words"}; code fills the episode ID. File observations: source={origin:"file",path:"relative path",quote:"exact file text"}; code fills the hash. Accepted decisions require user source and a rationale copied exactly from quote. Reuse id and expectedVersion for corrections. commit task=<task id> ties the summary (next step) to that task. recall/history/episodes/status read memory; recall id of a task also returns its last checkpoint. No background LLM.',
+    description: 'Project memory: commit saves versions. Current user decisions: source={origin:"user",quote:"exact user words"}; code fills the episode ID. File observations: source={origin:"file",path:"relative path",quote:"exact file text"}; code fills the hash. Accepted decisions require user source and a rationale copied exactly from quote. Reuse id and expectedVersion for corrections. commit task=<task id> ties the summary (next step) to that task. dependsOn=[{id} or {path}] lists the records or files a claim relies on; code pins their versions/hashes, and only a change of those marks the record STALE with a reason (without dependsOn any canonical document change does). STALE clears only through a new version saved with current dependencies. recall/history/episodes/status read memory; recall id of a task also returns its last checkpoint. No background LLM.',
     parameters: z.object({
       op: z.enum(['status','recall','episodes','history','evidence','commit']),
       query: z.string().optional(), id: z.string().optional(), path: z.string().optional(), quote: z.string().optional(),
@@ -236,6 +236,7 @@ export default function install(pi: ExtensionAPI) {
         id: z.string(), kind: z.enum(['fact','decision','procedure','navigation','task']),
         text: z.string(), status: z.string(), expectedVersion: z.number().int().min(0),
         rationale: z.string().optional(), links: z.array(z.string()).optional(),
+        dependsOn: z.array(z.object({ id: z.string().optional(), version: z.number().int().optional(), path: z.string().optional(), hash: z.string().optional() })).optional(),
         source: z.object({ origin: z.enum(['user','file','episode']).optional(), episode: z.string().optional(), path: z.string().optional(), hash: z.string().optional(), quote: z.string() }),
       })).optional(),
     }),

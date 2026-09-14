@@ -7,8 +7,11 @@ import { projectionStatus, stageProjection, syncProjection } from './projection'
 export type Source = { episode?: string; path?: string; hash?: string; quote: string };
 export type RetrievalCandidate = { id:string; version:number; stale:boolean; score:number; pinned:boolean; selectionBasis:string[]; reason:string; supersededVersions:number };
 export type RetrievalResult = { text:string; queryHash:string; budget:number|null; candidates:RetrievalCandidate[]; counts:Record<string,number>; totalCandidates:number; detailsOmitted:number };
+// Зависимость основания: от версии другой записи или от хеша файла. Версию и хеш закрепляет код
+// при сохранении; поле отдельно от links, которые лишь проверяют существование ID.
+export type Dependency = { id: string; version?: number } | { path: string; hash?: string };
 export type Change = { id: string; kind: string; text: string; status: string; expectedVersion: number; authorityHash?: string; sourcePolicyHash?: string;
-  source: Source; rationale?: string; links?: string[] };
+  source: Source; rationale?: string; links?: string[]; dependsOn?: Dependency[] };
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 // Слова запроса от трёх букв сравниваются с началом слов записи; у длинных отбрасывается до двух
 // букв окончания. Общие для поиска записей и выбора чекпоинтов задач.
@@ -145,14 +148,46 @@ export class MemoryStore {
     if (!quote || !text.includes(quote) || scrub(quote) !== quote) throw new Error('SOURCE: invalid quote');
     return { path, hash: hash(text), quote };
   }
-  current(id: string): (Change & { version: number; freshness: string }) | null {
-    const row = this.db.query('SELECT data,version FROM versions WHERE id=? ORDER BY version DESC LIMIT 1').get(id) as any;
+  current(id: string): (Change & { version: number; freshness: string; staleReasons?: string[] }) | null {
+    const row = this.latestRow(id);
     if (!row) return null;
-    const data = JSON.parse(row.data) as Change;
-    let freshness = 'source unchanged or conversation';
-    if (this.authorityChanged(data, this.authority())) freshness = 'STALE';
-    if (data.source.path) { try { if (hash(sourceText(this.root,data.source.path)) !== data.source.hash) freshness = 'STALE'; } catch { freshness = 'STALE'; } }
-    return { ...data, version: row.version, freshness };
+    const reasons = this.staleness(row.data, this.authority(), dep => this.latestRow(dep));
+    return { ...row.data, version: row.version, freshness: reasons.length ? 'STALE' : 'source unchanged or conversation',
+      ...(reasons.length ? { staleReasons: reasons } : {}) };
+  }
+  private latestRow(id: string): { version: number; data: Change } | null {
+    const row = this.db.query('SELECT data,version FROM versions WHERE id=? ORDER BY version DESC LIMIT 1').get(id) as any;
+    return row ? { version: row.version, data: JSON.parse(row.data) } : null;
+  }
+  // Причины устаревания. Запись с полем dependsOn (даже пустым) проверяется только по своим
+  // зависимостям и своему файлу-источнику; запись без поля — по прежнему консервативному правилу,
+  // где любое изменение канонических документов делает её STALE. Цикл обрывается по trail.
+  private staleness(c: Change, authority: { hash: string; policyHash: string },
+    look: (id: string) => { version: number; data: Change } | null, trail = new Set<string>([c.id])): string[] {
+    const reasons: string[] = [];
+    if (Array.isArray(c.dependsOn)) {
+      for (const d of c.dependsOn) {
+        if ('path' in d && typeof d.path === 'string') {
+          try { if (hash(sourceText(this.root, d.path)) !== d.hash) reasons.push(`file ${d.path} changed`); }
+          catch { reasons.push(`file ${d.path} is missing or unreadable`); }
+          continue;
+        }
+        const ref = d as { id: string; version: number };
+        const dep = look(ref.id);
+        if (!dep) reasons.push(`${ref.id} is missing`);
+        else if (dep.data.status === 'retired') reasons.push(`${ref.id} was retired in version ${dep.version}`);
+        else if (dep.version !== ref.version) reasons.push(`${ref.id} changed: version ${ref.version} -> ${dep.version}`);
+        else if (!trail.has(ref.id)) {
+          const inner = this.staleness(dep.data, authority, look, new Set([...trail, ref.id]));
+          if (inner.length) reasons.push(`${ref.id} is STALE (${inner[0]})`);
+        }
+      }
+    } else if (this.authorityChanged(c, authority)) reasons.push('canonical project documents changed since this record was saved');
+    if (c.source.path) {
+      try { if (hash(sourceText(this.root, c.source.path)) !== c.source.hash) reasons.push(`source ${c.source.path} changed`); }
+      catch { reasons.push(`source ${c.source.path} is missing or unreadable`); }
+    }
+    return reasons;
   }
   // Последние версии всех записей: нужен переносу ADR, чтобы сопоставить документ с решением.
   latestRecords() {
@@ -234,6 +269,13 @@ export class MemoryStore {
       if (c.kind === 'decision' && c.status === 'accepted') throw new Error('USER_SOURCE_REQUIRED');
     }
     if (c.links && (!Array.isArray(c.links) || c.links.length > 20 || c.links.some(x => typeof x !== 'string'))) throw new Error('INVALID_LINKS');
+    if (c.dependsOn !== undefined) {
+      if (!Array.isArray(c.dependsOn) || c.dependsOn.length > 20) throw new Error('INVALID_DEPENDENCIES: dependsOn must be an array of at most 20 entries');
+      for (const d of c.dependsOn as any[]) {
+        if ((typeof d?.id === 'string') === (typeof d?.path === 'string')) throw new Error('INVALID_DEPENDENCIES: each entry needs exactly one of id or path');
+        if (d.id === c.id) throw new Error('INVALID_DEPENDENCIES: a record cannot depend on itself');
+      }
+    }
   }
   // scope.task — ID задачи, к которой относится сводка; без него берётся единственная задача среди
   // изменений. scope.branch — ветка git на момент записи, только для диагностики: ветка не задача.
@@ -257,9 +299,24 @@ export class MemoryStore {
         if ((this.current(c.id)?.version ?? 0) !== c.expectedVersion) throw new Error('VERSION_CONFLICT: ' + c.id);
         for (const link of c.links ?? []) if (!this.current(link) && !changes.some(x => x.id === link)) throw new Error('MISSING_LINK');
       }
+      // Зависимости закрепляются на текущей версии записи или хеше файла. Переданные версия или хеш,
+      // не совпавшие с текущими, отклоняются: запись не должна опираться на прочитанное раньше.
+      const pin = (c: Change) => c.dependsOn?.map((d: any) => {
+        if (typeof d.path === 'string') {
+          const h = hash(sourceText(this.root, d.path));
+          if (d.hash !== undefined && d.hash !== h) throw new Error(`DEPENDENCY_HASH: ${d.path} changed; reread it`);
+          return { path: d.path, hash: h };
+        }
+        const own = changes.find(x => x.id === d.id), stored = own ? null : this.latestRow(d.id);
+        if (!own && !stored) throw new Error(`MISSING_DEPENDENCY: ${d.id}`);
+        const version = own ? own.expectedVersion + 1 : stored!.version;
+        if ((own ?? stored!.data).status === 'retired') throw new Error(`DEPENDENCY_RETIRED: ${d.id}`);
+        if (d.version !== undefined && d.version !== version) throw new Error(`DEPENDENCY_VERSION: ${d.id} is at version ${version}; reread it`);
+        return { id: d.id, version };
+      });
       const time = new Date().toISOString();
       for (const c of changes) this.db.query('INSERT INTO versions VALUES (?,?,?,?)').run(c.id, c.expectedVersion + 1, JSON.stringify({...c,authorityHash,
-        sourcePolicyHash:c.kind==='fact' && c.source.path ? policyHash : undefined}), time);
+        sourcePolicyHash:c.kind==='fact' && c.source.path ? policyHash : undefined, dependsOn: pin(c)}), time);
       if (authorityHash !== this.authority().hash) throw new Error('AUTHORITY_CHANGED: reread canonical files and retry');
       const changedTasks = changes.filter(c => c.kind === 'task').map(c => c.id);
       let task = scope.task;
@@ -288,15 +345,19 @@ export class MemoryStore {
     // сравнивается с началом слов записи; у длинных слов отбрасываются до двух букв окончания.
     const terms = queryTerms(query);
     const requiredSet = new Set(required);
+    const latest = new Map<string, { version: number; data: Change }>(rows.map(row => {
+      const data = JSON.parse(row.data) as Change;
+      return [data.id, { version: row.version, data }];
+    }));
     const records = rows.map(row => {
-      const c = JSON.parse(row.data) as Change;
-      let stale = Boolean(this.authorityChanged(c, authority));
-      if (c.source.path) { try { stale = stale || hash(sourceText(this.root, c.source.path)) !== c.source.hash; } catch { stale = true; } }
+      const c = latest.get((JSON.parse(row.data) as Change).id)!.data;
+      const staleBecause = this.staleness(c, authority, id => latest.get(id) ?? null);
+      const stale = staleBecause.length > 0;
       const score = termScore(terms, c.text + ' ' + c.id + ' ' + (c.rationale ?? ''));
       const pinned = c.status === 'accepted' || ['doing','blocked','todo'].includes(c.status);
       // Порядок: обязательные; совпавшие с запросом; текущая работа; остальные закреплённые.
       const tier = requiredSet.has(c.id) ? 0 : score > 0 ? 1 : ['doing','blocked'].includes(c.status) ? 2 : c.status === 'todo' ? 3 : 4;
-      return { c, version: row.version, stale, score, pinned, tier, supersededVersions:row.versionCount-1 };
+      return { c, version: row.version, stale, staleBecause, score, pinned, tier, supersededVersions:row.versionCount-1 };
     });
     const eligible=records.filter(r => r.c.status !== 'retired' && (r.tier === 0 || r.score > 0 || r.pinned || terms.length === 0))
       // STALE при прочих равных уступает свежей записи, но остаётся видимым.
@@ -314,6 +375,7 @@ export class MemoryStore {
     let omitted=false;
     const render = (r: typeof records[number], source: Source, extra: Record<string,string> = {}) => JSON.stringify({ id: r.c.id, version: r.version, kind: r.c.kind, status: r.c.status,
         freshness: r.stale ? 'STALE: recheck source before use' : 'source unchanged or conversation',
+        ...(r.stale && (r.c.dependsOn || r.staleBecause.some(x => !x.startsWith('canonical'))) ? { staleBecause: r.staleBecause.slice(0, 3) } : {}),
         ...(r.tier === 0 ? { required: 'set by the user; applies even when unrelated to the question' } : {}),
         ...(r.c.kind === 'decision' ? {
           sourceRole: r.c.source.episode ? this.episode(r.c.source.episode)?.role ?? 'unknown' : 'file',
