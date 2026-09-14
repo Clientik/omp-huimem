@@ -1,8 +1,8 @@
 // @bun
 // src/extensions/project-memory.ts
 import { randomUUID as randomUUID3 } from "crypto";
-import { existsSync as existsSync2, readFileSync as readFileSync5 } from "fs";
-import { resolve as resolve6, relative as relative4 } from "path";
+import { existsSync as existsSync2, readFileSync as readFileSync6 } from "fs";
+import { resolve as resolve7, relative as relative4 } from "path";
 
 // src/memory/core.ts
 import { Database } from "bun:sqlite";
@@ -318,6 +318,10 @@ class MemoryStore {
       }
     }
     return { ...data, version: row.version, freshness };
+  }
+  latestRecords() {
+    return this.db.query(`SELECT v.id,v.version,v.data FROM versions v JOIN
+      (SELECT id,MAX(version) version FROM versions GROUP BY id) n ON v.id=n.id AND v.version=n.version ORDER BY v.id`).all().map((r) => ({ id: r.id, version: r.version, data: JSON.parse(r.data) }));
   }
   history(id) {
     return this.db.query("SELECT version,data,time FROM versions WHERE id=? ORDER BY version").all(id);
@@ -651,8 +655,91 @@ function provenanceNote(basis) {
 }
 
 // src/ui/huimem-command.ts
-import { existsSync, readFileSync as readFileSync4 } from "fs";
-import { resolve as resolve5 } from "path";
+import { existsSync, readFileSync as readFileSync5 } from "fs";
+import { resolve as resolve6 } from "path";
+
+// src/memory/adr-audit.ts
+import { copyFileSync, lstatSync as lstatSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "fs";
+import { dirname, resolve as resolve5 } from "path";
+var norm = (p) => p.replaceAll("\\", "/");
+function eligible(data) {
+  return data?.kind === "decision" && data?.status === "accepted" && typeof data?.source?.episode === "string" && data.source.episode.length > 0 && typeof data?.source?.quote === "string" && data.source.quote.trim().length > 0 && typeof data?.rationale === "string" && data.rationale.length > 0 && data.source.quote.includes(data.rationale);
+}
+function mentions(data, adrPath) {
+  const path = norm(adrPath), base = path.split("/").pop();
+  const inText = typeof data?.text === "string" && norm(data.text).includes(path);
+  const inLinks = Array.isArray(data?.links) && data.links.some((l) => typeof l === "string" && (norm(l) === path || norm(l).endsWith("/" + base) || l === base));
+  return inText || inLinks;
+}
+function migrate(original, record, date) {
+  const eol = original.includes(`\r
+`) ? `\r
+` : `
+`;
+  const lines = original.split(/\r?\n/);
+  const hasTitle = /^#\s/.test(lines[0] ?? "");
+  const title = hasTitle ? [lines[0], ""] : [];
+  const rest = hasTitle ? lines.slice(1) : lines;
+  const quoted = record.quote.split(/\r?\n/).map((line) => "> " + line);
+  return [
+    ...title,
+    "## \u041E\u0441\u043D\u043E\u0432\u0430\u043D\u0438\u0435",
+    ...quoted,
+    "",
+    `\u0418\u0441\u0442\u043E\u0447\u043D\u0438\u043A: \u0437\u0430\u043F\u0438\u0441\u044C \u0440\u0435\u0435\u0441\u0442\u0440\u0430 \`${record.id}\` v${record.version}, \u0441\u043E\u043E\u0431\u0449\u0435\u043D\u0438\u0435 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044F \`${record.episode}\`. \u0426\u0438\u0442\u0430\u0442\u0430 \u043F\u0435\u0440\u0435\u043D\u0435\u0441\u0435\u043D\u0430 \u0438\u0437 \u0440\u0435\u0435\u0441\u0442\u0440\u0430 \u0431\u0435\u0437 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u0439.`,
+    "",
+    "## \u0418\u043D\u0442\u0435\u0440\u043F\u0440\u0435\u0442\u0430\u0446\u0438\u044F [?] \u2014 \u043D\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u043E \u0446\u0438\u0442\u0430\u0442\u043E\u0439",
+    "",
+    "\u041D\u0438\u0436\u0435 \u0438\u0441\u0445\u043E\u0434\u043D\u044B\u0439 \u0442\u0435\u043A\u0441\u0442 \u0434\u043E\u043A\u0443\u043C\u0435\u043D\u0442\u0430 \u0431\u0435\u0437 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u0439. \u0421\u0442\u0430\u0442\u0443\u0441 \xAB\u043F\u0440\u0438\u043D\u044F\u0442\u043E\xBB \u043E\u0442\u043D\u043E\u0441\u0438\u0442\u0441\u044F \u043A \u0440\u0435\u0448\u0435\u043D\u0438\u044E, \u0430 \u043D\u0435 \u043A \u044D\u0442\u0438\u043C \u043F\u0440\u0435\u0434\u043B\u043E\u0436\u0435\u043D\u0438\u044F\u043C.",
+    `<!-- huimem adr-audit ${date}: \u0438\u0441\u0445\u043E\u0434\u043D\u044B\u0439 \u0442\u0435\u043A\u0441\u0442 \u043D\u0430\u0447\u0438\u043D\u0430\u0435\u0442\u0441\u044F \u0441\u043E \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u0439 \u0441\u0442\u0440\u043E\u043A\u0438 -->`,
+    ...rest
+  ].join(eol);
+}
+function plan(path, text, records, date) {
+  if (readBasis(text).section)
+    return { path, state: "has-basis" };
+  const matched = records.filter((r2) => eligible(r2.data) && mentions(r2.data, path));
+  if (!matched.length)
+    return { path, state: "no-match" };
+  if (matched.length > 1)
+    return { path, state: "ambiguous", candidates: matched.map((r2) => r2.id) };
+  const r = matched[0];
+  const rec = { id: r.id, version: r.version, episode: r.data.source.episode, quote: r.data.source.quote };
+  return { path, state: "migratable", recordId: rec.id, version: rec.version, episode: rec.episode, quote: rec.quote, proposed: migrate(text, rec, date) };
+}
+var BACKUP_DIR = ".memory/adr-backup";
+function listAdrs(root) {
+  return [...new Bun.Glob(".memory/adr/**/*.md").scanSync({ cwd: root, onlyFiles: true, followSymlinks: false })].map(norm).filter((p) => p.split("/").pop().toLowerCase() !== "readme.md").filter((p) => {
+    try {
+      return lstatSync2(resolve5(root, p)).isFile() && Boolean(safePath(root, p));
+    } catch {
+      return false;
+    }
+  }).sort();
+}
+function audit(root, records, date) {
+  return listAdrs(root).map((p) => plan(p, readFileSync4(resolve5(root, p), "utf8"), records, date));
+}
+function apply(root, records, date, stamp) {
+  const written = [];
+  const skipped = [];
+  for (const item of audit(root, records, date)) {
+    if (item.state !== "migratable") {
+      skipped.push(item);
+      continue;
+    }
+    const source = resolve5(root, item.path);
+    const backupRel = `${BACKUP_DIR}/${stamp}/${item.path.replace(/^\.memory\/adr\//, "")}`;
+    const backup = resolve5(root, backupRel);
+    mkdirSync2(dirname(backup), { recursive: true });
+    copyFileSync(source, backup);
+    writeFileSync3(source, item.proposed, "utf8");
+    written.push({ path: item.path, backup: backupRel, recordId: item.recordId });
+  }
+  return { written, skipped };
+}
+
+// src/ui/huimem-command.ts
 var HELP = [
   "Usage:",
   "  /huimem pause        block commits in this project for this OMP process",
@@ -664,7 +751,9 @@ var HELP = [
   "  /huimem omp          OMP settings that affect memory",
   "  /huimem reset        restore the default limits",
   "  /huimem sync         retry publishing .memory/RECORDS.md from saved records",
-  "  /huimem context      inspect the latest memory block prepared for OMP"
+  "  /huimem context      inspect the latest memory block prepared for OMP",
+  "  /huimem adr-audit    propose moving legacy ADRs into the basis contract (dry run)",
+  "  /huimem adr-audit apply   write that migration; originals are backed up"
 ].join(`
 `);
 var OMP_KEYS = [
@@ -694,7 +783,7 @@ Once deployed it turns on with your next message; no restart needed.`);
         deps.setPaused(ctx, verb === "pause");
         return say(verb === "pause" ? "Commits PAUSED for this project in this OMP process. Records and checkpoints cannot be saved through project_memory. Transcript capture, diagnostics and file tools remain active. Restart clears the pause." : "Commits enabled for this project in this OMP process.");
       }
-      const settingsFileExists = existsSync(resolve5(ctx.cwd, SETTINGS_PATH));
+      const settingsFileExists = existsSync(resolve6(ctx.cwd, SETTINGS_PATH));
       if (verb === "context") {
         try {
           const store = deps.store(ctx);
@@ -737,11 +826,11 @@ ${result.path}` + (result.error ? `
         return say(`Limits restored to defaults: recall ${saved.recallBudget}, injection ${saved.injectionLimit}.`);
       }
       if (verb === "arch") {
-        const path = resolve5(ctx.cwd, ".memory/architecture.json");
+        const path = resolve6(ctx.cwd, ".memory/architecture.json");
         const a2 = deps.architecture(ctx);
         let body;
         try {
-          body = readFileSync4(path, "utf8").trim();
+          body = readFileSync5(path, "utf8").trim();
         } catch {
           body = "(no such file)";
         }
@@ -770,6 +859,43 @@ ${result.path}` + (result.error ? `
           "Project values come from .omp/config.yml and override the global config."
         ].join(`
 `));
+      }
+      if (verb === "adr-audit") {
+        try {
+          const store = deps.store(ctx);
+          const date = new Date().toISOString().slice(0, 10);
+          const stale = "Decisions from conversation track the hash of canonical documents, so records linked to rewritten ADRs will show STALE afterwards. Their user quotes are unchanged.";
+          const describe = (i) => i.state === "has-basis" ? `  OK       ${i.path} \u2014 already has a basis section` : i.state === "no-match" ? `  SKIP     ${i.path} \u2014 no accepted user decision names this document; nothing proposed` : i.state === "ambiguous" ? `  SKIP     ${i.path} \u2014 several decisions name it (${i.candidates.join(", ")}); nothing chosen` : `  MIGRATE  ${i.path}  <-  ${i.recordId} v${i.version}
+           basis: ${i.quote.split(`
+`)[0].slice(0, 160)}
+           all original lines move under "Interpretation [?]"; nothing is deleted`;
+          if (value === "apply") {
+            const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+            const { written, skipped } = apply(ctx.cwd, store.latestRecords(), date, stamp);
+            return say([
+              `ADR migration applied: ${written.length} written, ${skipped.length} skipped.`,
+              ...written.map((w) => `  WROTE    ${w.path}  <-  ${w.recordId}
+           original: ${w.backup}`),
+              ...skipped.map(describe),
+              "",
+              written.length ? stale : "Nothing needed migration."
+            ].join(`
+`));
+          }
+          const items = audit(ctx.cwd, store.latestRecords(), date);
+          const pending = items.filter((i) => i.state === "migratable").length;
+          return say([
+            `ADR audit (dry run, nothing written): ${items.length} document(s), ${pending} can be migrated.`,
+            ...items.map(describe),
+            "",
+            "A basis is taken only from an accepted decision whose rationale is verified by code as an exact excerpt of the user quote.",
+            "No document is declared false. Unmatched or ambiguous documents are never guessed.",
+            pending ? `Run /huimem adr-audit apply to write. Originals go to .memory/adr-backup/. ${stale}` : ""
+          ].join(`
+`));
+        } catch (e) {
+          return say("ADR audit failed: " + String(e));
+        }
       }
       if (verb)
         return say(`Unknown subcommand: ${verb}
@@ -812,13 +938,13 @@ var textOf = (content) => typeof content === "string" ? content : Array.isArray(
 `) : "";
 var reads = new Set(["read", "grep", "find", "glob", "ls", "project_memory"]);
 var ENABLE_MARKER = ".memory/MEMORY.md";
-var deployed = (ctx) => existsSync2(resolve6(ctx.cwd, ENABLE_MARKER));
+var deployed = (ctx) => existsSync2(resolve7(ctx.cwd, ENABLE_MARKER));
 var NOT_ENABLED = "PROJECT_MEMORY_NOT_ENABLED: no " + ENABLE_MARKER + " in this project. " + "Project memory is off here and no database is created. Copy the plugin starter/ into the project root to enable it.";
 var memoryWrapper = (event) => event.toolName === "write" && (event.input?.path === "xd://project_memory" || event.details?.xdev?.tool === "project_memory");
 function install(pi) {
   const z = pi.zod;
   const pausedProjects = new Set;
-  const commitsPaused = (ctx) => pausedProjects.has(resolve6(ctx.cwd));
+  const commitsPaused = (ctx) => pausedProjects.has(resolve7(ctx.cwd));
   let store, root = "", error = "", run = "", generation = 0;
   let query = "", sourceEpisode = "", lastNotice = "", active = false;
   let policyAtStart;
@@ -859,7 +985,7 @@ function install(pi) {
   }
   function policyText(ctx) {
     try {
-      return readFileSync5(resolve6(ctx.cwd, ".memory/architecture.json"), "utf8");
+      return readFileSync6(resolve7(ctx.cwd, ".memory/architecture.json"), "utf8");
     } catch (e) {
       if (e.code === "ENOENT")
         return "";
@@ -991,7 +1117,7 @@ Do not claim memory or work was verified.`;
       return { block: true, reason: error + "; restore memory storage before mutation." };
     const path = event.input?.path ?? event.input?.file_path;
     if (typeof path === "string") {
-      const rel = relative4(ctx.cwd, resolve6(ctx.cwd, path)).replaceAll("\\", "/").toLowerCase();
+      const rel = relative4(ctx.cwd, resolve7(ctx.cwd, path)).replaceAll("\\", "/").toLowerCase();
       if (rel === ".memory/records.md")
         return { block: true, reason: "Generated registry: use project_memory commit; /huimem sync retries publication. Keep manual notes in MEMORY.md or ADRs." };
       if (rel === ".memory/architecture.json" || rel.startsWith(".memory/runtime/") || rel.startsWith(".omp/memory/") || rel.startsWith(".omp/extensions/"))
@@ -1170,9 +1296,9 @@ Do not claim memory or work was verified.`;
     commitsPaused,
     setPaused: (ctx, value) => {
       if (value)
-        pausedProjects.add(resolve6(ctx.cwd));
+        pausedProjects.add(resolve7(ctx.cwd));
       else
-        pausedProjects.delete(resolve6(ctx.cwd));
+        pausedProjects.delete(resolve7(ctx.cwd));
     }
   });
   pi.registerCommand("project-memory-status", { description: "Show project memory health", handler: async (_args, ctx) => {

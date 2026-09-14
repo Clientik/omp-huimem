@@ -131,6 +131,12 @@ export class MemoryStore {
     if (data.source.path) { try { if (hash(sourceText(this.root,data.source.path)) !== data.source.hash) freshness = 'STALE'; } catch { freshness = 'STALE'; } }
     return { ...data, version: row.version, freshness };
   }
+  // Последние версии всех записей: нужен переносу ADR, чтобы сопоставить документ с решением.
+  latestRecords() {
+    return (this.db.query(`SELECT v.id,v.version,v.data FROM versions v JOIN
+      (SELECT id,MAX(version) version FROM versions GROUP BY id) n ON v.id=n.id AND v.version=n.version ORDER BY v.id`).all() as any[])
+      .map(r => ({ id: r.id as string, version: r.version as number, data: JSON.parse(r.data) }));
+  }
   history(id: string) { return this.db.query('SELECT version,data,time FROM versions WHERE id=? ORDER BY version').all(id); }
   private authorityChanged(c: Change, authority: {hash:string; policyHash:string}) {
     return c.kind==='fact' && c.source.path && c.sourcePolicyHash

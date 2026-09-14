@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { LIMITS, readSettings, writeSettings, SETTINGS_PATH } from '../memory/settings';
+import { apply, audit } from '../memory/adr-audit';
 
 // Форма диалогов ctx.ui (select/confirm/input) из документации и бинарника OMP не
 // извлекается: доки перечисляют имена методов без сигнатур, бинарник минифицирован.
@@ -31,6 +32,8 @@ const HELP = [
   '  /huimem reset        restore the default limits',
   '  /huimem sync         retry publishing .memory/RECORDS.md from saved records',
   '  /huimem context      inspect the latest memory block prepared for OMP',
+  '  /huimem adr-audit    propose moving legacy ADRs into the basis contract (dry run)',
+  '  /huimem adr-audit apply   write that migration; originals are backed up',
 ].join('\n');
 
 // Показываем, но не трогаем: это чужой конфиг, его меняет сам OMP.
@@ -139,6 +142,38 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
             'Project values come from .omp/config.yml and override the global config.',
           ].join('\n'),
         );
+      }
+
+      if (verb === 'adr-audit') {
+        try {
+          const store = deps.store(ctx);
+          const date = new Date().toISOString().slice(0, 10);
+          const stale = 'Decisions from conversation track the hash of canonical documents, so records linked to rewritten ADRs will show STALE afterwards. Their user quotes are unchanged.';
+          const describe = (i: any) =>
+            i.state === 'has-basis' ? `  OK       ${i.path} — already has a basis section`
+            : i.state === 'no-match' ? `  SKIP     ${i.path} — no accepted user decision names this document; nothing proposed`
+            : i.state === 'ambiguous' ? `  SKIP     ${i.path} — several decisions name it (${i.candidates.join(', ')}); nothing chosen`
+            : `  MIGRATE  ${i.path}  <-  ${i.recordId} v${i.version}\n           basis: ${i.quote.split('\n')[0].slice(0, 160)}\n           all original lines move under "Interpretation [?]"; nothing is deleted`;
+          if (value === 'apply') {
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const { written, skipped } = apply(ctx.cwd, store.latestRecords(), date, stamp);
+            return say([
+              `ADR migration applied: ${written.length} written, ${skipped.length} skipped.`,
+              ...written.map(w => `  WROTE    ${w.path}  <-  ${w.recordId}\n           original: ${w.backup}`),
+              ...skipped.map(describe),
+              '', written.length ? stale : 'Nothing needed migration.',
+            ].join('\n'));
+          }
+          const items = audit(ctx.cwd, store.latestRecords(), date);
+          const pending = items.filter(i => i.state === 'migratable').length;
+          return say([
+            `ADR audit (dry run, nothing written): ${items.length} document(s), ${pending} can be migrated.`,
+            ...items.map(describe), '',
+            'A basis is taken only from an accepted decision whose rationale is verified by code as an exact excerpt of the user quote.',
+            'No document is declared false. Unmatched or ambiguous documents are never guessed.',
+            pending ? `Run /huimem adr-audit apply to write. Originals go to .memory/adr-backup/. ${stale}` : '',
+          ].join('\n'));
+        } catch (e) { return say('ADR audit failed: ' + String(e)); }
       }
 
       if (verb) return say(`Unknown subcommand: ${verb}\n\n` + HELP);

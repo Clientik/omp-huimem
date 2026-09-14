@@ -63,6 +63,36 @@ test('the provenance marker distinguishes a document with a quoted basis from on
   } finally { f.clean(); }
 });
 
+// Перенос ADR: показ ничего не пишет, запись сохраняет оригинал и вставляет цитату из реестра.
+test('/huimem adr-audit shows without writing, and apply writes with a byte-exact backup',async()=>{
+  const f=fixture(); try {
+    const adr='.memory/adr/0001-retry.md';
+    const legacy='# ADR 0001\n\n- Статус: принято\n- Причина: окно 19 минут, поэтому больше попыток попадает в дедупликацию.\n';
+    const quote='Выбираем 7 попыток. Причина: окно дедупликации 19 минут.';
+    mkdirSync(join(f.dir,'.memory/adr'),{recursive:true});
+    writeFileSync(join(f.dir,adr),legacy);
+    const s=new MemoryStore(f.dir);
+    const episode=s.capture('run','user',quote);
+    s.commit('run:0',[{id:'retry',kind:'decision',status:'accepted',expectedVersion:0,text:'7 попыток, ADR '+adr,
+      rationale:'окно дедупликации 19 минут',source:{episode,quote}} as any],'decision');
+    s.close();
+    await f.commands.huimem.handler('adr-audit',f.ctx);
+    const shown=String(f.notices.at(-1)?.content ?? '');
+    expect(shown).toContain('dry run, nothing written');
+    expect(shown).toContain('MIGRATE');
+    expect(readFileSync(join(f.dir,adr),'utf8')).toBe(legacy);
+    await f.commands.huimem.handler('adr-audit apply',f.ctx);
+    const wrote=String(f.notices.at(-1)?.content ?? '');
+    expect(wrote).toContain('WROTE');
+    expect(wrote).toContain('STALE');
+    const after=readFileSync(join(f.dir,adr),'utf8');
+    expect(after).toContain('## Основание\n> '+quote);
+    expect(after.endsWith(legacy.split('\n').slice(1).join('\n'))).toBe(true);
+    const backup=wrote.match(/original: (\S+)/)![1];
+    expect(readFileSync(join(f.dir,backup),'utf8')).toBe(legacy);
+  } finally { f.clean(); }
+});
+
 test('session pause rejects all commits, permits reads, and resumes explicitly',async()=>{
   const f=fixture(); try {
     await f.handlers.before_agent_start({prompt:'Use SQLite'},f.ctx);
