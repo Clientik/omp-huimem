@@ -446,6 +446,82 @@ test('/huimem shows state, and refuses a project that is not deployed', async ()
     expect(String(f.notices.at(-1)?.content ?? '')).toContain('PROJECT_MEMORY_NOT_ENABLED');
   } finally { f.clean(); }
 });
+// Экран настроек в интерактивном терминале: сценарий нажатий подаётся вместо пользователя.
+function scriptedUi(f: any, answers: any[]) {
+  const screens: { title: string; labels: string[]; initialIndex?: number }[] = [];
+  const labelsOf = (items: any[]) => items.map(i => typeof i === 'string' ? i : i.label);
+  f.ctx.mode = 'tui';
+  f.ctx.ui = {
+    notify: (s: string) => f.notices.push(s),
+    select: async (title: string, items: any[], opts?: any) => {
+      screens.push({ title, labels: labelsOf(items), initialIndex: opts?.initialIndex });
+      const a = answers.shift();
+      return typeof a === 'function' ? a(labelsOf(items)) : a;
+    },
+    input: async () => answers.shift(),
+    confirm: async () => answers.shift(),
+  };
+  return screens;
+}
+const starting = (prefix: string) => (labels: string[]) => labels.find(l => l.startsWith(prefix));
+
+test('/huimem opens a settings screen in the terminal and applies choices through the same checks', async () => {
+  const read = (dir: string) => JSON.parse(readFileSync(join(dir, '.memory/settings.json'), 'utf8'));
+  const f = fixture(); try {
+    const s = new MemoryStore(f.dir);
+    const quote = 'Ключи никогда не пишем в логи. Причина: утечки.';
+    const episode = s.capture('seed', 'user', quote);
+    s.commit('seed', [{ id: 'security-rule', kind: 'decision', status: 'accepted', expectedVersion: 0, text: quote,
+      rationale: 'утечки', source: { episode, quote } } as any], 'seed');
+    s.close();
+    const screens = scriptedUi(f, [
+      starting('Recall budget'), '4500',
+      starting('Injection limit'), '99999',
+      starting('Commits'),
+      starting('Required records'), starting('[ ] security-rule'), 'Back',
+      starting('Reset limits'), true,
+      undefined,
+    ]);
+    await f.commands.huimem.handler('', f.ctx);
+    const saved = read(f.dir);
+    expect(saved.recallBudget).toBe(LIMITS.recallBudget.default);
+    expect(saved.injectionLimit).toBe(LIMITS.injectionLimit.default);
+    expect(saved.required).toEqual(['security-rule']);
+    expect(f.notices.some((n: any) => String(n).includes('recallBudget = 4500'))).toBe(true);
+    expect(f.notices.some((n: any) => String(n).includes('saved the nearest allowed value: 16000'))).toBe(true);
+    // Экран показывает текущие значения и возвращает курсор на последний пункт.
+    const main = screens.filter(x => x.title.startsWith('huimem ·'));
+    expect(main[1].labels).toContain('Recall budget: 4500');
+    expect(main[3].labels).toContain('Commits: PAUSED');
+    expect(main[3].initialIndex).toBe(0);
+    expect(screens.find(x => x.title.startsWith('Required records'))!.labels).toContain('[ ] security-rule');
+    const denied = await f.tools.project_memory.execute('x', { op: 'commit', changes: [], summary: 'x' }, null, null, f.ctx);
+    expect(String(denied.content[0].text)).toContain('COMMITS_PAUSED');
+    // Длинные отчёты закрывают экран, чтобы их можно было прочитать.
+    const before = f.notices.length;
+    scriptedUi(f, [starting('Architecture')]);
+    await f.commands.huimem.handler('', f.ctx);
+    expect(String(f.notices.at(-1)?.content ?? '')).toContain('.memory/architecture.json');
+    expect(f.notices.length).toBe(before + 1);
+  } finally { f.clean(); }
+});
+
+test('the settings screen enables memory in a bare project, and RPC mode keeps the text output', async () => {
+  const f = fixture(); try {
+    rmSync(join(f.dir, '.memory'), { recursive: true, force: true });
+    const screens = scriptedUi(f, ['Enable memory in this project', undefined]);
+    await f.commands.huimem.handler('', f.ctx);
+    expect(screens[0].title).toContain('memory is OFF here');
+    expect(existsSync(join(f.dir, '.memory/MEMORY.md'))).toBe(true);
+    expect(screens[1].title).toContain('records');
+    f.ctx.mode = 'rpc';
+    const calls = screens.length;
+    await f.commands.huimem.handler('', f.ctx);
+    expect(screens.length).toBe(calls);
+    expect(String(f.notices.at(-1)?.content ?? '')).toContain('huimem project memory');
+  } finally { f.clean(); }
+});
+
 test('/huimem init enables memory in a bare project without copying the starter', async () => {
   const last = (f: any) => String(f.notices.at(-1)?.content ?? '');
   const f = fixture(); try {

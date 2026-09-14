@@ -63,9 +63,14 @@ On Windows, quote the path. With direct loading, copy `skills/` to the project's
 
 Native GitHub installation in OMP 18.1.5 is user-scoped; `--scope project` does not apply. Memory data stays in the current project's `.memory`. See the [user guide (Russian)](docs/GUIDE.md) for setup and troubleshooting.
 
-`/huimem` shows the memory state of the current project and adjusts the recall budget and
-the injected-context limit, stored in `.memory/settings.json`. `/huimem omp` lists the OMP
-settings that affect memory; the plugin reports them and never rewrites that config.
+**Settings screen:** in the terminal, `/huimem` opens a screen built from OMP's own dialogs.
+Each row shows the current value; Enter changes it or runs the action, Esc closes. From there
+you can pause commits, set the recall budget and injection limit, pick required records from
+the registry, republish `RECORDS.md`, inspect the last memory block, migrate legacy ADRs and
+reset limits. In a project without memory the same screen offers to enable it. Values are
+stored per project in `.memory/settings.json`. In RPC and `-p` modes `/huimem` prints the state
+instead, and every action stays available as a subcommand (`/huimem help`). `/huimem omp` lists
+the OMP settings that affect memory; the plugin reports them and never rewrites that config.
 `huimem` cannot be selected under `memory.backend`: that list is a closed enum in OMP and
 there is no backend-registration API for extensions. It runs alongside any of them instead.
 
