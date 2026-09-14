@@ -11,6 +11,39 @@ function fixture(fn: (s: MemoryStore, root: string) => void) {
   try { fn(s, root); } finally { s.close(); rmSync(root, { recursive: true, force: true }); }
 }
 const tick = () => Bun.sleepSync(4);
+
+test('task checkpoints survive other commits in the same run, failures and reopening',()=>fixture((s,root)=>{
+  s.commit('same:0',[task(s,'task-a','Export invoices')],'Next A');
+  s.commit('same:0',[task(s,'task-b','Migrate orders')],'Next B');
+  expect(s.taskCheckpoint('task-a')?.summary).toBe('Next A');
+  s.commit('same:0',[],'General summary');
+  expect(s.taskCheckpoint('task-b')?.summary).toBe('Next B');
+  s.commit('same:0',[],'Updated A',{task:'task-a'});
+  expect(()=>s.commit('same:0',[],'Invalid',{task:'missing'})).toThrow('INVALID_TASK_SCOPE');
+  expect(s.checkpoint('same:0').summary).toBe('Updated A');
+  expect(s.taskCheckpoint('task-a')?.summary).toBe('Updated A');
+  s.close();
+  const reopened=new MemoryStore(root);
+  try {
+    expect(reopened.taskCheckpoint('task-a')?.summary).toBe('Updated A');
+    expect(reopened.taskCheckpoint('task-b')?.summary).toBe('Next B');
+    expect(reopened.checkpointView('export').tasks.map(t=>t.task)).toEqual(['task-a','task-b']);
+    expect(reopened.checkpointView('export').tasks.filter(t=>t.task==='task-a')).toHaveLength(1);
+  } finally {reopened.close();}
+}));
+
+test('a checkpoint written before task archiving is preserved on the first replacement',()=>fixture((s,root)=>{
+  s.commit('old:0',[task(s,'task-a','Export')],'Legacy A');
+  s.db.exec('DROP TABLE IF EXISTS checkpoint_archive');
+  s.close();
+  const reopened=new MemoryStore(root);
+  try {
+    reopened.commit('old:0',[task(reopened,'task-b','Orders')],'Next B');
+    expect(reopened.taskCheckpoint('task-a')?.summary).toBe('Legacy A');
+    expect(reopened.taskCheckpoint('task-b')?.summary).toBe('Next B');
+    expect((reopened.db.query("SELECT value FROM meta WHERE key='schema'").get() as any).value).toBe('2');
+  } finally {reopened.close();}
+}));
 function task(s: MemoryStore, id: string, text: string, status = 'doing', version = 0) {
   const episode = s.capture('t', 'user', text);
   return { id, kind: 'task', status, text, expectedVersion: version, source: { episode, quote: text } };

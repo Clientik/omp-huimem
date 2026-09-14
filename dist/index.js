@@ -203,6 +203,7 @@ class MemoryStore {
         this.db.exec("CREATE TABLE IF NOT EXISTS context_receipts(seq INTEGER PRIMARY KEY, run TEXT NOT NULL, hash TEXT NOT NULL, characters INTEGER NOT NULL, truncated INTEGER NOT NULL, records TEXT NOT NULL, time TEXT NOT NULL)");
         this.db.exec("CREATE TABLE IF NOT EXISTS retrieval_receipts(seq INTEGER PRIMARY KEY, run TEXT NOT NULL, channel TEXT NOT NULL, data TEXT NOT NULL, time TEXT NOT NULL)");
         this.db.exec("CREATE TABLE IF NOT EXISTS checkpoint_scope(run TEXT PRIMARY KEY, task TEXT, branch TEXT)");
+        this.db.exec("CREATE TABLE IF NOT EXISTS checkpoint_archive(run TEXT, task TEXT, summary TEXT, time TEXT, branch TEXT, PRIMARY KEY(run,task))");
         if (version?.value === "1")
           stageProjection(this.db);
         this.db.query("INSERT OR REPLACE INTO meta VALUES ('schema','2')").run();
@@ -420,9 +421,15 @@ class MemoryStore {
   latestCheckpoint() {
     return this.db.query("SELECT * FROM checkpoints ORDER BY time DESC LIMIT 1").get();
   }
+  checkpointRows(task) {
+    return this.db.query(`SELECT * FROM (
+      SELECT c.run,c.summary,c.time,s.task,s.branch,1 AS live FROM checkpoints c
+        LEFT JOIN checkpoint_scope s ON s.run=c.run
+      UNION ALL SELECT run,summary,time,task,branch,0 AS live FROM checkpoint_archive
+    ) WHERE (? IS NULL OR task=?) ORDER BY time DESC,live DESC`).all(task ?? null, task ?? null);
+  }
   checkpointView(query, limit = 3) {
-    const rows = this.db.query(`SELECT c.run,c.summary,c.time,s.task,s.branch FROM checkpoints c
-      LEFT JOIN checkpoint_scope s ON s.run=c.run ORDER BY c.time DESC`).all();
+    const rows = this.checkpointRows();
     const unscoped = rows.find((r) => !r.task) ?? null;
     const terms = queryTerms(query);
     const seen = new Set, tasks = [];
@@ -440,8 +447,8 @@ class MemoryStore {
     return { unscoped, tasks: tasks.slice(0, limit), omitted: Math.max(0, tasks.length - limit) };
   }
   taskCheckpoint(task) {
-    return this.db.query(`SELECT c.summary,c.time,s.branch FROM checkpoints c JOIN checkpoint_scope s ON s.run=c.run
-      WHERE s.task=? ORDER BY c.time DESC LIMIT 1`).get(task) ?? null;
+    const row = this.checkpointRows(task)[0];
+    return row ? { summary: row.summary, time: row.time, branch: row.branch } : null;
   }
   episodes(query) {
     const term = query.replace(/[\\%_]/g, (x) => "\\" + x);
@@ -562,6 +569,9 @@ class MemoryStore {
           throw new Error(`INVALID_TASK_SCOPE: ${task} is not a saved task record; save the task first or omit task`);
       } else if (changedTasks.length === 1)
         task = changedTasks[0];
+      this.db.query(`INSERT OR REPLACE INTO checkpoint_archive(run,task,summary,time,branch)
+        SELECT c.run,s.task,c.summary,c.time,s.branch FROM checkpoints c
+        JOIN checkpoint_scope s ON s.run=c.run WHERE c.run=? AND s.task IS NOT NULL`).run(run);
       this.db.query("INSERT OR REPLACE INTO checkpoints VALUES (?,?,?)").run(run, summary, time);
       if (task || scope.branch)
         this.db.query("INSERT OR REPLACE INTO checkpoint_scope VALUES (?,?,?)").run(run, task ?? null, scope.branch ?? null);

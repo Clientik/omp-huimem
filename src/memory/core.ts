@@ -76,6 +76,9 @@ export class MemoryStore {
         // пишут INSERT INTO checkpoints VALUES (?,?,?) и с лишним столбцом упали бы. Номер схемы
         // не меняется; старый плагин эту таблицу не видит, его чекпоинты считаются без задачи.
         this.db.exec('CREATE TABLE IF NOT EXISTS checkpoint_scope(run TEXT PRIMARY KEY, task TEXT, branch TEXT)');
+        // Keep a task's last summary when another commit replaces the same run marker.
+        // Existing checkpoints remain readable; archive lazily on the first replacement.
+        this.db.exec('CREATE TABLE IF NOT EXISTS checkpoint_archive(run TEXT, task TEXT, summary TEXT, time TEXT, branch TEXT, PRIMARY KEY(run,task))');
         if(version?.value==='1') stageProjection(this.db);
         this.db.query("INSERT OR REPLACE INTO meta VALUES ('schema','2')").run();
       }).immediate();
@@ -216,13 +219,19 @@ export class MemoryStore {
   }
   checkpoint(run: string) { return this.db.query('SELECT * FROM checkpoints WHERE run=?').get(run) as any; }
   latestCheckpoint() { return this.db.query('SELECT * FROM checkpoints ORDER BY time DESC LIMIT 1').get() as any; }
+  private checkpointRows(task?:string) {
+    return this.db.query(`SELECT * FROM (
+      SELECT c.run,c.summary,c.time,s.task,s.branch,1 AS live FROM checkpoints c
+        LEFT JOIN checkpoint_scope s ON s.run=c.run
+      UNION ALL SELECT run,summary,time,task,branch,0 AS live FROM checkpoint_archive
+    ) WHERE (? IS NULL OR task=?) ORDER BY time DESC,live DESC`).all(task ?? null,task ?? null) as any[];
+  }
   // ЗАМЕРЕНО 2026-09-14 (tests/memory-scenarios.ts, parallel-tasks): блок памяти брал последний
   // чекпоинт всей базы. Вопрос про задачу A получал «Previous checkpoint» задачи B, а шаг A не
   // был доступен ни в блоке, ни в RECORDS.md, ни через инструмент. Теперь чекпоинт с задачей
   // показывается только под её ID, а без задачи — отдельной строкой.
   checkpointView(query: string, limit = 3) {
-    const rows = this.db.query(`SELECT c.run,c.summary,c.time,s.task,s.branch FROM checkpoints c
-      LEFT JOIN checkpoint_scope s ON s.run=c.run ORDER BY c.time DESC`).all() as any[];
+    const rows = this.checkpointRows();
     const unscoped = rows.find(r => !r.task) ?? null;
     const terms = queryTerms(query);
     const seen = new Set<string>(), tasks: { task: string; status: string; summary: string; time: string; branch: string | null; matched: boolean }[] = [];
@@ -238,8 +247,8 @@ export class MemoryStore {
     return { unscoped, tasks: tasks.slice(0, limit), omitted: Math.max(0, tasks.length - limit) };
   }
   taskCheckpoint(task: string) {
-    return this.db.query(`SELECT c.summary,c.time,s.branch FROM checkpoints c JOIN checkpoint_scope s ON s.run=c.run
-      WHERE s.task=? ORDER BY c.time DESC LIMIT 1`).get(task) as any ?? null;
+    const row=this.checkpointRows(task)[0];
+    return row ? {summary:row.summary,time:row.time,branch:row.branch} : null;
   }
   episodes(query: string) {
     const term = query.replace(/[\\%_]/g, x => '\\' + x);
@@ -324,6 +333,9 @@ export class MemoryStore {
         const own = changes.find(c => c.id === task), stored = this.current(task);
         if ((own ?? stored)?.kind !== 'task') throw new Error(`INVALID_TASK_SCOPE: ${task} is not a saved task record; save the task first or omit task`);
       } else if (changedTasks.length === 1) task = changedTasks[0];
+      this.db.query(`INSERT OR REPLACE INTO checkpoint_archive(run,task,summary,time,branch)
+        SELECT c.run,s.task,c.summary,c.time,s.branch FROM checkpoints c
+        JOIN checkpoint_scope s ON s.run=c.run WHERE c.run=? AND s.task IS NOT NULL`).run(run);
       this.db.query('INSERT OR REPLACE INTO checkpoints VALUES (?,?,?)').run(run, summary, time);
       if (task || scope.branch) this.db.query('INSERT OR REPLACE INTO checkpoint_scope VALUES (?,?,?)').run(run, task ?? null, scope.branch ?? null);
       else this.db.query('DELETE FROM checkpoint_scope WHERE run=?').run(run);
