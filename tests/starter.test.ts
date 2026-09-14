@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative } from 'node:path';
 import { STARTER, initProject } from '../src/memory/starter';
@@ -34,6 +34,46 @@ test('init never writes through a directory link that leaves the project', () =>
     expect(() => initProject(root)).toThrow('PATH');
     expect(readdirSync(outside)).toEqual([]);
   } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+});
+
+// Файловые ссылки на Windows без привилегий дают EPERM; тогда проверка идёт в CI на Linux.
+const canLinkFiles = (() => {
+  const dir = mkdtempSync(join(import.meta.dir, 'starter-link-probe-'));
+  try { writeFileSync(join(dir, 'a'), ''); symlinkSync(join(dir, 'a'), join(dir, 'b'), 'file'); return true; }
+  catch { return false; }
+  finally { rmSync(dir, { recursive: true, force: true }); }
+})();
+
+test.skipIf(!canLinkFiles)('init refuses a .gitignore link leaving the project, dangling or not, and leaves memory off', () => {
+  const root = mkdtempSync(join(import.meta.dir, 'starter-test-'));
+  const outside = mkdtempSync(join(import.meta.dir, 'starter-outside-'));
+  try {
+    const target = join(outside, 'external.gitignore');
+    writeFileSync(target, '# external\n');
+    symlinkSync(target, join(root, '.gitignore'), 'file');
+    expect(() => initProject(root)).toThrow('PATH');
+    expect(readFileSync(target, 'utf8')).toBe('# external\n');
+    expect(existsSync(join(root, '.memory/MEMORY.md'))).toBe(false);
+    rmSync(join(root, '.gitignore'));
+    symlinkSync(join(outside, 'not-there'), join(root, '.gitignore'), 'file');
+    expect(() => initProject(root)).toThrow();
+    expect(existsSync(join(outside, 'not-there'))).toBe(false);
+    expect(existsSync(join(root, '.memory/MEMORY.md'))).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+});
+
+test('a failure while updating .gitignore leaves memory off: the marker is written last', () => {
+  const root = mkdtempSync(join(import.meta.dir, 'starter-test-'));
+  try {
+    mkdirSync(join(root, '.gitignore'));
+    expect(() => initProject(root)).toThrow();
+    expect(existsSync(join(root, '.memory/todo.json'))).toBe(true);
+    expect(existsSync(join(root, '.memory/MEMORY.md'))).toBe(false);
+    rmSync(join(root, '.gitignore'), { recursive: true, force: true });
+    const retry = initProject(root);
+    expect(retry.created).toEqual(['.memory/MEMORY.md']);
+    expect(readFileSync(join(root, '.gitignore'), 'utf8')).toContain('.memory/runtime/');
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('init keeps existing files byte-exact, appends only missing ignore lines, and is idempotent', () => {

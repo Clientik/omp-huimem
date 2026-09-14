@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, parse, resolve } from 'node:path';
 import { safePath } from './core';
@@ -39,7 +39,7 @@ export function initProject(root: string): InitResult {
   if (base === resolve(homedir()) || base === parse(base).root)
     throw new Error(`INIT_REFUSED: ${base} is a home or drive root, not a project. Start omp in the project folder.`);
   const created: string[] = [], skipped: string[] = [], differs: string[] = [];
-  for (const [path, text] of STARTER) {
+  const place = (path: string, text: string) => {
     const full = resolve(base, path);
     // Каждый существующий каталог пути проверяется ДО создания следующего: иначе ссылка
     // .memory -> чужой каталог получила бы вложенные папки раньше, чем проверка сработает.
@@ -54,12 +54,21 @@ export function initProject(root: string): InitResult {
       skipped.push(path);
       try { if (lf(readFileSync(full, 'utf8')) !== text) differs.push(path); } catch { differs.push(path); }
     }
-  }
+  };
+  const [markerPath, markerText] = STARTER[STARTER.length - 1];
+  for (const [path, text] of STARTER.slice(0, -1)) place(path, text);
   // .gitignore дополняется, а не заменяется: база со стенограммой не должна попасть в git.
+  // Ссылка .gitignore проверяется до записи (находка проверки Codex v0.6.1): дописывание через
+  // ссылку наружу изменило бы чужой файл. lstat, а не existsSync: висячая ссылка тоже ссылка.
   const ignore = resolve(base, '.gitignore');
+  let link = false;
+  try { link = lstatSync(ignore).isSymbolicLink(); } catch (e: any) { if (e.code !== 'ENOENT') throw e; }
+  if (link) safePath(base, '.gitignore');
   const current = existsSync(ignore) ? readFileSync(ignore, 'utf8') : '';
   const have = new Set(current.split(/\r?\n/).map(l => l.trim()));
   const missing = lf(gitignore).split(/\r?\n/).map(l => l.trim()).filter(l => l && !have.has(l));
   if (missing.length) appendFileSync(ignore, (current && !current.endsWith('\n') ? '\n' : '') + missing.join('\n') + '\n');
+  // Маркер включения — после .gitignore: при сбое любого шага выше память не включается.
+  place(markerPath, markerText);
   return { root: base, created, skipped, differs, gitignoreAdded: missing };
 }

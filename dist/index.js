@@ -1142,7 +1142,7 @@ function apply(root, records, date, stamp, readEpisode) {
 }
 
 // src/memory/starter.ts
-import { appendFileSync, existsSync, mkdirSync as mkdirSync3, readFileSync as readFileSync5, writeFileSync as writeFileSync4 } from "fs";
+import { appendFileSync, existsSync, lstatSync as lstatSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync5, writeFileSync as writeFileSync4 } from "fs";
 import { homedir } from "os";
 import { dirname as dirname2, parse, resolve as resolve6 } from "path";
 
@@ -1378,7 +1378,7 @@ function initProject(root) {
   if (base === resolve6(homedir()) || base === parse(base).root)
     throw new Error(`INIT_REFUSED: ${base} is a home or drive root, not a project. Start omp in the project folder.`);
   const created = [], skipped = [], differs = [];
-  for (const [path, text] of STARTER) {
+  const place = (path, text) => {
     const full = resolve6(base, path);
     let dir = "";
     for (const part of dirname2(path).split("/").filter((p) => p !== ".")) {
@@ -1402,8 +1402,20 @@ function initProject(root) {
         differs.push(path);
       }
     }
-  }
+  };
+  const [markerPath, markerText] = STARTER[STARTER.length - 1];
+  for (const [path, text] of STARTER.slice(0, -1))
+    place(path, text);
   const ignore = resolve6(base, ".gitignore");
+  let link = false;
+  try {
+    link = lstatSync3(ignore).isSymbolicLink();
+  } catch (e) {
+    if (e.code !== "ENOENT")
+      throw e;
+  }
+  if (link)
+    safePath(base, ".gitignore");
   const current = existsSync(ignore) ? readFileSync5(ignore, "utf8") : "";
   const have = new Set(current.split(/\r?\n/).map((l) => l.trim()));
   const missing = lf(__default).split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !have.has(l));
@@ -1413,6 +1425,7 @@ function initProject(root) {
 ` : "") + missing.join(`
 `) + `
 `);
+  place(markerPath, markerText);
   return { root: base, created, skipped, differs, gitignoreAdded: missing };
 }
 
