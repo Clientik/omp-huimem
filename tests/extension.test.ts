@@ -207,6 +207,31 @@ test('canonical preview is injected with a bounded total context', async () => {
     expect(result.messages[0].content.length).toBeLessThanOrEqual(8000);
   } finally {f.clean();}
 });
+test('context includes a fitting record after an oversized candidate and reports omissions',async()=>{
+  const f=fixture();
+  try {
+    writeFileSync(join(f.dir,'.memory/settings.json'),JSON.stringify({recallBudget:500}));
+    const s=new MemoryStore(f.dir);
+    try {
+      for(const [id,text] of [['a-big','needle '+'x'.repeat(900)],['b-small','needle small']]) {
+        const episode=s.capture('seed','user',text);
+        s.commit('seed',[{id,kind:'fact',status:'active',expectedVersion:0,text,source:{episode,quote:text}}],'seed');
+      }
+    } finally {s.close();}
+    await f.handlers.before_agent_start({prompt:'needle'},f.ctx);
+    const result=await f.handlers.context({messages:[]},f.ctx);
+    const content=result.messages.find((m:any)=>m.customType==='project-memory-context').content;
+    expect(content).toContain('"id":"b-small"');
+    expect(content).not.toContain('"id":"a-big"');
+    expect(content).toContain('[More records omitted');
+    const check=new MemoryStore(f.dir);
+    try {
+      expect(check.lastContext().truncated).toBe(true);
+      expect(check.lastRetrieval().candidates.find((c:any)=>c.id==='b-small').finalBlock).toBe('complete');
+    } finally {check.close();}
+  } finally {f.clean();}
+});
+
 test('repeated starts/stops cannot schedule continuation', async () => {
   const f=fixture(); try {
     for(let n=0;n<6;n++) {
