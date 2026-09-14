@@ -121,6 +121,82 @@ test('/huimem adr-audit reports invalid stored evidence and never writes an ADR'
   }
 });
 
+// Итоговый блок контекста собирается по целым частям и записям, а не режется по символу.
+// До исправления обработчик context склеивал инструкции, выдержку и чекпоинт, давал реестру
+// полный бюджет, а затем обрезал весь блок slice(0, limit - 80) посреди JSON-записи.
+async function packedContext(f:any, injectionLimit:number) {
+  writeFileSync(join(f.dir,'.memory/MEMORY.md'),'# Память\n'+'Длинный факт проекта для заполнения выдержки. '.repeat(120));
+  writeFileSync(join(f.dir,'.memory/PROJECT.md'),'# Проект\n'+'Карта модулей и команд проекта. '.repeat(120));
+  writeFileSync(join(f.dir,'.memory/settings.json'),JSON.stringify({injectionLimit,recallBudget:3200}));
+  const s=new MemoryStore(f.dir);
+  for(let i=0;i<8;i++){
+    const quote=`Решение ${i}: используем компонент номер ${i}. Причина: требование ${i} к надёжности и сопровождению.`;
+    const ep=s.capture('seed','user',quote);
+    s.commit('seed:'+i,[{id:'d'+i,kind:'decision',status:'accepted',expectedVersion:0,
+      text:`Компонент ${i} выбран для подсистемы ${i}. `+'Подробности решения. '.repeat(12),
+      rationale:`требование ${i} к надёжности и сопровождению`,source:{episode:ep,quote}} as any],'seed');
+  }
+  s.commit('seed:cp',[],'Следующий шаг: '+'проверить интеграцию и обновить документацию. '.repeat(40));
+  s.close();
+  await f.handlers.before_agent_start({prompt:'компонент решение'},f.ctx);
+  const out:any=await f.handlers.context({messages:[]},f.ctx);
+  return out.messages.find((m:any)=>m.customType==='project-memory-context').content as string;
+}
+const recordLines=(text:string)=>text.split('\n').filter(l=>l.trimStart().startsWith('{'));
+
+test('the final memory block stays within the limit and never cuts a record in half',async()=>{
+  const f=fixture(); try {
+    const content=await packedContext(f,5000);
+    expect(content.length).toBeLessThanOrEqual(5000);
+    const lines=recordLines(content);
+    expect(lines.length).toBeGreaterThan(0);
+    for(const l of lines) expect(()=>JSON.parse(l)).not.toThrow();
+    const s=new MemoryStore(f.dir); const receipt=s.lastContext(); s.close();
+    expect(receipt.records.map((r:any)=>r.id).sort()).toEqual(lines.map(l=>JSON.parse(l).id).sort());
+    expect(receipt.characters).toBe(content.length);
+  } finally { f.clean(); }
+});
+
+test('at the minimum allowed limit nothing is dropped without being named',async()=>{
+  const f=fixture(); try {
+    const content=await packedContext(f,2000);
+    expect(content.length).toBeLessThanOrEqual(2000);
+    for(const l of recordLines(content)) expect(()=>JSON.parse(l)).not.toThrow();
+    const notice=(content.match(/\[MEMORY_BUDGET[^\]]*\]/)?.[0] ?? '').toLowerCase();
+    expect(notice).not.toBe('');
+    if(!recordLines(content).length) expect(notice).toContain('registry');
+    if(!content.includes('Previous checkpoint')) expect(notice).toContain('checkpoint');
+  } finally { f.clean(); }
+});
+
+test('retrieval diagnostics report every delivered record as complete, none clipped',async()=>{
+  const f=fixture(); try {
+    const content=await packedContext(f,5000);
+    const s=new MemoryStore(f.dir); const r=s.lastRetrieval(); s.close();
+    const selected=r.candidates.filter((c:any)=>c.reason==='selected');
+    expect(selected.length).toBe(recordLines(content).length);
+    expect(selected.every((c:any)=>c.finalBlock==='complete')).toBe(true);
+  } finally { f.clean(); }
+});
+
+test('when everything fits, the block is not trimmed and carries no budget marker',async()=>{
+  const f=fixture(); try {
+    const s=new MemoryStore(f.dir);
+    const quote='Используем SQLite. Причина: один файл.';
+    const ep=s.capture('seed','user',quote);
+    s.commit('seed:1',[{id:'db',kind:'decision',status:'accepted',expectedVersion:0,text:'SQLite',
+      rationale:'один файл',source:{episode:ep,quote}} as any],'seed'); s.close();
+    await f.handlers.before_agent_start({prompt:'база'},f.ctx);
+    const out:any=await f.handlers.context({messages:[]},f.ctx);
+    const content=out.messages.find((m:any)=>m.customType==='project-memory-context').content;
+    expect(content).not.toContain('MEMORY_BUDGET');
+    expect(content).toContain('Canonical preview');
+    expect(content).toContain('Previous checkpoint');
+    expect(recordLines(content).map(l=>JSON.parse(l).id)).toEqual(['db']);
+    const t=new MemoryStore(f.dir); expect(t.lastContext().truncated).toBe(false); t.close();
+  } finally { f.clean(); }
+});
+
 test('session pause rejects all commits, permits reads, and resumes explicitly',async()=>{
   const f=fixture(); try {
     await f.handlers.before_agent_start({prompt:'Use SQLite'},f.ctx);
