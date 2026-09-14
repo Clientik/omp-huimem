@@ -93,6 +93,34 @@ test('/huimem adr-audit shows without writing, and apply writes with a byte-exac
   } finally { f.clean(); }
 });
 
+test('/huimem adr-audit reports invalid stored evidence and never writes an ADR',async()=>{
+  for(const reason of ['episode-missing','episode-not-user','quote-absent']) {
+    const f=fixture();
+    try {
+      const adr='.memory/adr/0001.md', legacy='# ADR\nOriginal text\n', quote='Use SQLite for local storage.';
+      mkdirSync(join(f.dir,'.memory/adr'),{recursive:true});
+      writeFileSync(join(f.dir,adr),legacy);
+      const s=new MemoryStore(f.dir);
+      try {
+        const episode=s.capture('run','user',quote);
+        s.commit('run:0',[{id:'db',kind:'decision',status:'accepted',expectedVersion:0,
+          text:'See '+adr,rationale:'local storage',source:{episode,quote}}],'decision');
+        if(reason==='episode-missing') s.db.query('DELETE FROM episodes WHERE id=?').run(episode);
+        else if(reason==='episode-not-user') s.db.query("UPDATE episodes SET role='assistant' WHERE id=?").run(episode);
+        else s.db.query("UPDATE episodes SET text='Unrelated text' WHERE id=?").run(episode);
+      } finally {s.close();}
+      for(const command of ['adr-audit','adr-audit apply']) {
+        await f.commands.huimem.handler(command,f.ctx);
+        const shown=String(f.notices.at(-1)?.content ?? '');
+        expect(shown).toContain('UNVERIFIED');
+        expect(shown).toContain(reason);
+        expect(readFileSync(join(f.dir,adr),'utf8')).toBe(legacy);
+        expect(existsSync(join(f.dir,'.memory/adr-backup'))).toBe(false);
+      }
+    } finally {f.clean();}
+  }
+});
+
 test('session pause rejects all commits, permits reads, and resumes explicitly',async()=>{
   const f=fixture(); try {
     await f.handlers.before_agent_start({prompt:'Use SQLite'},f.ctx);

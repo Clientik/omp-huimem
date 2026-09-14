@@ -1,9 +1,8 @@
 // ПЕРЕНОС СТАРЫХ ADR В КОНТРАКТ — ДАННЫМИ РЕЕСТРА, А НЕ ПОСЛУШАНИЕМ МОДЕЛИ.
 // Цитата и интерпретация разделяются в самом документе. Актуальные замеры и
 // ограничения — в docs/VALIDATION.md; превосходство переноса пока не доказано.
-// Источник цитаты — запись реестра, у которой причина проверена КОДОМ как дословная
-// подстрока цитаты пользователя (RATIONALE_SOURCE_REQUIRED в core.ts): это единственное
-// место, где атрибуция гарантирована не моделью.
+// Причина должна дословно входить в цитату, а цитата — в сохранённый эпизод
+// с ролью user. Проверяем первоисточник повторно, не доверяя одним полям реестра.
 // Проза не удаляется и не объявляется ложной — она целиком переносится под заголовок
 // «Интерпретация [?]». Так же Zep поступает с опровергнутым фактом: закрывает, не стирает.
 // Метки прямо в выводе read не ставятся: правка идёт в режиме hashline по номерам строк,
@@ -11,17 +10,29 @@
 import { readBasis } from './provenance';
 
 export type LatestRecord = { id: string; version: number; data: any };
+export type ReadEpisode = (id:string) => {id:string;role:string;text:string}|null|undefined;
+type EvidenceReason = 'episode-missing'|'episode-mismatch'|'episode-not-user'|'quote-absent';
+class EvidenceError extends Error {
+  constructor(public reason:EvidenceReason) {super('ADR_EVIDENCE: '+reason);}
+}
+function evidenceIssue(episode:string,quote:string,readEpisode:ReadEpisode):EvidenceReason|undefined {
+  const source=readEpisode?.(episode);
+  if(!source) return 'episode-missing';
+  if(source.id!==episode) return 'episode-mismatch';
+  if(source.role!=='user') return 'episode-not-user';
+  if(typeof source.text!=='string' || !quote.trim() || !source.text.includes(quote)) return 'quote-absent';
+}
 export type AuditItem =
   | { path: string; state: 'has-basis' }
   | { path: string; state: 'no-match' }
   | { path: string; state: 'ambiguous'; candidates: string[] }
   | { path: string; state: 'conflict'; reason:string }
+  | { path: string; state: 'unverified'; recordId:string; reason:EvidenceReason }
   | { path: string; state: 'migratable'; recordId: string; version: number; episode: string; quote: string; proposed: string; sourceHash:string };
 
 const norm = (p: string) => p.replaceAll('\\', '/');
 
-// Годится только решение, чья цитата — свидетельство пользователя и чья причина
-// дословно в ней содержится. Перепроверяем, а не полагаемся на то, что так было при записи.
+// Проверка формы записи; авторство и наличие цитаты отдельно проверяет evidenceIssue.
 export function eligible(data: any): boolean {
   return data?.kind === 'decision' && data?.status === 'accepted'
     && typeof data?.source?.episode === 'string' && data.source.episode.length > 0
@@ -68,12 +79,14 @@ export function migrate(original: string, record: { id: string; version: number;
   ].join(eol);
 }
 
-export function plan(path: string, text: string, records: LatestRecord[], date: string): AuditItem {
+export function plan(path: string, text: string, records: LatestRecord[], date: string, readEpisode:ReadEpisode): AuditItem {
   if (readBasis(text).section) return { path, state: 'has-basis' };
   const matched = records.filter(r => eligible(r.data) && mentions(r.data, path));
   if (!matched.length) return { path, state: 'no-match' };
   if (matched.length > 1) return { path, state: 'ambiguous', candidates: matched.map(r => r.id) };
   const r = matched[0];
+  const reason=evidenceIssue(r.data.source.episode,r.data.source.quote,readEpisode);
+  if(reason) return {path,state:'unverified',recordId:r.id,reason};
   const rec = { id: r.id, version: r.version, episode: r.data.source.episode, quote: r.data.source.quote };
   return { path, state: 'migratable', recordId: rec.id, version: rec.version, episode: rec.episode, quote: rec.quote, proposed: migrate(text, rec, date),sourceHash:hash(text) };
 }
@@ -101,11 +114,13 @@ function backupDirectory(root:string,relative:string) {
   }
 }
 
-export function publishPlan(root:string,item:Extract<AuditItem,{state:'migratable'}>,stamp:string) {
+export function publishPlan(root:string,item:Extract<AuditItem,{state:'migratable'}>,stamp:string,readEpisode:ReadEpisode) {
   if(!/^[A-Za-z0-9_-]+$/.test(stamp)) throw new Error('BACKUP_STAMP');
   if(!item.path.startsWith('.memory/adr/')) throw new Error('ADR_PATH');
   const source=safePath(root,item.path);
   const unchanged=()=>{
+    const reason=evidenceIssue(item.episode,item.quote,readEpisode);
+    if(reason) throw new EvidenceError(reason);
     if(!lstatSync(resolve(root,item.path)).isFile() || safePath(root,item.path)!==source)
       throw new Error('ADR_CHANGED: '+item.path);
     const bytes=readFileSync(source);
@@ -137,20 +152,21 @@ export function listAdrs(root: string): string[] {
     .sort();
 }
 
-export function audit(root: string, records: LatestRecord[], date: string): AuditItem[] {
-  return listAdrs(root).map(p => plan(p, readFileSync(resolve(root, p), 'utf8'), records, date));
+export function audit(root: string, records: LatestRecord[], date: string, readEpisode:ReadEpisode): AuditItem[] {
+  return listAdrs(root).map(p => plan(p, readFileSync(resolve(root, p), 'utf8'), records, date,readEpisode));
 }
 
 // План строится заново из свежего чтения прямо перед записью: между показом и записью
 // файл мог измениться, и переносить устаревший план нельзя.
-export function apply(root: string, records: LatestRecord[], date: string, stamp: string) {
+export function apply(root: string, records: LatestRecord[], date: string, stamp: string,readEpisode:ReadEpisode) {
   const written: { path: string; backup: string; recordId: string }[] = [];
   const skipped: AuditItem[] = [];
-  for (const item of audit(root, records, date)) {
+  for (const item of audit(root, records, date,readEpisode)) {
     if (item.state !== 'migratable') { skipped.push(item); continue; }
-    try {written.push(publishPlan(root,item,stamp));}
+    try {written.push(publishPlan(root,item,stamp,readEpisode));}
     catch(e:any) {
-      if(String(e).includes('ADR_CHANGED')) skipped.push({path:item.path,state:'conflict',reason:String(e)});
+      if(e instanceof EvidenceError) skipped.push({path:item.path,state:'unverified',recordId:item.recordId,reason:e.reason});
+      else if(String(e).includes('ADR_CHANGED')) skipped.push({path:item.path,state:'conflict',reason:String(e)});
       else throw e;
     }
   }

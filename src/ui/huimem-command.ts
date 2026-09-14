@@ -148,29 +148,31 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
         try {
           const store = deps.store(ctx);
           const date = new Date().toISOString().slice(0, 10);
+          const readEpisode = (id:string) => store.episode(id);
           const stale = 'Decisions from conversation track the hash of canonical documents, so records linked to rewritten ADRs will show STALE afterwards. Their user quotes are unchanged.';
           const describe = (i: any) =>
             i.state === 'has-basis' ? `  OK       ${i.path} — already has a basis section`
             : i.state === 'conflict' ? `  CONFLICT ${i.path} — ${i.reason}; no migration written`
+            : i.state === 'unverified' ? `  UNVERIFIED ${i.path} <- ${i.recordId} — ${i.reason}; no migration written`
             : i.state === 'no-match' ? `  SKIP     ${i.path} — no accepted user decision names this document; nothing proposed`
             : i.state === 'ambiguous' ? `  SKIP     ${i.path} — several decisions name it (${i.candidates.join(', ')}); nothing chosen`
             : `  MIGRATE  ${i.path}  <-  ${i.recordId} v${i.version}\n           basis: ${i.quote.split('\n')[0].slice(0, 160)}\n           all original lines move under "Interpretation [?]"; nothing is deleted`;
           if (value === 'apply') {
             const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-            const { written, skipped } = apply(ctx.cwd, store.latestRecords(), date, stamp);
+            const { written, skipped } = apply(ctx.cwd, store.latestRecords(), date, stamp,readEpisode);
             return say([
               `ADR migration applied: ${written.length} written, ${skipped.length} skipped.`,
               ...written.map(w => `  WROTE    ${w.path}  <-  ${w.recordId}\n           original: ${w.backup}`),
               ...skipped.map(describe),
-              '', written.length ? stale : 'Nothing needed migration.',
+              '', written.length ? stale : 'No documents migrated; see skip reasons above.',
             ].join('\n'));
           }
-          const items = audit(ctx.cwd, store.latestRecords(), date);
+          const items = audit(ctx.cwd, store.latestRecords(), date,readEpisode);
           const pending = items.filter(i => i.state === 'migratable').length;
           return say([
             `ADR audit (dry run, nothing written): ${items.length} document(s), ${pending} can be migrated.`,
             ...items.map(describe), '',
-            'A basis is taken only from an accepted decision whose rationale is verified by code as an exact excerpt of the user quote.',
+            'A basis requires an accepted decision, an exact rationale inside its quote, and that exact quote in the stored user episode.',
             'No document is declared false. Unmatched or ambiguous documents are never guessed.',
             pending ? `Run /huimem adr-audit apply to write. Originals go to .memory/adr-backup/. ${stale}` : '',
           ].join('\n'));

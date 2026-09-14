@@ -662,6 +662,24 @@ import { resolve as resolve6 } from "path";
 import { closeSync as closeSync2, fsyncSync as fsyncSync2, lstatSync as lstatSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync4, writeFileSync as writeFileSync3, openSync as openSync2, renameSync as renameSync2, unlinkSync as unlinkSync2 } from "fs";
 import { dirname, resolve as resolve5 } from "path";
 import { createHash as createHash3, randomUUID as randomUUID3 } from "crypto";
+class EvidenceError extends Error {
+  reason;
+  constructor(reason) {
+    super("ADR_EVIDENCE: " + reason);
+    this.reason = reason;
+  }
+}
+function evidenceIssue(episode, quote2, readEpisode) {
+  const source = readEpisode?.(episode);
+  if (!source)
+    return "episode-missing";
+  if (source.id !== episode)
+    return "episode-mismatch";
+  if (source.role !== "user")
+    return "episode-not-user";
+  if (typeof source.text !== "string" || !quote2.trim() || !source.text.includes(quote2))
+    return "quote-absent";
+}
 var norm = (p) => p.replaceAll("\\", "/");
 function eligible(data) {
   return data?.kind === "decision" && data?.status === "accepted" && typeof data?.source?.episode === "string" && data.source.episode.length > 0 && typeof data?.source?.quote === "string" && data.source.quote.trim().length > 0 && typeof data?.rationale === "string" && data.rationale.length > 0 && data.source.quote.includes(data.rationale);
@@ -703,7 +721,7 @@ function migrate(original, record, date) {
     ...rest
   ].join(eol);
 }
-function plan(path, text, records, date) {
+function plan(path, text, records, date, readEpisode) {
   if (readBasis(text).section)
     return { path, state: "has-basis" };
   const matched = records.filter((r2) => eligible(r2.data) && mentions(r2.data, path));
@@ -712,6 +730,9 @@ function plan(path, text, records, date) {
   if (matched.length > 1)
     return { path, state: "ambiguous", candidates: matched.map((r2) => r2.id) };
   const r = matched[0];
+  const reason = evidenceIssue(r.data.source.episode, r.data.source.quote, readEpisode);
+  if (reason)
+    return { path, state: "unverified", recordId: r.id, reason };
   const rec = { id: r.id, version: r.version, episode: r.data.source.episode, quote: r.data.source.quote };
   return { path, state: "migratable", recordId: rec.id, version: rec.version, episode: rec.episode, quote: rec.quote, proposed: migrate(text, rec, date), sourceHash: hash3(text) };
 }
@@ -735,13 +756,16 @@ function backupDirectory(root, relative4) {
     safePath(root, current);
   }
 }
-function publishPlan(root, item, stamp) {
+function publishPlan(root, item, stamp, readEpisode) {
   if (!/^[A-Za-z0-9_-]+$/.test(stamp))
     throw new Error("BACKUP_STAMP");
   if (!item.path.startsWith(".memory/adr/"))
     throw new Error("ADR_PATH");
   const source = safePath(root, item.path);
   const unchanged = () => {
+    const reason = evidenceIssue(item.episode, item.quote, readEpisode);
+    if (reason)
+      throw new EvidenceError(reason);
     if (!lstatSync2(resolve5(root, item.path)).isFile() || safePath(root, item.path) !== source)
       throw new Error("ADR_CHANGED: " + item.path);
     const bytes = readFileSync4(source);
@@ -790,21 +814,23 @@ function listAdrs(root) {
     }
   }).sort();
 }
-function audit(root, records, date) {
-  return listAdrs(root).map((p) => plan(p, readFileSync4(resolve5(root, p), "utf8"), records, date));
+function audit(root, records, date, readEpisode) {
+  return listAdrs(root).map((p) => plan(p, readFileSync4(resolve5(root, p), "utf8"), records, date, readEpisode));
 }
-function apply(root, records, date, stamp) {
+function apply(root, records, date, stamp, readEpisode) {
   const written = [];
   const skipped = [];
-  for (const item of audit(root, records, date)) {
+  for (const item of audit(root, records, date, readEpisode)) {
     if (item.state !== "migratable") {
       skipped.push(item);
       continue;
     }
     try {
-      written.push(publishPlan(root, item, stamp));
+      written.push(publishPlan(root, item, stamp, readEpisode));
     } catch (e) {
-      if (String(e).includes("ADR_CHANGED"))
+      if (e instanceof EvidenceError)
+        skipped.push({ path: item.path, state: "unverified", recordId: item.recordId, reason: e.reason });
+      else if (String(e).includes("ADR_CHANGED"))
         skipped.push({ path: item.path, state: "conflict", reason: String(e) });
       else
         throw e;
@@ -938,31 +964,32 @@ ${result.path}` + (result.error ? `
         try {
           const store = deps.store(ctx);
           const date = new Date().toISOString().slice(0, 10);
+          const readEpisode = (id) => store.episode(id);
           const stale = "Decisions from conversation track the hash of canonical documents, so records linked to rewritten ADRs will show STALE afterwards. Their user quotes are unchanged.";
-          const describe = (i) => i.state === "has-basis" ? `  OK       ${i.path} \u2014 already has a basis section` : i.state === "conflict" ? `  CONFLICT ${i.path} \u2014 ${i.reason}; no migration written` : i.state === "no-match" ? `  SKIP     ${i.path} \u2014 no accepted user decision names this document; nothing proposed` : i.state === "ambiguous" ? `  SKIP     ${i.path} \u2014 several decisions name it (${i.candidates.join(", ")}); nothing chosen` : `  MIGRATE  ${i.path}  <-  ${i.recordId} v${i.version}
+          const describe = (i) => i.state === "has-basis" ? `  OK       ${i.path} \u2014 already has a basis section` : i.state === "conflict" ? `  CONFLICT ${i.path} \u2014 ${i.reason}; no migration written` : i.state === "unverified" ? `  UNVERIFIED ${i.path} <- ${i.recordId} \u2014 ${i.reason}; no migration written` : i.state === "no-match" ? `  SKIP     ${i.path} \u2014 no accepted user decision names this document; nothing proposed` : i.state === "ambiguous" ? `  SKIP     ${i.path} \u2014 several decisions name it (${i.candidates.join(", ")}); nothing chosen` : `  MIGRATE  ${i.path}  <-  ${i.recordId} v${i.version}
            basis: ${i.quote.split(`
 `)[0].slice(0, 160)}
            all original lines move under "Interpretation [?]"; nothing is deleted`;
           if (value === "apply") {
             const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-            const { written, skipped } = apply(ctx.cwd, store.latestRecords(), date, stamp);
+            const { written, skipped } = apply(ctx.cwd, store.latestRecords(), date, stamp, readEpisode);
             return say([
               `ADR migration applied: ${written.length} written, ${skipped.length} skipped.`,
               ...written.map((w) => `  WROTE    ${w.path}  <-  ${w.recordId}
            original: ${w.backup}`),
               ...skipped.map(describe),
               "",
-              written.length ? stale : "Nothing needed migration."
+              written.length ? stale : "No documents migrated; see skip reasons above."
             ].join(`
 `));
           }
-          const items = audit(ctx.cwd, store.latestRecords(), date);
+          const items = audit(ctx.cwd, store.latestRecords(), date, readEpisode);
           const pending = items.filter((i) => i.state === "migratable").length;
           return say([
             `ADR audit (dry run, nothing written): ${items.length} document(s), ${pending} can be migrated.`,
             ...items.map(describe),
             "",
-            "A basis is taken only from an accepted decision whose rationale is verified by code as an exact excerpt of the user quote.",
+            "A basis requires an accepted decision, an exact rationale inside its quote, and that exact quote in the stored user episode.",
             "No document is declared false. Unmatched or ambiguous documents are never guessed.",
             pending ? `Run /huimem adr-audit apply to write. Originals go to .memory/adr-backup/. ${stale}` : ""
           ].join(`

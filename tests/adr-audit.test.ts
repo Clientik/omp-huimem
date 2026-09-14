@@ -22,9 +22,60 @@ const decision = (over: any = {}) => ({ id: 'fact-retry', version: 1, data: {
   kind: 'decision', status: 'accepted', text: 'maxAttempts = 7. ADR ' + ADR,
   rationale: 'шлюз Берилл-42 удерживает окно дедупликации 19 минут',
   source: { episode: 'ep-1', quote: QUOTE }, ...over } });
+const readEpisode = (id:string) => id==='ep-1' ? {id,role:'user',text:QUOTE} : undefined;
+
+test.each([
+  ['missing episode', undefined, 'episode-missing'],
+  ['assistant quote', {id:'ep-1',role:'assistant',text:QUOTE}, 'episode-not-user'],
+  ['invented quote', {id:'ep-1',role:'user',text:'Другое сообщение'}, 'quote-absent'],
+  ['wrong episode', {id:'ep-other',role:'user',text:QUOTE}, 'episode-mismatch'],
+])('ADR migration rejects %s despite accepted registry fields',(_name,episode,reason)=>{
+  const item=plan(ADR,LEGACY,[decision()],'d',()=>episode as any);
+  expect(item).toEqual({path:ADR,state:'unverified',recordId:'fact-retry',reason});
+  expect((item as any).proposed).toBeUndefined();
+});
+
+test('an exact excerpt of a stored user message qualifies, with surrounding text',()=>{
+  const item=plan(ADR,LEGACY,[decision()],'d',id=>({id,role:'user',text:'Начало. '+QUOTE+' Конец.'}));
+  expect(item.state).toBe('migratable');
+});
+
+test('publication refuses a plan whose user evidence disappeared',()=>{
+  const dir=mkdtempSync(join(import.meta.dir,'adr-evidence-'));
+  try {
+    mkdirSync(join(dir,'.memory/adr'),{recursive:true});
+    writeFileSync(join(dir,ADR),LEGACY);
+    const item=plan(ADR,LEGACY,[decision()],'d',readEpisode);
+    if(item.state!=='migratable') throw new Error('fixture');
+    expect(()=>publishPlan(dir,item,'stamp',()=>undefined)).toThrow('episode-missing');
+    expect(readFileSync(join(dir,ADR),'utf8')).toBe(LEGACY);
+    expect(existsSync(join(dir,'.memory/adr-backup'))).toBe(false);
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+test('apply rechecks persisted evidence after dry run and leaves ADR and backups untouched',()=>{
+  const dir=mkdtempSync(join(import.meta.dir,'adr-evidence-'));
+  let store:MemoryStore|undefined;
+  try {
+    mkdirSync(join(dir,'.memory/adr'),{recursive:true});
+    writeFileSync(join(dir,ADR),LEGACY);
+    store=new MemoryStore(dir);
+    const episode=store.capture('run','user',QUOTE);
+    const record=decision({source:{episode,quote:QUOTE}});
+    store.commit('run:0',[{...record.data,id:record.id,expectedVersion:0}],'decision');
+    const read=(id:string)=>store!.episode(id);
+    expect(audit(dir,store.latestRecords(),'d',read)[0].state).toBe('migratable');
+    store.db.query('DELETE FROM episodes WHERE id=?').run(episode);
+    const result=apply(dir,store.latestRecords(),'d','stamp',read);
+    expect(result.written).toEqual([]);
+    expect(result.skipped[0]).toEqual({path:ADR,state:'unverified',recordId:record.id,reason:'episode-missing'});
+    expect(readFileSync(join(dir,ADR),'utf8')).toBe(LEGACY);
+    expect(existsSync(join(dir,'.memory/adr-backup'))).toBe(false);
+  } finally {store?.close();rmSync(dir,{recursive:true,force:true});}
+});
 
 test('a legacy ADR gets the registry quote as its basis and keeps every original line', () => {
-  const item = plan(ADR, LEGACY, [decision()], '2026-09-14');
+  const item = plan(ADR, LEGACY, [decision()], '2026-09-14', readEpisode);
   expect(item.state).toBe('migratable');
   if (item.state !== 'migratable') return;
   const basis = readBasis(item.proposed);
@@ -40,18 +91,18 @@ test('a legacy ADR gets the registry quote as its basis and keeps every original
 
 test('a document that already has a basis section is left alone', () => {
   const withBasis = '# 0002\n\n## Основание\n> «цитата»\n';
-  expect(plan('.memory/adr/0002.md', withBasis, [decision()], 'd').state).toBe('has-basis');
+  expect(plan('.memory/adr/0002.md', withBasis, [decision()], 'd', readEpisode).state).toBe('has-basis');
 });
 
 test('no matching decision means no proposal, not a guessed basis', () => {
-  const item = plan(ADR, LEGACY, [decision({ text: 'совсем другое решение без пути' })], 'd');
+  const item = plan(ADR, LEGACY, [decision({ text: 'совсем другое решение без пути' })], 'd', readEpisode);
   expect(item.state).toBe('no-match');
   expect((item as any).proposed).toBeUndefined();
 });
 
 test('two decisions pointing at one ADR are reported as ambiguous and nothing is chosen', () => {
   const second = { ...decision(), id: 'fact-retry-2' };
-  const item = plan(ADR, LEGACY, [decision(), second], 'd');
+  const item = plan(ADR, LEGACY, [decision(), second], 'd', readEpisode);
   expect(item.state).toBe('ambiguous');
   expect((item as any).candidates.sort()).toEqual(['fact-retry', 'fact-retry-2']);
 });
@@ -82,16 +133,16 @@ test('a changed source and an occupied backup are never overwritten',()=>{
   try {
     mkdirSync(join(dir,'.memory/adr'),{recursive:true});
     writeFileSync(join(dir,ADR),LEGACY);
-    const item=plan(ADR,LEGACY,[decision()],'d');
+    const item=plan(ADR,LEGACY,[decision()],'d',readEpisode);
     if(item.state!=='migratable') throw new Error('fixture');
     writeFileSync(join(dir,ADR),LEGACY+'concurrent edit');
-    expect(()=>publishPlan(dir,item,'stamp')).toThrow('ADR_CHANGED');
+    expect(()=>publishPlan(dir,item,'stamp',readEpisode)).toThrow('ADR_CHANGED');
     expect(readFileSync(join(dir,ADR),'utf8')).toBe(LEGACY+'concurrent edit');
     writeFileSync(join(dir,ADR),LEGACY);
     mkdirSync(join(dir,'.memory/adr-backup/stamp'),{recursive:true});
     const backup=join(dir,'.memory/adr-backup/stamp/0001-max-retry-attempts.md');
     writeFileSync(backup,'existing backup');
-    expect(()=>publishPlan(dir,item,'stamp')).toThrow();
+    expect(()=>publishPlan(dir,item,'stamp',readEpisode)).toThrow();
     expect(readFileSync(backup,'utf8')).toBe('existing backup');
     expect(readFileSync(join(dir,ADR),'utf8')).toBe(LEGACY);
   } finally {rmSync(dir,{recursive:true,force:true});}
@@ -104,7 +155,7 @@ test('backup junctions cannot redirect migration outside the project',()=>{
     mkdirSync(join(dir,'.memory/adr'),{recursive:true});
     writeFileSync(join(dir,ADR),LEGACY);
     symlinkSync(outside,join(dir,'.memory/adr-backup'),'junction');
-    expect(()=>apply(dir,[decision()],'d','stamp')).toThrow();
+    expect(()=>apply(dir,[decision()],'d','stamp',readEpisode)).toThrow();
     expect(existsSync(join(outside,'stamp'))).toBe(false);
     expect(readFileSync(join(dir,ADR),'utf8')).toBe(LEGACY);
   } finally {rmSync(dir,{recursive:true,force:true});rmSync(outside,{recursive:true,force:true});}
@@ -120,7 +171,7 @@ test('an edit during backup publication causes a conflict and preserves both ver
     if(!changed) {changed=true;writeFileSync(join(dir,ADR),LEGACY+'external edit');}
   });
   try {
-    const result=apply(dir,[decision()],'d','stamp');
+    const result=apply(dir,[decision()],'d','stamp',readEpisode);
     expect(changed).toBe(true);
     expect(result.written).toEqual([]);
     expect(result.skipped[0].state).toBe('conflict');
@@ -151,9 +202,9 @@ test('apply backs up the original byte for byte outside the ADR folder and is id
       source: { episode, quote: QUOTE } } as any], 'decision');
     expect(store.current('fact-retry')!.freshness).not.toBe('STALE');
 
-    const planned = audit(dir, store.latestRecords(), '2026-09-14');
+    const planned = audit(dir, store.latestRecords(), '2026-09-14', id=>store.episode(id));
     expect(planned.map(i => i.path)).toEqual([ADR]);      // README не аудитируется
-    const result = apply(dir, store.latestRecords(), '2026-09-14', 'stamp-1');
+    const result = apply(dir, store.latestRecords(), '2026-09-14', 'stamp-1', id=>store.episode(id));
     expect(result.written).toHaveLength(1);
     const backup = join(dir, result.written[0].backup);
     expect(result.written[0].backup.startsWith('.memory/adr-backup/')).toBe(true);
@@ -161,7 +212,7 @@ test('apply backs up the original byte for byte outside the ADR folder and is id
     expect(readBasis(readFileSync(join(dir, ADR), 'utf8')).quotes.join('\n')).toBe(QUOTE);
 
     // Резервная копия не попадает в следующий аудит, повторный запуск ничего не переписывает.
-    const again = apply(dir, store.latestRecords(), '2026-09-14', 'stamp-2');
+    const again = apply(dir, store.latestRecords(), '2026-09-14', 'stamp-2', id=>store.episode(id));
     expect(again.written).toHaveLength(0);
     expect(again.skipped.map(i => i.state)).toEqual(['has-basis']);
     expect(existsSync(join(dir, '.memory/adr-backup/stamp-2'))).toBe(false);
