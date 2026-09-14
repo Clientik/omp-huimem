@@ -80,7 +80,7 @@ question matches, even when the question is unrelated; `/huimem unrequire <id>` 
 `.memory/settings.json`. Required records together take at most half of the recall budget. A
 longer one is shown as the exact start of its quote, marked `quoteClipped`; if even that does
 not fit, it is left out and named in a `REQUIRED records not shown in full` notice, so it is read
-by ID instead of pushing out the current task. Missing or retired IDs are named there too. The
+by ID and its space goes to records that match the request, if they fit. Missing or retired IDs are named there too. The
 notice is never cut mid-ID: a long list becomes a count, and `project_memory status` returns
 every required ID.
 Other records are ranked by question match, then current `doing`/`blocked` tasks, then the
