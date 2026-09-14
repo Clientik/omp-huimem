@@ -74,6 +74,18 @@ function contract(install: typeof installSource) {
     } finally { rmSync(d.dir, { recursive: true, force: true }); }
   });
 
+  test('parallel-tasks: the next step of the asked task is labelled with its id, never presented as the other task', async () => {
+    const d = await newSession(install, SCENARIOS.find(s => s.id === 'parallel-tasks')!);
+    try {
+      expect(d.block).not.toContain('Previous checkpoint');
+      expect(d.block).toMatch(/- task-invoices \[doing, matches this request;[^\]]*\]: Следующий шаг: добавить колонку НДС/);
+      expect(d.block).toMatch(/- task-orders \[doing;[^\]]*\]: Следующий шаг: написать down-миграцию/);
+      const s = new MemoryStore(d.dir); const r = s.lastRetrieval(); s.close();
+      expect(r.checkpoints.tasks.map((t: any) => [t.task, t.matched])).toEqual([['task-invoices', true], ['task-orders', false]]);
+      expect(r.checkpoints.delivered).toBe(true);
+    } finally { rmSync(d.dir, { recursive: true, force: true }); }
+  });
+
   test('task-displacement: current work is delivered before unrelated accepted decisions', async () => {
     const d = await newSession(install, SCENARIOS.find(s => s.id === 'task-displacement')!);
     try {

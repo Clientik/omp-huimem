@@ -10,6 +10,24 @@ export type RetrievalResult = { text:string; queryHash:string; budget:number|nul
 export type Change = { id: string; kind: string; text: string; status: string; expectedVersion: number; authorityHash?: string; sourcePolicyHash?: string;
   source: Source; rationale?: string; links?: string[] };
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+// Слова запроса от трёх букв сравниваются с началом слов записи; у длинных отбрасывается до двух
+// букв окончания. Общие для поиска записей и выбора чекпоинтов задач.
+const words = (s: string) => s.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+export const queryTerms = (query: string) =>
+  [...new Set(words(query).filter(t => t.length >= 3).map(t => t.slice(0, Math.max(3, t.length - (t.length >= 5 ? 2 : 1)))))];
+export const termScore = (terms: string[], text: string) => {
+  const own = words(text);
+  return terms.reduce((n, t) => n + (own.some(w => w.startsWith(t)) ? 1 : 0), 0);
+};
+// Ветка git читается из файлов, без запуска git: .git — каталог или файл «gitdir: …» у worktree.
+export function gitBranch(root: string): string | null {
+  try {
+    let dir = resolve(root, '.git');
+    if (statSync(dir).isFile()) dir = resolve(root, readFileSync(dir, 'utf8').replace(/^gitdir:\s*/, '').trim());
+    const head = readFileSync(resolve(dir, 'HEAD'), 'utf8').trim();
+    return head.startsWith('ref: refs/heads/') ? head.slice('ref: refs/heads/'.length) : head.slice(0, 12) || null;
+  } catch { return null; }
+}
 export const scrub = (s: string) => s.replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9._-]{16,})\b/g, '[REDACTED]')
   .replace(/((?:api[_-]?key|password|secret|token)\s*[:=]\s*)["']?[^\s"',;]+/gi, '$1[REDACTED]');
 export function safePath(root: string, path: string): string {
@@ -51,6 +69,10 @@ export class MemoryStore {
         this.db.exec('CREATE TABLE IF NOT EXISTS projection(id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL, last_hash TEXT)');
         this.db.exec('CREATE TABLE IF NOT EXISTS context_receipts(seq INTEGER PRIMARY KEY, run TEXT NOT NULL, hash TEXT NOT NULL, characters INTEGER NOT NULL, truncated INTEGER NOT NULL, records TEXT NOT NULL, time TEXT NOT NULL)');
         this.db.exec('CREATE TABLE IF NOT EXISTS retrieval_receipts(seq INTEGER PRIMARY KEY, run TEXT NOT NULL, channel TEXT NOT NULL, data TEXT NOT NULL, time TEXT NOT NULL)');
+        // Область чекпоинта — отдельная таблица, а не новый столбец checkpoints: прежние версии
+        // пишут INSERT INTO checkpoints VALUES (?,?,?) и с лишним столбцом упали бы. Номер схемы
+        // не меняется; старый плагин эту таблицу не видит, его чекпоинты считаются без задачи.
+        this.db.exec('CREATE TABLE IF NOT EXISTS checkpoint_scope(run TEXT PRIMARY KEY, task TEXT, branch TEXT)');
         if(version?.value==='1') stageProjection(this.db);
         this.db.query("INSERT OR REPLACE INTO meta VALUES ('schema','2')").run();
       }).immediate();
@@ -84,7 +106,7 @@ export class MemoryStore {
     const r=this.db.query('SELECT run,hash,characters,truncated,records,time FROM context_receipts ORDER BY seq DESC LIMIT 1').get() as any;
     return r ? {...r,truncated:Boolean(r.truncated),records:JSON.parse(r.records)} : null;
   }
-  recordRetrieval(run:string,channel:'context'|'tool-search'|'tool-id',result:RetrievalResult,finalRegistry?:string) {
+  recordRetrieval(run:string,channel:'context'|'tool-search'|'tool-id',result:RetrievalResult,finalRegistry?:string,checkpoints?:unknown) {
     const delivered=new Set<string>();
     if(finalRegistry!==undefined) for(const line of finalRegistry.split('\n')) {
       try { const r=JSON.parse(line); if(typeof r.id==='string' && Number.isInteger(r.version)) delivered.add(`${r.id}@${r.version}`); } catch {}
@@ -93,7 +115,8 @@ export class MemoryStore {
       : ['selected','quote-clipped'].includes(c.reason) ? (delivered.has(`${c.id}@${c.version}`) ? (c.reason==='selected' ? 'complete' : 'quote-clipped') : 'clipped') : 'not-selected'}));
     const data={queryHash:result.queryHash,budget:result.budget,characters:result.text.length,
       outputHash:hash(result.text),finalRegistryCharacters:finalRegistry?.length ?? null,
-      counts:result.counts,totalCandidates:result.totalCandidates,detailsOmitted:result.detailsOmitted,candidates};
+      counts:result.counts,totalCandidates:result.totalCandidates,detailsOmitted:result.detailsOmitted,candidates,
+      ...(checkpoints===undefined ? {} : {checkpoints})};
     this.db.transaction(()=>{
       this.db.query('INSERT INTO retrieval_receipts(run,channel,data,time) VALUES(?,?,?,?)').run(run,channel,JSON.stringify(data),new Date().toISOString());
       this.db.exec('DELETE FROM retrieval_receipts WHERE seq NOT IN (SELECT seq FROM retrieval_receipts ORDER BY seq DESC LIMIT 100)');
@@ -158,6 +181,31 @@ export class MemoryStore {
   }
   checkpoint(run: string) { return this.db.query('SELECT * FROM checkpoints WHERE run=?').get(run) as any; }
   latestCheckpoint() { return this.db.query('SELECT * FROM checkpoints ORDER BY time DESC LIMIT 1').get() as any; }
+  // ЗАМЕРЕНО 2026-09-14 (tests/memory-scenarios.ts, parallel-tasks): блок памяти брал последний
+  // чекпоинт всей базы. Вопрос про задачу A получал «Previous checkpoint» задачи B, а шаг A не
+  // был доступен ни в блоке, ни в RECORDS.md, ни через инструмент. Теперь чекпоинт с задачей
+  // показывается только под её ID, а без задачи — отдельной строкой.
+  checkpointView(query: string, limit = 3) {
+    const rows = this.db.query(`SELECT c.run,c.summary,c.time,s.task,s.branch FROM checkpoints c
+      LEFT JOIN checkpoint_scope s ON s.run=c.run ORDER BY c.time DESC`).all() as any[];
+    const unscoped = rows.find(r => !r.task) ?? null;
+    const terms = queryTerms(query);
+    const seen = new Set<string>(), tasks: { task: string; status: string; summary: string; time: string; branch: string | null; matched: boolean }[] = [];
+    for (const r of rows) {
+      if (!r.task || seen.has(r.task)) continue;
+      seen.add(r.task);
+      const record = this.current(r.task);
+      const matched = !!record && terms.length > 0 && termScore(terms, record.text + ' ' + record.id) > 0;
+      if (!record || record.status === 'retired' || (record.status === 'done' && !matched)) continue;
+      tasks.push({ task: r.task, status: record.status, summary: r.summary, time: r.time, branch: r.branch ?? null, matched });
+    }
+    tasks.sort((a, b) => Number(b.matched) - Number(a.matched) || b.time.localeCompare(a.time));
+    return { unscoped, tasks: tasks.slice(0, limit), omitted: Math.max(0, tasks.length - limit) };
+  }
+  taskCheckpoint(task: string) {
+    return this.db.query(`SELECT c.summary,c.time,s.branch FROM checkpoints c JOIN checkpoint_scope s ON s.run=c.run
+      WHERE s.task=? ORDER BY c.time DESC LIMIT 1`).get(task) as any ?? null;
+  }
   episodes(query: string) {
     const term = query.replace(/[\\%_]/g, x => '\\' + x);
     return this.db.query("SELECT id,role,substr(text,1,1600) text,time FROM episodes WHERE text LIKE ? ESCAPE '\\' ORDER BY time DESC LIMIT 5").all('%' + term + '%');
@@ -187,7 +235,9 @@ export class MemoryStore {
     }
     if (c.links && (!Array.isArray(c.links) || c.links.length > 20 || c.links.some(x => typeof x !== 'string'))) throw new Error('INVALID_LINKS');
   }
-  commit(run: string, changes: Change[], summary: string) {
+  // scope.task — ID задачи, к которой относится сводка; без него берётся единственная задача среди
+  // изменений. scope.branch — ветка git на момент записи, только для диагностики: ветка не задача.
+  commit(run: string, changes: Change[], summary: string, scope: { task?: string; branch?: string | null } = {}) {
     // Отказ должен говорить, ЧТО не так. Раньше все случаи давали одинаковый
     // INVALID_CHECKPOINT, и модель трижды повторяла один и тот же неверный вызов,
     // не понимая причины (замерено на живой сессии 2026-09-08). Проверку не
@@ -211,7 +261,15 @@ export class MemoryStore {
       for (const c of changes) this.db.query('INSERT INTO versions VALUES (?,?,?,?)').run(c.id, c.expectedVersion + 1, JSON.stringify({...c,authorityHash,
         sourcePolicyHash:c.kind==='fact' && c.source.path ? policyHash : undefined}), time);
       if (authorityHash !== this.authority().hash) throw new Error('AUTHORITY_CHANGED: reread canonical files and retry');
+      const changedTasks = changes.filter(c => c.kind === 'task').map(c => c.id);
+      let task = scope.task;
+      if (task !== undefined) {
+        const own = changes.find(c => c.id === task), stored = this.current(task);
+        if ((own ?? stored)?.kind !== 'task') throw new Error(`INVALID_TASK_SCOPE: ${task} is not a saved task record; save the task first or omit task`);
+      } else if (changedTasks.length === 1) task = changedTasks[0];
       this.db.query('INSERT OR REPLACE INTO checkpoints VALUES (?,?,?)').run(run, summary, time);
+      if (task || scope.branch) this.db.query('INSERT OR REPLACE INTO checkpoint_scope VALUES (?,?,?)').run(run, task ?? null, scope.branch ?? null);
+      else this.db.query('DELETE FROM checkpoint_scope WHERE run=?').run(run);
       if(changes.length) stageProjection(this.db);
       this.probe();
     }).immediate();
@@ -228,15 +286,13 @@ export class MemoryStore {
     // двухбуквенных слов («на» внутри «журнал») давало всем 25 посторонним решениям ранг выше
     // текущей задачи, и задача не доходила до модели. Теперь слово запроса от трёх букв
     // сравнивается с началом слов записи; у длинных слов отбрасываются до двух букв окончания.
-    const words = (s: string) => s.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-    const terms = [...new Set(words(query).filter(t => t.length >= 3).map(t => t.slice(0, Math.max(3, t.length - (t.length >= 5 ? 2 : 1)))))];
+    const terms = queryTerms(query);
     const requiredSet = new Set(required);
     const records = rows.map(row => {
       const c = JSON.parse(row.data) as Change;
       let stale = Boolean(this.authorityChanged(c, authority));
       if (c.source.path) { try { stale = stale || hash(sourceText(this.root, c.source.path)) !== c.source.hash; } catch { stale = true; } }
-      const own = words(c.text + ' ' + c.id + ' ' + (c.rationale ?? ''));
-      const score = terms.reduce((n, t) => n + (own.some(w => w.startsWith(t)) ? 1 : 0), 0);
+      const score = termScore(terms, c.text + ' ' + c.id + ' ' + (c.rationale ?? ''));
       const pinned = c.status === 'accepted' || ['doing','blocked','todo'].includes(c.status);
       // Порядок: обязательные; совпавшие с запросом; текущая работа; остальные закреплённые.
       const tier = requiredSet.has(c.id) ? 0 : score > 0 ? 1 : ['doing','blocked'].includes(c.status) ? 2 : c.status === 'todo' ? 3 : 4;

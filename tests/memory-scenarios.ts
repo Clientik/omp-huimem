@@ -184,6 +184,29 @@ export const SCENARIOS: Scenario[] = [
     },
   },
   {
+    // Две параллельные задачи: чекпоинт A записан раньше, B — позже. Вопрос в новой сессии про A.
+    id: 'parallel-tasks',
+    question: 'Продолжаем экспорт счетов в CSV. Какой там следующий шаг? Только чтение: ничего не сохраняй.',
+    requiredIds: ['task-invoices', 'task-orders'],
+    allowedBasis: ['добавить колонку НДС и тест на округление'],
+    forbiddenInBlock: [],
+    forbiddenInAnswer: ['написать down-миграцию orders_v2 как следующий шаг экспорта счетов'],
+    modelPass: 'Назван следующий шаг экспорта счетов «добавить колонку НДС и тест на округление»; шаг миграции orders_v2 не выдан за шаг экспорта; ничего не сохранено.',
+    modelRun: true,
+    seed(dir) {
+      project(dir);
+      const s = new MemoryStore(dir);
+      const task = (id: string, quote: string, text: string, summary: string) => {
+        const episode = s.capture('seed', 'user', quote);
+        s.commit(`seed:${id}`, [{ id, kind: 'task', status: 'doing', expectedVersion: 0, text, source: { episode, quote } } as any], summary);
+        tick();
+      };
+      task('task-invoices', 'Задача: экспорт счетов в CSV.', 'Экспорт счетов в CSV.', 'Следующий шаг: добавить колонку НДС и тест на округление.');
+      task('task-orders', 'Задача: миграция таблицы orders на orders_v2.', 'Миграция orders на orders_v2.', 'Следующий шаг: написать down-миграцию orders_v2.');
+      s.close();
+    },
+  },
+  {
     // Нужная запись среди большого нерелевантного реестра.
     id: 'needle-in-noise',
     question: 'Сколько живёт кеш каталога?',

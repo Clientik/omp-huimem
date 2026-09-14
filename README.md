@@ -83,6 +83,14 @@ one is shown as the exact start of its quote, marked `quoteClipped`, and named i
 Other records are ranked by question match, then current `doing`/`blocked` tasks, then the
 remaining accepted decisions; at equal rank a STALE record yields to a fresh one.
 
+**Parallel tasks:** a checkpoint summary belongs to a task when the commit changes exactly one
+task record or passes `task=<task id>`. The memory block then lists `Task checkpoints` under
+each task's ID, with the task that matches the request first, so the next step of one task
+is not presented as another's. A summary without a task is shown separately with its time;
+`project_memory recall` by a task ID returns its last checkpoint. The git branch is recorded
+for diagnostics only. A separate `git worktree` has its own `.memory/runtime` and does not see
+the main checkout's records.
+
 ## Memory layers
 
 | Location | Purpose |

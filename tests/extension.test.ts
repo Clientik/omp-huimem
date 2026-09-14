@@ -168,7 +168,8 @@ test('at the minimum allowed limit the required rules fit and nothing is dropped
     for(const l of recordLines(content)) expect(()=>JSON.parse(l)).not.toThrow();
     const notice=(content.match(/\[MEMORY_BUDGET[^\]]*\]/)?.[0] ?? '').toLowerCase();
     expect(notice).not.toBe('');
-    if(!recordLines(content).length) expect(notice).toContain('registry');
+    // Пропуск записей называет либо общая пометка (реестр опущен целиком), либо пометка поиска.
+    if(!recordLines(content).length) expect(notice.includes('registry') || content.includes('[More records omitted')).toBe(true);
     if(!content.includes('Previous checkpoint')) expect(notice).toContain('checkpoint');
   } finally { f.clean(); }
 });
@@ -446,6 +447,34 @@ test('/huimem shows state, and refuses a project that is not deployed', async ()
     expect(String(f.notices.at(-1)?.content ?? '')).toContain('PROJECT_MEMORY_NOT_ENABLED');
   } finally { f.clean(); }
 });
+test('commit task= ties a checkpoint to its task, recall by id returns it, and a wrong task is refused', async () => {
+  const f = fixture(); try {
+    mkdirSync(join(f.dir, '.git'));
+    writeFileSync(join(f.dir, '.git/HEAD'), 'ref: refs/heads/feature/csv\n');
+    const tool = f.tools.project_memory;
+    await f.handlers.before_agent_start({ prompt: 'Задача: экспорт счетов в CSV.' }, f.ctx);
+    const saved = await tool.execute('1', { op: 'commit', summary: 'Экспорт начат', changes: [{ id: 'task-invoices', kind: 'task', status: 'doing',
+      expectedVersion: 0, text: 'Экспорт счетов в CSV', source: { origin: 'user', quote: 'Задача: экспорт счетов в CSV.' } }] }, null, null, f.ctx);
+    expect(saved.isError).not.toBe(true);
+    await f.handlers.before_agent_start({ prompt: 'Пауза, запиши следующий шаг' }, f.ctx);
+    const step = await tool.execute('2', { op: 'commit', changes: [], summary: 'Следующий шаг: колонка НДС', task: 'task-invoices' }, null, null, f.ctx);
+    expect(step.isError).not.toBe(true);
+    const wrong = await tool.execute('3', { op: 'commit', changes: [], summary: 'x', task: 'nope' }, null, null, f.ctx);
+    expect(wrong.isError).toBe(true);
+    expect(String(wrong.content[0].text)).toContain('INVALID_TASK_SCOPE');
+    const recalled = await tool.execute('4', { op: 'recall', id: 'task-invoices' }, null, null, f.ctx);
+    expect(recalled.details.lastCheckpoint).toMatchObject({ summary: 'Следующий шаг: колонка НДС', branch: 'feature/csv' });
+
+    await f.handlers.before_agent_start({ prompt: 'Что дальше по экспорту счетов?' }, f.ctx);
+    const out: any = await f.handlers.context({ messages: [] }, f.ctx);
+    const block = out.messages.find((m: any) => m.customType === 'project-memory-context').content as string;
+    expect(block).toContain('- task-invoices [doing, matches this request;');
+    expect(block).toContain('branch feature/csv]: Следующий шаг: колонка НДС');
+    await f.commands.huimem.handler('context', f.ctx);
+    expect(String(f.notices.at(-1)?.content ?? '')).toContain('"task": "task-invoices"');
+  } finally { f.clean(); }
+});
+
 // Экран настроек в интерактивном терминале: сценарий нажатий подаётся вместо пользователя.
 function scriptedUi(f: any, answers: any[]) {
   const screens: { title: string; labels: string[]; initialIndex?: number }[] = [];
