@@ -97,6 +97,49 @@ function decide(s:MemoryStore,id:string,quote:string,rationale:string,status='ac
 }
 const rows=(text:string)=>text.split('\n').filter(l=>l.startsWith('{')).map(l=>JSON.parse(l));
 
+test('short quotes cannot bypass the collective required share or displace the matching task',()=>fixture(s=>{
+  const required=Array.from({length:6},(_,i)=>'required-'+i);
+  const episode=s.capture('test','user','x');
+  s.commit('test',required.map(id=>({id,kind:'fact',status:'active',text:'x'.repeat(166),
+    expectedVersion:0,source:{episode,quote:'x'}})),'required');
+  const text='export invoices '+'t'.repeat(250),source=s.capture('test','user',text);
+  s.commit('test',[{id:'export-task',kind:'task',status:'doing',text,expectedVersion:0,source:{episode:source,quote:text}}],'task');
+  const result=s.recallDetailed('export invoices',3000,required);
+  const selected=rows(result.text);
+  const used=selected.filter(r=>required.includes(r.id)).reduce((n,r)=>n+JSON.stringify(r).length+1,0);
+  expect(used).toBeLessThanOrEqual(1500);
+  expect(selected.some(r=>r.id==='export-task')).toBe(true);
+  expect(selected.some(r=>r.quoteClipped)).toBe(false);
+  expect(result.text).toContain('REQUIRED records not shown in full');
+}));
+
+test('required omissions keep all IDs in diagnostics and use a whole compact notice',()=>fixture(s=>{
+  const required=Array.from({length:10},(_,i)=>'rule-'+i+'-'+'x'.repeat(92));
+  const episode=s.capture('test','user','x');
+  s.commit('test',required.map(id=>({id,kind:'fact',status:'active',text:'x'.repeat(200),
+    expectedVersion:0,source:{episode,quote:'x'}})),'rules');
+  for(const state of ['existing','retired','missing']) {
+    if(state==='retired') s.commit('test',required.map(id=>({id,kind:'fact',status:'retired',text:'x',
+      expectedVersion:1,source:{episode,quote:'x'}})),'retired');
+    if(state==='missing') s.db.exec('DELETE FROM versions');
+    const result=s.recallDetailed('unknown',500,required);
+    expect(result.text.length).toBeLessThanOrEqual(500);
+    expect(result.text.trimEnd().endsWith(']')).toBe(true);
+    expect(result.text).toContain('project_memory status');
+    expect(result.requiredOmissions).toHaveLength(10);
+    for(const id of required) expect(result.requiredOmissions!.some(x=>x.startsWith(id))).toBe(true);
+    s.recordRetrieval('run','tool-search',result);
+    expect(s.lastRetrieval().requiredOmissions).toEqual(result.requiredOmissions);
+  }
+  for(const budget of [0,1,80,120]) {
+    const result=s.recallDetailed('',budget,required);
+    expect(result.text.length).toBeLessThanOrEqual(budget);
+    expect(result.text==='' || result.text.trimEnd().endsWith(']')).toBe(true);
+    expect(result.truncated).toBe(true);
+    expect(result.requiredOmissions).toHaveLength(10);
+  }
+}));
+
 test('short words inside other words no longer rank unrelated decisions above current work',()=>fixture(s=>{
   for(let i=0;i<25;i++) decide(s,`arch-${String(i).padStart(2,'0')}`,`Журнал сервиса ${i} — logs/${i}. Причина: ротация.`,'ротация');
   const quote='Задача: экспорт счетов в CSV.',episode=s.capture('test','user',quote);
@@ -132,8 +175,12 @@ test('required records come first, keep an exact quote prefix when clipped, and 
   for(let i=0;i<5;i++) decide(s,`minor-${i}`,`Отступ ${i} в конфиге. Причина: единообразие.`,'единообразие');
   const plain=s.recallDetailed('отступ в конфиге',1200);
   expect(rows(plain.text).map(r=>r.id)).not.toContain('security-rule');
-  const result=s.recallDetailed('отступ в конфиге',1200,['security-rule']);
-  expect(result.text.length).toBeLessThanOrEqual(1200);
+  const tight=s.recallDetailed('отступ в конфиге',1200,['security-rule']);
+  expect(rows(tight.text).map(r=>r.id)).not.toContain('security-rule');
+  expect(tight.requiredOmissions).toEqual(['security-rule']);
+  expect(tight.text).toContain('REQUIRED records not shown in full: security-rule');
+  const result=s.recallDetailed('отступ в конфиге',2000,['security-rule']);
+  expect(result.text.length).toBeLessThanOrEqual(2000);
   const [rule]=rows(result.text);
   expect(rule.id).toBe('security-rule');
   expect(long.startsWith(rule.source.quote)).toBe(true);

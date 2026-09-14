@@ -73,9 +73,10 @@ API。它与其中任意一个并行工作。
 
 **必需记录：** `/huimem require <id>` 让该记录在每一轮都优先于问题匹配结果送达，即使问题与之无关；
 `/huimem unrequire <id>` 取消（最多 10 条）。该列表只能由用户设置：插件会阻止文件工具修改
-`.memory/settings.json`。必需记录最多占用召回预算的一半；更长的记录只显示其引文的原文开头，
-标记为 `quoteClipped`，并在 `REQUIRED records not shown in full` 提示中列出；不存在或已停用的 ID
-也会在其中列出。其余记录依次按问题匹配、当前 `doing`/`blocked` 任务、其他已接受的决策排序；
+`.memory/settings.json`。必需记录合计最多占用召回预算的一半；更长的记录只显示其引文的原文开头，
+标记为 `quoteClipped`；若连这样也放不下，该记录不会送达，并在 `REQUIRED records not shown in full`
+提示中列出，改为按 ID 读取，当前任务仍保留在输出中。不存在或已停用的 ID 也会在其中列出。该提示
+不会在 ID 中间截断：列表过长时改为数量，`project_memory status` 会返回全部必需 ID。其余记录依次按问题匹配、当前 `doing`/`blocked` 任务、其他已接受的决策排序；
 同等排名时，STALE 记录让位于新鲜记录。
 
 **可解释的过期标记：** 记录可以列出其依据：`dependsOn: [{id}]` 或 `[{path}]`；代码会固定当前的

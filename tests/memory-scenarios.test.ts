@@ -21,7 +21,7 @@ function contract(install: typeof installSource) {
           expect(d.block.includes(basis) || projectText(d.dir).includes(basis)).toBe(true);
         for (const claim of scenario.forbiddenInBlock) expect(d.block).not.toContain(claim);
         const delivered = new Set(d.records.map(r => r.id));
-        if (scenario.id === 'critical-rule-budget') return; // требование к доставке измеряется отдельно ниже
+        if (['critical-rule-budget','critical-rule-required'].includes(scenario.id)) return; // доставка/явный пропуск измеряются отдельно ниже
         for (const id of scenario.requiredIds) expect(delivered.has(id)).toBe(true);
       } finally { rmSync(d.dir, { recursive: true, force: true }); }
     });
@@ -63,13 +63,15 @@ function contract(install: typeof installSource) {
     } finally { rmSync(d.dir, { recursive: true, force: true }); }
   });
 
-  test('critical-rule-required: a user-required rule arrives first for an unrelated question, as an exact named excerpt', async () => {
+  test('critical-rule-required: a rule too large for its share is explicitly named for recall', async () => {
     const d = await newSession(install, SCENARIOS.find(s => s.id === 'critical-rule-required')!);
     try {
-      const rule = d.records[0];
-      expect(rule.id).toBe('security-rule');
-      expect(rule.source.quote).toContain('ключи никогда не пишем в логи');
-      expect(rule.quoteClipped).toBeDefined();
+      expect(d.records.some(r=>r.id==='security-rule')).toBe(false);
+      const store=new MemoryStore(d.dir);
+      try {
+        expect(store.current('security-rule')!.source.quote).toContain('ключи никогда не пишем в логи');
+        expect(store.lastRetrieval().requiredOmissions).toEqual(['security-rule']);
+      } finally {store.close();}
       expect(d.block).toContain('REQUIRED records not shown in full: security-rule');
     } finally { rmSync(d.dir, { recursive: true, force: true }); }
   });
@@ -109,4 +111,3 @@ function contract(install: typeof installSource) {
 
 describe('source adapter', () => contract(installSource));
 describe('built bundle', () => contract(installBundle));
-

@@ -245,6 +245,30 @@ test('native compaction guidance works on resume and stays inert without deploym
   } finally { f.clean(); }
 });
 
+test('required IDs remain available through status when the final registry has no space',async()=>{
+  const f=fixture();
+  try {
+    const required=Array.from({length:10},(_,i)=>'rule-'+i+'-'+'x'.repeat(92));
+    writeFileSync(join(f.dir,'.memory/settings.json'),JSON.stringify({recallBudget:500,injectionLimit:3000,required}));
+    writeFileSync(join(f.dir,'.memory/MEMORY.md'),'Long preview '.repeat(300));
+    await f.handlers.before_agent_start({prompt:'Continue'},f.ctx);
+    const packed=await f.handlers.context({messages:[]},f.ctx);
+    const content=packed.messages.find((m:any)=>m.customType==='project-memory-context').content;
+    expect(content.length).toBeLessThanOrEqual(3000);
+    expect(content).toContain('REQUIRED');
+    expect(content).toContain('project_memory status');
+    const status=await f.tools.project_memory.execute('status',{op:'status'},null,null,f.ctx);
+    expect(status.isError).not.toBe(true);
+    const text=JSON.stringify(status);
+    for(const id of required) expect(text).toContain(id);
+    const s=new MemoryStore(f.dir);
+    try {
+      expect(s.lastContext().truncated).toBe(true);
+      expect(s.lastRetrieval().requiredOmissions).toEqual(required.map(id=>id+' (missing)'));
+    } finally {s.close();}
+  } finally {f.clean();}
+});
+
 test('essential tool saves current user decision without asking model for an episode ID', async () => {
   const f=fixture(); try {
     expect(f.tools.project_memory.loadMode).toBe('essential');

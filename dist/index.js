@@ -272,6 +272,8 @@ class MemoryStore {
       totalCandidates: result.totalCandidates,
       detailsOmitted: result.detailsOmitted,
       candidates,
+      ...result.requiredOmissions === undefined ? {} : { requiredOmissions: result.requiredOmissions },
+      ...result.truncated === undefined ? {} : { truncated: result.truncated },
       ...checkpoints === undefined ? {} : { checkpoints }
     };
     this.db.transaction(() => {
@@ -615,8 +617,10 @@ class MemoryStore {
     const omittedNotice = "[More records omitted: use project_memory recall with narrower query.]";
     const requiredNotice = (ids) => ids.length ? `[REQUIRED records not shown in full: ${ids.join(", ")}. Read them with project_memory recall by id before acting.]
 ` : "";
+    const compactRequiredNotice = (count) => `[REQUIRED records not shown in full: ${count}; use project_memory status for IDs, then recall by id before acting.]
+`;
     const inactive = required.filter((id) => !records.some((r) => r.c.id === id)).map((id) => id + " (missing)").concat(records.filter((r) => requiredSet.has(r.c.id) && r.c.status === "retired").map((r) => r.c.id + " (retired)"));
-    const requiredReserve = requiredNotice([...required.map((id) => id + " (missing)")]).length;
+    const requiredReserve = required.length ? Math.min(requiredNotice(required.map((id) => id + " (missing)")).length, compactRequiredNotice(required.length).length) : 0;
     const unseen = [];
     let omitted = false;
     const render = (r, source, extra = {}) => JSON.stringify({
@@ -645,7 +649,7 @@ class MemoryStore {
       let line = render(r, r.c.source);
       if (r.tier === 0 && !(fits(line) && inShare(line))) {
         const quote2 = r.c.source.quote;
-        for (let n = quote2.length;n >= 80; n = Math.floor(n * 0.85)) {
+        for (let n = quote2.length - 1;n >= 80; n = Math.floor(n * 0.85)) {
           const cut = quote2.slice(0, n), at = Math.max(cut.lastIndexOf(" "), cut.lastIndexOf(`
 `));
           const shown2 = at > 40 ? cut.slice(0, at) : cut;
@@ -653,12 +657,16 @@ class MemoryStore {
           if (fits(line) && inShare(line))
             break;
         }
-        if (out.length + line.length + reserve <= budget) {
+        if (quote2.length > 80 && fits(line) && inShare(line)) {
           reasons.set(r.c.id, "quote-clipped");
           unseen.push(r.c.id);
           out += line;
           continue;
         }
+        reasons.set(r.c.id, "budget");
+        omitted = true;
+        unseen.push(r.c.id);
+        continue;
       }
       if (out.length + line.length + reserve > budget) {
         reasons.set(r.c.id, "budget");
@@ -671,10 +679,18 @@ class MemoryStore {
       out += line;
     }
     const notShown = [...unseen, ...inactive];
-    if (notShown.length)
-      out += requiredNotice(notShown);
-    if (omitted)
-      out += omittedNotice;
+    let requiredText = requiredNotice(notShown);
+    if (out.length + requiredText.length + (omitted ? omittedNotice.length : 0) > budget && notShown.length)
+      requiredText = compactRequiredNotice(notShown.length);
+    const suffix = requiredText + (omitted ? omittedNotice : "");
+    if (out.length + suffix.length <= budget)
+      out += suffix;
+    else {
+      const short = notShown.length ? `[REQUIRED memory omitted; use project_memory status.]
+` : `[Memory omitted.]
+`;
+      out = (omitted || notShown.length) && short.length <= budget ? short : "";
+    }
     const counts = {};
     for (const reason of reasons.values())
       counts[reason] = (counts[reason] ?? 0) + 1;
@@ -695,7 +711,18 @@ class MemoryStore {
       reason: reasons.get(r.c.id),
       supersededVersions: r.supersededVersions
     }));
-    return { text: out.slice(0, budget), queryHash: hash2(query), budget, candidates, counts, totalCandidates: records.length, detailsOmitted: Math.max(0, records.length - 200) };
+    return {
+      text: out,
+      queryHash: hash2(query),
+      budget,
+      candidates,
+      counts,
+      totalCandidates: records.length,
+      detailsOmitted: Math.max(0, records.length - 200),
+      requiredOmissions: notShown,
+      requiredCount: required.length,
+      truncated: omitted || notShown.length > 0
+    };
   }
   status() {
     return {
@@ -794,14 +821,18 @@ function budgetNotice(limit, omitted, trimmed) {
 function packContext(i) {
   const head = (preview, recent, checkpoint) => i.status + i.sourceOrder + i.claimScope + preview + recent + checkpoint + i.commitRules;
   const natural = i.recall(i.recallBudget);
+  const requiredLabel = "REQUIRED records (IDs: project_memory status)";
+  const optional = natural.requiredCount ? [...OPTIONAL, requiredLabel] : OPTIONAL;
+  const incomplete = (r) => r.truncated ?? r.text.split(`
+`).some((l) => l.startsWith("[More records omitted"));
+  const visibleOmission = (r) => /\[(More records omitted|REQUIRED)/.test(r.text);
   const whole = head(i.preview, i.recent, i.checkpoint);
-  if (whole.length + natural.text.length <= i.limit)
+  if (whole.length + natural.text.length <= i.limit && (!incomplete(natural) || visibleOmission(natural)))
     return {
       content: whole + natural.text,
       registryOffset: whole.length,
       retrieval: natural,
-      truncated: natural.text.split(`
-`).some((l) => l.startsWith("[More records omitted"))
+      truncated: incomplete(natural)
     };
   const required = [
     ["status", i.status],
@@ -810,11 +841,11 @@ function packContext(i) {
     ["commit rules", i.commitRules]
   ];
   const requiredLength = required.reduce((n, [, t]) => n + t.length, 0);
-  const reserve = budgetNotice(i.limit, OPTIONAL, OPTIONAL).length;
+  const reserve = budgetNotice(i.limit, optional, optional).length;
   if (requiredLength + reserve > i.limit) {
     const exhausted = (names) => `[MEMORY_BUDGET_EXHAUSTED: required memory instructions do not fit memory limit ${i.limit}; omitted: ${names.join(", ")}. ` + `Omitted rules still apply. Raise the limit with /huimem limit.]
 `;
-    let space2 = i.limit - exhausted([...required.map(([n]) => n), ...OPTIONAL]).length;
+    let space2 = i.limit - exhausted([...required.map(([n]) => n), ...optional]).length;
     let out = "";
     const cut = [];
     for (const [name, text] of required) {
@@ -824,7 +855,7 @@ function packContext(i) {
       } else
         cut.push(name);
     }
-    const content2 = out + exhausted([...cut, ...OPTIONAL]);
+    const content2 = out + exhausted([...cut, ...optional]);
     return { content: content2, registryOffset: content2.length, retrieval: i.recall(0), truncated: true };
   }
   let space = i.limit - requiredLength - reserve;
@@ -837,9 +868,18 @@ function packContext(i) {
     registry = "";
     if (retrieval.totalCandidates > 0)
       omitted.push("registry");
-  } else if (registry.split(`
-`).some((l) => l.startsWith("[More records omitted")))
-    trimmed.push("registry");
+  } else if (incomplete(retrieval)) {
+    if (!registry)
+      omitted.push("registry");
+    else
+      trimmed.push("registry");
+  }
+  if (retrieval.requiredOmissions?.length) {
+    if (!registry)
+      omitted.push(requiredLabel);
+    else
+      trimmed.push(requiredLabel);
+  }
   space -= registry.length;
   const parts = [["canonical preview", i.preview], ["previous checkpoint", i.checkpoint], ["recent assistant sources", i.recent]];
   const placed = {};
@@ -2090,7 +2130,7 @@ Do not claim memory or work was verified.`;
         let data;
         switch (p.op) {
           case "status":
-            data = { ...s.status(), error: error || null, architecture: check(ctx), checkpoint: s.checkpoint(key()) };
+            data = { ...s.status(), error: error || null, architecture: check(ctx), checkpoint: s.checkpoint(key()), required: readSettings(ctx.cwd).required };
             break;
           case "recall": {
             if (p.id) {

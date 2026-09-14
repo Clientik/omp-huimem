@@ -6,7 +6,7 @@ import { projectionStatus, stageProjection, syncProjection } from './projection'
 
 export type Source = { episode?: string; path?: string; hash?: string; quote: string };
 export type RetrievalCandidate = { id:string; version:number; stale:boolean; score:number; pinned:boolean; selectionBasis:string[]; reason:string; supersededVersions:number };
-export type RetrievalResult = { text:string; queryHash:string; budget:number|null; candidates:RetrievalCandidate[]; counts:Record<string,number>; totalCandidates:number; detailsOmitted:number };
+export type RetrievalResult = { text:string; queryHash:string; budget:number|null; candidates:RetrievalCandidate[]; counts:Record<string,number>; totalCandidates:number; detailsOmitted:number; requiredOmissions?:string[]; requiredCount?:number; truncated?:boolean };
 // Зависимость основания: от версии другой записи или от хеша файла. Версию и хеш закрепляет код
 // при сохранении; поле отдельно от links, которые лишь проверяют существование ID.
 export type Dependency = { id: string; version?: number } | { path: string; hash?: string };
@@ -122,6 +122,8 @@ export class MemoryStore {
     const data={queryHash:result.queryHash,budget:result.budget,characters:result.text.length,
       outputHash:hash(result.text),finalRegistryCharacters:finalRegistry?.length ?? null,
       counts:result.counts,totalCandidates:result.totalCandidates,detailsOmitted:result.detailsOmitted,candidates,
+      ...(result.requiredOmissions===undefined ? {} : {requiredOmissions:result.requiredOmissions}),
+      ...(result.truncated===undefined ? {} : {truncated:result.truncated}),
       ...(checkpoints===undefined ? {} : {checkpoints})};
     this.db.transaction(()=>{
       this.db.query('INSERT INTO retrieval_receipts(run,channel,data,time) VALUES(?,?,?,?)').run(run,channel,JSON.stringify(data),new Date().toISOString());
@@ -380,9 +382,10 @@ export class MemoryStore {
     const omittedNotice='[More records omitted: use project_memory recall with narrower query.]';
     // Пропуск обязательной записи называется по ID; место под это сообщение резервируется заранее.
     const requiredNotice=(ids:string[]) => ids.length ? `[REQUIRED records not shown in full: ${ids.join(', ')}. Read them with project_memory recall by id before acting.]\n` : '';
+    const compactRequiredNotice=(count:number)=>`[REQUIRED records not shown in full: ${count}; use project_memory status for IDs, then recall by id before acting.]\n`;
     const inactive=required.filter(id => !records.some(r => r.c.id===id)).map(id => id+' (missing)')
       .concat(records.filter(r => requiredSet.has(r.c.id) && r.c.status==='retired').map(r => r.c.id+' (retired)'));
-    const requiredReserve=requiredNotice([...required.map(id => id+' (missing)')]).length;
+    const requiredReserve=required.length ? Math.min(requiredNotice(required.map(id=>id+' (missing)')).length,compactRequiredNotice(required.length).length) : 0;
     const unseen:string[]=[];
     let omitted=false;
     const render = (r: typeof records[number], source: Source, extra: Record<string,string> = {}) => JSON.stringify({ id: r.c.id, version: r.version, kind: r.c.kind, status: r.c.status,
@@ -399,21 +402,22 @@ export class MemoryStore {
       const reserve = omittedNotice.length + requiredReserve;
       const fits = (l: string) => out.length + l.length + reserve <= budget;
       // Обязательные записи вместе занимают не больше половины бюджета, чтобы не вытеснять
-      // сведения по текущему вопросу; меньше половины уступают, только если иначе не влезают.
+      // сведения по текущему вопросу. Если даже сокращённая запись не помещается, назвать пропуск.
       const inShare = (l: string) => out.length - header + l.length <= share;
       let line = render(r, r.c.source);
       if (r.tier === 0 && !(fits(line) && inShare(line))) {
         // Обязательная запись не уходит целиком из-за длинной цитаты: показывается её точное
         // начало с явной пометкой, полная цитата — по ID. Начало цитаты остаётся дословным.
         const quote = r.c.source.quote;
-        for (let n = quote.length; n >= 80; n = Math.floor(n * 0.85)) {
+        for (let n = quote.length - 1; n >= 80; n = Math.floor(n * 0.85)) {
           const cut = quote.slice(0, n), at = Math.max(cut.lastIndexOf(' '), cut.lastIndexOf('\n'));
           const shown = at > 40 ? cut.slice(0, at) : cut;
           line = render(r, { ...r.c.source, quote: shown },
             { quoteClipped: `shown ${shown.length} of ${quote.length} characters from the start; recall by id for the full quote` });
           if (fits(line) && inShare(line)) break;
         }
-        if (out.length + line.length + reserve <= budget) { reasons.set(r.c.id,'quote-clipped'); unseen.push(r.c.id); out += line; continue; }
+        if (quote.length > 80 && fits(line) && inShare(line)) { reasons.set(r.c.id,'quote-clipped'); unseen.push(r.c.id); out += line; continue; }
+        reasons.set(r.c.id,'budget'); omitted=true; unseen.push(r.c.id); continue;
       }
       if (out.length + line.length + reserve > budget) {
         reasons.set(r.c.id,'budget'); omitted=true; if (r.tier === 0) unseen.push(r.c.id); continue;
@@ -422,8 +426,17 @@ export class MemoryStore {
       out += line;
     }
     const notShown = [...unseen, ...inactive];
-    if(notShown.length) out+=requiredNotice(notShown);
-    if(omitted) out+=omittedNotice;
+    let requiredText=requiredNotice(notShown);
+    if(out.length+requiredText.length+(omitted ? omittedNotice.length : 0)>budget && notShown.length)
+      requiredText=compactRequiredNotice(notShown.length);
+    const suffix=requiredText+(omitted ? omittedNotice : '');
+    if(out.length+suffix.length<=budget) out+=suffix;
+    else {
+      // Only the header can remain here: every selected record reserved the full suffix.
+      // Tiny budgets return a whole warning or nothing; omission metadata is never sliced.
+      const short=notShown.length ? '[REQUIRED memory omitted; use project_memory status.]\n' : '[Memory omitted.]\n';
+      out=(omitted || notShown.length) && short.length<=budget ? short : '';
+    }
     const counts:Record<string,number>={};
     for(const reason of reasons.values()) counts[reason]=(counts[reason] ?? 0)+1;
     // Prefer selected/ranked candidates in the bounded diagnostic details.
@@ -434,7 +447,8 @@ export class MemoryStore {
     const candidates=ordered.slice(0,200).map(r=>({id:r.c.id,version:r.version,stale:r.stale,score:r.score,pinned:r.pinned,
       selectionBasis:[...(r.tier===0 ? ['required'] : []),...(r.score>0 ? ['query-match'] : []),...(r.pinned ? ['pinned-status'] : []),...(terms.length===0 ? ['empty-query'] : [])],
       reason:reasons.get(r.c.id)!,supersededVersions:r.supersededVersions}));
-    return {text:out.slice(0,budget),queryHash:hash(query),budget,candidates,counts,totalCandidates:records.length,detailsOmitted:Math.max(0,records.length-200)};
+    return {text:out,queryHash:hash(query),budget,candidates,counts,totalCandidates:records.length,detailsOmitted:Math.max(0,records.length-200),
+      requiredOmissions:notShown,requiredCount:required.length,truncated:omitted || notShown.length>0};
   }
   status() {
     return { records: (this.db.query('SELECT COUNT(DISTINCT id) n FROM versions').get() as any).n,

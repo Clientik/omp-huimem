@@ -250,7 +250,7 @@ export default function install(pi: ExtensionAPI) {
       try {
         const s = get(ctx); let data: any;
         switch (p.op) {
-          case 'status': data = { ...s.status(), error: error || null, architecture: check(ctx), checkpoint: s.checkpoint(key()) }; break;
+          case 'status': data = { ...s.status(), error: error || null, architecture: check(ctx), checkpoint: s.checkpoint(key()), required: readSettings(ctx.cwd).required }; break;
           case 'recall': {
             if(p.id) {
               data=s.current(p.id);

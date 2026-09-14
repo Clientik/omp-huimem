@@ -77,9 +77,12 @@ there is no backend-registration API for extensions. It runs alongside any of th
 **Required records:** `/huimem require <id>` makes a record arrive every turn, before
 question matches, even when the question is unrelated; `/huimem unrequire <id>` undoes it
 (at most 10). Only the user sets this list; the plugin blocks file-tool edits of
-`.memory/settings.json`. Required records take at most half of the recall budget. A longer
-one is shown as the exact start of its quote, marked `quoteClipped`, and named in a
-`REQUIRED records not shown in full` notice; missing or retired IDs are named there too.
+`.memory/settings.json`. Required records together take at most half of the recall budget. A
+longer one is shown as the exact start of its quote, marked `quoteClipped`; if even that does
+not fit, it is left out and named in a `REQUIRED records not shown in full` notice, so it is read
+by ID instead of pushing out the current task. Missing or retired IDs are named there too. The
+notice is never cut mid-ID: a long list becomes a count, and `project_memory status` returns
+every required ID.
 Other records are ranked by question match, then current `doing`/`blocked` tasks, then the
 remaining accepted decisions; at equal rank a STALE record yields to a fresh one.
 

@@ -51,26 +51,30 @@ export function packContext(i: PackInput): PackResult {
 
   // 1. Всё помещается — прежний вывод без изменений.
   const natural = i.recall(i.recallBudget);
+  const requiredLabel='REQUIRED records (IDs: project_memory status)';
+  const optional=natural.requiredCount ? [...OPTIONAL,requiredLabel] : OPTIONAL;
+  const incomplete=(r:RetrievalResult)=>r.truncated ?? r.text.split('\n').some(l=>l.startsWith('[More records omitted'));
+  const visibleOmission=(r:RetrievalResult)=>/\[(More records omitted|REQUIRED)/.test(r.text);
   const whole = head(i.preview, i.recent, i.checkpoint);
-  if (whole.length + natural.text.length <= i.limit)
+  if (whole.length + natural.text.length <= i.limit && (!incomplete(natural) || visibleOmission(natural)))
     return { content: whole + natural.text, registryOffset: whole.length, retrieval: natural,
-      truncated: natural.text.split('\n').some(l => l.startsWith('[More records omitted')) };
+      truncated: incomplete(natural) };
 
   // 2. Обязательные правила вместе с зарезервированной пометкой не помещаются.
   const required: [string, string][] = [['status', i.status], ['source order rules', i.sourceOrder],
     ['claim scope rules', i.claimScope], ['commit rules', i.commitRules]];
   const requiredLength = required.reduce((n, [, t]) => n + t.length, 0);
-  const reserve = budgetNotice(i.limit, OPTIONAL, OPTIONAL).length;
+  const reserve = budgetNotice(i.limit, optional, optional).length;
   if (requiredLength + reserve > i.limit) {
     const exhausted = (names: string[]) =>
       `[MEMORY_BUDGET_EXHAUSTED: required memory instructions do not fit memory limit ${i.limit}; omitted: ${names.join(', ')}. ` +
       'Omitted rules still apply. Raise the limit with /huimem limit.]\n';
-    let space = i.limit - exhausted([...required.map(([n]) => n), ...OPTIONAL]).length;
+    let space = i.limit - exhausted([...required.map(([n]) => n), ...optional]).length;
     let out = ''; const cut: string[] = [];
     for (const [name, text] of required) {
       if (text.length <= space) { out += text; space -= text.length; } else cut.push(name);
     }
-    const content = out + exhausted([...cut, ...OPTIONAL]);
+    const content = out + exhausted([...cut, ...optional]);
     return { content, registryOffset: content.length, retrieval: i.recall(0), truncated: true };
   }
 
@@ -86,7 +90,12 @@ export function packContext(i: PackInput): PackResult {
   if (registry.length > registryBudget) {
     registry = '';
     if (retrieval.totalCandidates > 0) omitted.push('registry');
-  } else if (registry.split('\n').some(l => l.startsWith('[More records omitted'))) trimmed.push('registry');
+  } else if (incomplete(retrieval)) {
+    if(!registry) omitted.push('registry'); else trimmed.push('registry');
+  }
+  if(retrieval.requiredOmissions?.length) {
+    if(!registry) omitted.push(requiredLabel); else trimmed.push(requiredLabel);
+  }
   space -= registry.length;
   const parts: [string, string][] = [['canonical preview', i.preview], ['previous checkpoint', i.checkpoint], ['recent assistant sources', i.recent]];
   const placed: Record<string, string> = {};

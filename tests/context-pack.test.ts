@@ -1,5 +1,26 @@
 import { test, expect } from 'bun:test';
 import { budgetNotice, clip, packContext } from '../src/memory/context-pack';
+import {MemoryStore} from '../src/memory/core';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {join} from 'node:path';
+
+test('real retrieval with zero remaining budget names missing registry and required memory',()=>{
+  const root=mkdtempSync(join(import.meta.dir,'pack-real-')),s=new MemoryStore(root);
+  try {
+    const episode=s.capture('test','user','Required rule');
+    s.commit('test',[{id:'rule',kind:'fact',status:'active',text:'Required rule',expectedVersion:0,
+      source:{episode,quote:'Required rule'}}],'rule');
+    const packed=packContext({limit:3000,recallBudget:500,status:'S'.repeat(100),sourceOrder:'O'.repeat(1000),
+      claimScope:'C'.repeat(600),commitRules:'R'.repeat(504),preview:'Preview '.repeat(150),recent:'Recent',checkpoint:'Next',
+      recall:budget=>s.recallDetailed('rule',budget,['rule'])});
+    expect(packed.retrieval.budget).toBe(0);
+    expect(packed.content.length).toBeLessThanOrEqual(3000);
+    expect(packed.content).toContain('registry');
+    expect(packed.content).toContain('REQUIRED');
+    expect(packed.retrieval.requiredOmissions).toEqual(['rule']);
+    expect(packed.truncated).toBe(true);
+  } finally {s.close();rmSync(root,{recursive:true,force:true});}
+});
 
 // Поиск, возвращающий заданный текст целых записей не длиннее бюджета.
 function recallOf(records: string[]) {
