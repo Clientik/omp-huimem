@@ -151,6 +151,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
           const stale = 'Decisions from conversation track the hash of canonical documents, so records linked to rewritten ADRs will show STALE afterwards. Their user quotes are unchanged.';
           const describe = (i: any) =>
             i.state === 'has-basis' ? `  OK       ${i.path} — already has a basis section`
+            : i.state === 'conflict' ? `  CONFLICT ${i.path} — ${i.reason}; no migration written`
             : i.state === 'no-match' ? `  SKIP     ${i.path} — no accepted user decision names this document; nothing proposed`
             : i.state === 'ambiguous' ? `  SKIP     ${i.path} — several decisions name it (${i.candidates.join(', ')}); nothing chosen`
             : `  MIGRATE  ${i.path}  <-  ${i.recordId} v${i.version}\n           basis: ${i.quote.split('\n')[0].slice(0, 160)}\n           all original lines move under "Interpretation [?]"; nothing is deleted`;

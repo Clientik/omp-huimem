@@ -1,8 +1,6 @@
 // ПЕРЕНОС СТАРЫХ ADR В КОНТРАКТ — ДАННЫМИ РЕЕСТРА, А НЕ ПОСЛУШАНИЕМ МОДЕЛИ.
-// ЗАМЕРЕНО 2026-09-13 на сетевой qwen38-27b: текстовая пометка DOCUMENT_PROVENANCE
-// снижает частоту сбоя (0/11 без плагина против 5–6/10 с ним), но упирается в потолок
-// около половины, а перенос пометки в конец документа ничего не дал (p = 1,00).
-// Значит разделять цитату и прозу должен сам документ.
+// Цитата и интерпретация разделяются в самом документе. Актуальные замеры и
+// ограничения — в docs/VALIDATION.md; превосходство переноса пока не доказано.
 // Источник цитаты — запись реестра, у которой причина проверена КОДОМ как дословная
 // подстрока цитаты пользователя (RATIONALE_SOURCE_REQUIRED в core.ts): это единственное
 // место, где атрибуция гарантирована не моделью.
@@ -17,7 +15,8 @@ export type AuditItem =
   | { path: string; state: 'has-basis' }
   | { path: string; state: 'no-match' }
   | { path: string; state: 'ambiguous'; candidates: string[] }
-  | { path: string; state: 'migratable'; recordId: string; version: number; episode: string; quote: string; proposed: string };
+  | { path: string; state: 'conflict'; reason:string }
+  | { path: string; state: 'migratable'; recordId: string; version: number; episode: string; quote: string; proposed: string; sourceHash:string };
 
 const norm = (p: string) => p.replaceAll('\\', '/');
 
@@ -34,9 +33,15 @@ export function eligible(data: any): boolean {
 // Связь решения с документом должна быть явной: путь в тексте записи или в её ссылках.
 // Совпадение по смыслу не выводится — это был бы тот же домысел, с которым боремся.
 export function mentions(data: any, adrPath: string): boolean {
-  const path = norm(adrPath), base = path.split('/').pop()!;
-  const inText = typeof data?.text === 'string' && norm(data.text).includes(path);
-  const inLinks = Array.isArray(data?.links) && data.links.some((l: any) => typeof l === 'string' && (norm(l) === path || norm(l).endsWith('/' + base) || l === base));
+  const path = norm(adrPath);
+  const escaped=path.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const reference=new RegExp('(^|[\\s`"\'(<\\[])'+escaped+'(?=$|[\\s`"\')>\\],;:]|\\.(?:$|\\s))');
+  const inText = typeof data?.text === 'string' && reference.test(norm(data.text));
+  const inLinks = Array.isArray(data?.links) && data.links.some((l: any) => {
+    if(typeof l!=='string') return false;
+    const link=norm(l).replace(/^\.\//,'');
+    return link===path || (!link.includes('/') && '.memory/adr/'+link===path);
+  });
   return inText || inLinks;
 }
 
@@ -70,15 +75,58 @@ export function plan(path: string, text: string, records: LatestRecord[], date: 
   if (matched.length > 1) return { path, state: 'ambiguous', candidates: matched.map(r => r.id) };
   const r = matched[0];
   const rec = { id: r.id, version: r.version, episode: r.data.source.episode, quote: r.data.source.quote };
-  return { path, state: 'migratable', recordId: rec.id, version: rec.version, episode: rec.episode, quote: rec.quote, proposed: migrate(text, rec, date) };
+  return { path, state: 'migratable', recordId: rec.id, version: rec.version, episode: rec.episode, quote: rec.quote, proposed: migrate(text, rec, date),sourceHash:hash(text) };
 }
 
 // ---- Ввод-вывод ----
-import { copyFileSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, fsyncSync, lstatSync, mkdirSync, readFileSync, writeFileSync, openSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
 import { safePath } from './core';
 
 export const BACKUP_DIR = '.memory/adr-backup';
+const hash=(data:string|Buffer)=>createHash('sha256').update(data).digest('hex');
+
+// Check each directory before descending, so a pre-existing junction cannot send
+// mkdir or the backup outside the project. Refuse links even when they point inside.
+function backupDirectory(root:string,relative:string) {
+  let current='';
+  for(const part of relative.split('/')) {
+    if(!part || part==='.' || part==='..') throw new Error('BACKUP_PATH');
+    current=current ? current+'/'+part : part;
+    const path=resolve(root,current);
+    try { if(lstatSync(path).isSymbolicLink() || !lstatSync(path).isDirectory()) throw new Error('BACKUP_PATH: link or non-directory'); }
+    catch(e:any) { if(e.code!=='ENOENT') throw e; mkdirSync(path); }
+    safePath(root,current);
+  }
+}
+
+export function publishPlan(root:string,item:Extract<AuditItem,{state:'migratable'}>,stamp:string) {
+  if(!/^[A-Za-z0-9_-]+$/.test(stamp)) throw new Error('BACKUP_STAMP');
+  if(!item.path.startsWith('.memory/adr/')) throw new Error('ADR_PATH');
+  const source=safePath(root,item.path);
+  const unchanged=()=>{
+    if(!lstatSync(resolve(root,item.path)).isFile() || safePath(root,item.path)!==source)
+      throw new Error('ADR_CHANGED: '+item.path);
+    const bytes=readFileSync(source);
+    if(hash(bytes)!==item.sourceHash) throw new Error('ADR_CHANGED: '+item.path);
+    return bytes;
+  };
+  const original=unchanged();
+  const backupRel=`${BACKUP_DIR}/${stamp}/${item.path.slice('.memory/adr/'.length)}`;
+  backupDirectory(root,norm(dirname(backupRel)));
+  const backup=resolve(root,backupRel);
+  const backupFd=openSync(backup,'wx');
+  try {writeFileSync(backupFd,original);fsyncSync(backupFd);} finally {closeSync(backupFd);}
+  const temporary=resolve(dirname(source),`.huimem-adr-${randomUUID()}.tmp`);
+  try {
+    const fd=openSync(temporary,'wx');
+    try {writeFileSync(fd,item.proposed,'utf8');fsyncSync(fd);} finally {closeSync(fd);}
+    unchanged();
+    renameSync(temporary,source);
+  } finally {try {unlinkSync(temporary);} catch(e:any) {if(e.code!=='ENOENT') throw e;}}
+  return {path:item.path,backup:backupRel,recordId:item.recordId};
+}
 
 export function listAdrs(root: string): string[] {
   return [...new Bun.Glob('.memory/adr/**/*.md').scanSync({ cwd: root, onlyFiles: true, followSymlinks: false })]
@@ -100,13 +148,11 @@ export function apply(root: string, records: LatestRecord[], date: string, stamp
   const skipped: AuditItem[] = [];
   for (const item of audit(root, records, date)) {
     if (item.state !== 'migratable') { skipped.push(item); continue; }
-    const source = resolve(root, item.path);
-    const backupRel = `${BACKUP_DIR}/${stamp}/${item.path.replace(/^\.memory\/adr\//, '')}`;
-    const backup = resolve(root, backupRel);
-    mkdirSync(dirname(backup), { recursive: true });
-    copyFileSync(source, backup); // побайтово, до записи
-    writeFileSync(source, item.proposed, 'utf8');
-    written.push({ path: item.path, backup: backupRel, recordId: item.recordId });
+    try {written.push(publishPlan(root,item,stamp));}
+    catch(e:any) {
+      if(String(e).includes('ADR_CHANGED')) skipped.push({path:item.path,state:'conflict',reason:String(e)});
+      else throw e;
+    }
   }
   return { written, skipped };
 }

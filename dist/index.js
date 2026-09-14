@@ -1,6 +1,6 @@
 // @bun
 // src/extensions/project-memory.ts
-import { randomUUID as randomUUID3 } from "crypto";
+import { randomUUID as randomUUID4 } from "crypto";
 import { existsSync as existsSync2, readFileSync as readFileSync6 } from "fs";
 import { resolve as resolve7, relative as relative4 } from "path";
 
@@ -659,16 +659,24 @@ import { existsSync, readFileSync as readFileSync5 } from "fs";
 import { resolve as resolve6 } from "path";
 
 // src/memory/adr-audit.ts
-import { copyFileSync, lstatSync as lstatSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "fs";
+import { closeSync as closeSync2, fsyncSync as fsyncSync2, lstatSync as lstatSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync4, writeFileSync as writeFileSync3, openSync as openSync2, renameSync as renameSync2, unlinkSync as unlinkSync2 } from "fs";
 import { dirname, resolve as resolve5 } from "path";
+import { createHash as createHash3, randomUUID as randomUUID3 } from "crypto";
 var norm = (p) => p.replaceAll("\\", "/");
 function eligible(data) {
   return data?.kind === "decision" && data?.status === "accepted" && typeof data?.source?.episode === "string" && data.source.episode.length > 0 && typeof data?.source?.quote === "string" && data.source.quote.trim().length > 0 && typeof data?.rationale === "string" && data.rationale.length > 0 && data.source.quote.includes(data.rationale);
 }
 function mentions(data, adrPath) {
-  const path = norm(adrPath), base = path.split("/").pop();
-  const inText = typeof data?.text === "string" && norm(data.text).includes(path);
-  const inLinks = Array.isArray(data?.links) && data.links.some((l) => typeof l === "string" && (norm(l) === path || norm(l).endsWith("/" + base) || l === base));
+  const path = norm(adrPath);
+  const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const reference = new RegExp("(^|[\\s`\"'(<\\[])" + escaped + "(?=$|[\\s`\"')>\\],;:]|\\.(?:$|\\s))");
+  const inText = typeof data?.text === "string" && reference.test(norm(data.text));
+  const inLinks = Array.isArray(data?.links) && data.links.some((l) => {
+    if (typeof l !== "string")
+      return false;
+    const link = norm(l).replace(/^\.\//, "");
+    return link === path || !link.includes("/") && ".memory/adr/" + link === path;
+  });
   return inText || inLinks;
 }
 function migrate(original, record, date) {
@@ -705,9 +713,74 @@ function plan(path, text, records, date) {
     return { path, state: "ambiguous", candidates: matched.map((r2) => r2.id) };
   const r = matched[0];
   const rec = { id: r.id, version: r.version, episode: r.data.source.episode, quote: r.data.source.quote };
-  return { path, state: "migratable", recordId: rec.id, version: rec.version, episode: rec.episode, quote: rec.quote, proposed: migrate(text, rec, date) };
+  return { path, state: "migratable", recordId: rec.id, version: rec.version, episode: rec.episode, quote: rec.quote, proposed: migrate(text, rec, date), sourceHash: hash3(text) };
 }
 var BACKUP_DIR = ".memory/adr-backup";
+var hash3 = (data) => createHash3("sha256").update(data).digest("hex");
+function backupDirectory(root, relative4) {
+  let current = "";
+  for (const part of relative4.split("/")) {
+    if (!part || part === "." || part === "..")
+      throw new Error("BACKUP_PATH");
+    current = current ? current + "/" + part : part;
+    const path = resolve5(root, current);
+    try {
+      if (lstatSync2(path).isSymbolicLink() || !lstatSync2(path).isDirectory())
+        throw new Error("BACKUP_PATH: link or non-directory");
+    } catch (e) {
+      if (e.code !== "ENOENT")
+        throw e;
+      mkdirSync2(path);
+    }
+    safePath(root, current);
+  }
+}
+function publishPlan(root, item, stamp) {
+  if (!/^[A-Za-z0-9_-]+$/.test(stamp))
+    throw new Error("BACKUP_STAMP");
+  if (!item.path.startsWith(".memory/adr/"))
+    throw new Error("ADR_PATH");
+  const source = safePath(root, item.path);
+  const unchanged = () => {
+    if (!lstatSync2(resolve5(root, item.path)).isFile() || safePath(root, item.path) !== source)
+      throw new Error("ADR_CHANGED: " + item.path);
+    const bytes = readFileSync4(source);
+    if (hash3(bytes) !== item.sourceHash)
+      throw new Error("ADR_CHANGED: " + item.path);
+    return bytes;
+  };
+  const original = unchanged();
+  const backupRel = `${BACKUP_DIR}/${stamp}/${item.path.slice(".memory/adr/".length)}`;
+  backupDirectory(root, norm(dirname(backupRel)));
+  const backup = resolve5(root, backupRel);
+  const backupFd = openSync2(backup, "wx");
+  try {
+    writeFileSync3(backupFd, original);
+    fsyncSync2(backupFd);
+  } finally {
+    closeSync2(backupFd);
+  }
+  const temporary = resolve5(dirname(source), `.huimem-adr-${randomUUID3()}.tmp`);
+  try {
+    const fd = openSync2(temporary, "wx");
+    try {
+      writeFileSync3(fd, item.proposed, "utf8");
+      fsyncSync2(fd);
+    } finally {
+      closeSync2(fd);
+    }
+    unchanged();
+    renameSync2(temporary, source);
+  } finally {
+    try {
+      unlinkSync2(temporary);
+    } catch (e) {
+      if (e.code !== "ENOENT")
+        throw e;
+    }
+  }
+  return { path: item.path, backup: backupRel, recordId: item.recordId };
+}
 function listAdrs(root) {
   return [...new Bun.Glob(".memory/adr/**/*.md").scanSync({ cwd: root, onlyFiles: true, followSymlinks: false })].map(norm).filter((p) => p.split("/").pop().toLowerCase() !== "readme.md").filter((p) => {
     try {
@@ -728,13 +801,14 @@ function apply(root, records, date, stamp) {
       skipped.push(item);
       continue;
     }
-    const source = resolve5(root, item.path);
-    const backupRel = `${BACKUP_DIR}/${stamp}/${item.path.replace(/^\.memory\/adr\//, "")}`;
-    const backup = resolve5(root, backupRel);
-    mkdirSync2(dirname(backup), { recursive: true });
-    copyFileSync(source, backup);
-    writeFileSync3(source, item.proposed, "utf8");
-    written.push({ path: item.path, backup: backupRel, recordId: item.recordId });
+    try {
+      written.push(publishPlan(root, item, stamp));
+    } catch (e) {
+      if (String(e).includes("ADR_CHANGED"))
+        skipped.push({ path: item.path, state: "conflict", reason: String(e) });
+      else
+        throw e;
+    }
   }
   return { written, skipped };
 }
@@ -865,7 +939,7 @@ ${result.path}` + (result.error ? `
           const store = deps.store(ctx);
           const date = new Date().toISOString().slice(0, 10);
           const stale = "Decisions from conversation track the hash of canonical documents, so records linked to rewritten ADRs will show STALE afterwards. Their user quotes are unchanged.";
-          const describe = (i) => i.state === "has-basis" ? `  OK       ${i.path} \u2014 already has a basis section` : i.state === "no-match" ? `  SKIP     ${i.path} \u2014 no accepted user decision names this document; nothing proposed` : i.state === "ambiguous" ? `  SKIP     ${i.path} \u2014 several decisions name it (${i.candidates.join(", ")}); nothing chosen` : `  MIGRATE  ${i.path}  <-  ${i.recordId} v${i.version}
+          const describe = (i) => i.state === "has-basis" ? `  OK       ${i.path} \u2014 already has a basis section` : i.state === "conflict" ? `  CONFLICT ${i.path} \u2014 ${i.reason}; no migration written` : i.state === "no-match" ? `  SKIP     ${i.path} \u2014 no accepted user decision names this document; nothing proposed` : i.state === "ambiguous" ? `  SKIP     ${i.path} \u2014 several decisions name it (${i.candidates.join(", ")}); nothing chosen` : `  MIGRATE  ${i.path}  <-  ${i.recordId} v${i.version}
            basis: ${i.quote.split(`
 `)[0].slice(0, 160)}
            all original lines move under "Interpretation [?]"; nothing is deleted`;
@@ -1015,7 +1089,7 @@ function install(pi) {
       error = "";
       return;
     }
-    run = randomUUID3();
+    run = randomUUID4();
     generation = 0;
     recentSources.length = 0;
     query = event.prompt ?? "";
