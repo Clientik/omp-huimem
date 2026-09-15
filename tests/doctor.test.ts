@@ -62,7 +62,7 @@ test('doctor combines missing sources and dependencies, required, ADR and task d
   const report=diagnoseMemory(dir);
   expect(report.issues.find(i=>i.code==='STALE_RECORD' && i.target==='file')?.message).toContain('missing');
   expect(report.issues.find(i=>i.code==='STALE_RECORD' && i.target==='dependent')?.message).toContain('basis is missing');
-  for(const code of ['EPISODE_EVIDENCE_INVALID','REQUIRED_UNAVAILABLE','ADR_WITHOUT_BASIS','TASK_STATE_DIFFERS','TASK_NOT_IN_TODO'])
+  for(const code of ['EPISODE_EVIDENCE_INVALID','REQUIRED_UNAVAILABLE','ADR_WITHOUT_BASIS','TASK_STATE_DIFFERS','TASKS_NOT_IN_TODO'])
     expect(report.issues.map(i=>i.code)).toContain(code);
 }));
 
@@ -183,6 +183,49 @@ test('failures of file-backed sections name the file and get a hint for that fil
   const folder=errorFor('.memory/settings.json')!;
   expect(folder.code).toBe('EISDIR');
   expect(folder.fix).toContain('directory stands where a file is expected');
+}));
+
+test('task drift keeps status conflicts per task and aggregates membership gaps',()=>fixture(dir=>{
+  enable(dir);
+  const s=new MemoryStore(dir);
+  try {
+    s.commit('r',[seed(s,'shared','task','doing'),seed(s,'fact-id'),
+      ...Array.from({length:12},(_,i)=>seed(s,'reg-'+i,'task','todo')),seed(s,'old','task','retired')],'saved');
+  } finally {s.close();}
+  const todo=(tasks:{id:string;status:string}[])=>writeFileSync(join(dir,'.memory/todo.json'),JSON.stringify({tasks}));
+  todo([{id:'shared',status:'done'},{id:'fact-id',status:'todo'},{id:'file-a',status:'todo'},{id:'file-b',status:'blocked'}]);
+  const report=diagnoseMemory(dir);
+  const by=(code:string)=>report.issues.filter(i=>i.code===code);
+  expect(by('TASK_STATE_DIFFERS').map(i=>[i.target,i.message])).toEqual([['shared','todo.json: done; registry: doing.']]);
+  expect(by('TASK_ID_KIND_DIFFERS').map(i=>i.message)).toEqual(['todo.json lists a task, but the registry record with this ID is a fact.']);
+  expect(by('TASKS_NOT_IN_REGISTRY').map(i=>i.message)).toEqual(['2 todo.json task(s) have no registry record: file-a, file-b.']);
+  const absent=by('TASKS_NOT_IN_TODO');
+  expect(absent).toHaveLength(1);
+  expect(absent[0].severity).toBe('warning');
+  expect(absent[0].message).toBe('12 registry task(s) are absent from todo.json: reg-0, reg-1, reg-10, reg-11, reg-2, reg-3, reg-4, reg-5, reg-6, reg-7 and 2 more.');
+  // The untouched starter file is informational, not a warning per registry task.
+  todo([]);
+  const starter=diagnoseMemory(dir).issues.filter(i=>i.code.startsWith('TASK'));
+  expect(starter.map(i=>[i.severity,i.code])).toEqual([['info','TASKS_NOT_IN_TODO']]);
+  expect(starter[0].message).toStartWith('13 registry task(s) are absent from the empty todo.json');
+}));
+
+test('out-of-range settings values are reported with the value in effect',()=>fixture(dir=>{
+  enable(dir);
+  writeFileSync(join(dir,'.memory/settings.json'),JSON.stringify({recallBudget:999999,injectionLimit:'big'}));
+  const adjusted=diagnoseMemory(dir).issues.filter(i=>i.code==='SETTING_ADJUSTED').map(i=>i.message);
+  expect(adjusted).toEqual(['recallBudget 999999 is not an integer within 500–12000; 12000 is used.',
+    'injectionLimit "big" is not an integer within 3000–16000; 8000 is used.']);
+  writeFileSync(join(dir,'.memory/settings.json'),JSON.stringify({recallBudget:4500,injectionLimit:8000}));
+  expect(diagnoseMemory(dir).issues.some(i=>i.code==='SETTING_ADJUSTED')).toBe(false);
+}));
+
+test('architecture findings use forward-slash project paths',()=>fixture(dir=>{
+  enable(dir);
+  mkdirSync(join(dir,'src/ui'),{recursive:true});
+  writeFileSync(join(dir,'src/ui/view.ts'),'import db from "server/db"');
+  writeFileSync(join(dir,'.memory/architecture.json'),JSON.stringify({configured:true,rules:[{id:'ui-no-db',files:['src/**/*.ts'],forbidden:'server/db',reason:'UI uses API'}]}));
+  expect(diagnoseMemory(dir).issues.find(i=>i.code==='ARCHITECTURE_FAILED')?.message).toBe('ui-no-db: src/ui/view.ts: UI uses API');
 }));
 
 test('one oversized ADR does not hide findings for the other ADRs',()=>fixture(dir=>{

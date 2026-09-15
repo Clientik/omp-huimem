@@ -496,7 +496,9 @@ export function architectureCheck(root: string, policy: any) {
       if (isAbsolute(pattern) || pattern.includes('..')) throw new Error('PATH: invalid policy glob');
       for (const path of new Bun.Glob(pattern).scanSync({ cwd: root, onlyFiles: true, followSymlinks: false })) {
         if (++matched > 10000) throw new Error('POLICY_SCAN_LIMIT');
-        if (sourceText(root, path).includes(rule.forbidden)) failures.push(`${rule.id}: ${path}: ${rule.reason ?? rule.forbidden}`);
+        // Bun.Glob yields backslashes on Windows; report the same project path on every platform.
+        const shown = process.platform === 'win32' ? path.replaceAll('\\', '/') : path;
+        if (sourceText(root, path).includes(rule.forbidden)) failures.push(`${rule.id}: ${shown}: ${rule.reason ?? rule.forbidden}`);
       }
     }
     if (!matched) failures.push(`${rule.id}: no files matched — check paths`);

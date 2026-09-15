@@ -780,8 +780,9 @@ function architectureCheck(root, policy) {
       for (const path of new Bun.Glob(pattern).scanSync({ cwd: root, onlyFiles: true, followSymlinks: false })) {
         if (++matched > 1e4)
           throw new Error("POLICY_SCAN_LIMIT");
+        const shown = process.platform === "win32" ? path.replaceAll("\\", "/") : path;
         if (sourceText(root, path).includes(rule.forbidden))
-          failures.push(`${rule.id}: ${path}: ${rule.reason ?? rule.forbidden}`);
+          failures.push(`${rule.id}: ${shown}: ${rule.reason ?? rule.forbidden}`);
       }
     }
     if (!matched)
@@ -1602,6 +1603,12 @@ function diagnoseMemory(root) {
         throw new Error("INVALID_SETTINGS: expected a JSON object");
       if (raw.required !== undefined && (!Array.isArray(raw.required) || raw.required.length > 10 || raw.required.some((x) => typeof x !== "string" || !/^[a-zA-Z0-9_.:/-]{1,100}$/.test(x))))
         throw new Error("INVALID_SETTINGS: required must contain at most 10 valid record IDs");
+      const used = readSettings(root);
+      for (const key of ["recallBudget", "injectionLimit"]) {
+        const l = LIMITS[key];
+        if (raw[key] !== undefined && raw[key] !== used[key])
+          add("warning", "SETTING_ADJUSTED", ".memory/settings.json", `${key} ${JSON.stringify(raw[key])} is not an integer within ${l.min}\u2013${l.max}; ${used[key]} is used.`, `Set ${key} with /huimem ${key === "recallBudget" ? "recall" : "limit"} or the settings screen, which apply the same limits.`);
+      }
     }
     return readSettings(root);
   }, ".memory/settings.json");
@@ -1645,7 +1652,7 @@ function diagnoseMemory(root) {
       const todo = json(".memory/todo.json", "INVALID_TODO");
       if (!Array.isArray(todo?.tasks))
         throw new Error("INVALID_TODO: expected a tasks array");
-      const seen = new Set;
+      const seen = new Set, fileOnly = [];
       for (const task of todo.tasks) {
         if (typeof task?.id !== "string" || !task.id || !["todo", "doing", "done", "blocked", "retired"].includes(task.status))
           throw new Error("INVALID_TODO: each task needs an id and a valid task status");
@@ -1654,15 +1661,22 @@ function diagnoseMemory(root) {
         seen.add(task.id);
         if (!records)
           continue;
-        const row = records.find((r) => r.id === task.id && r.data.kind === "task");
-        if (!row || row.data.status !== task.status)
-          add("warning", "TASK_STATE_DIFFERS", task.id, row ? `todo.json: ${task.status}; registry: ${row.data.status}.` : "Task exists in todo.json but not in the registry.", "Compare todo.json with the task record and its source; reconcile intentionally. Neither copy is overwritten automatically.");
+        const row = records.find((r) => r.id === task.id);
+        if (row && row.data.kind !== "task")
+          add("warning", "TASK_ID_KIND_DIFFERS", task.id, `todo.json lists a task, but the registry record with this ID is a ${row.data.kind}.`, "Check which item the ID should name; rename one of them intentionally. Neither copy is changed automatically.");
+        else if (!row)
+          fileOnly.push(task.id);
+        else if (row.data.status !== task.status)
+          add("warning", "TASK_STATE_DIFFERS", task.id, `todo.json: ${task.status}; registry: ${row.data.status}.`, "Compare todo.json with the task record and its source; reconcile intentionally. Neither copy is overwritten automatically.");
       }
-      if (records) {
-        for (const row of records.filter((r) => r.data.kind === "task" && r.data.status !== "retired"))
-          if (!seen.has(row.id))
-            add("warning", "TASK_NOT_IN_TODO", row.id, "Registry task is absent from todo.json.", "Decide whether this task belongs in the task file; doctor does not synchronize the two representations.");
-      }
+      if (!records)
+        return;
+      const listed = (ids) => ids.slice(0, 10).join(", ") + (ids.length > 10 ? ` and ${ids.length - 10} more` : "");
+      if (fileOnly.length)
+        add("warning", "TASKS_NOT_IN_REGISTRY", ".memory/todo.json", `${fileOnly.length} todo.json task(s) have no registry record: ${listed(fileOnly)}.`, "Decide whether these tasks should be saved as task records; doctor does not synchronize the two representations.");
+      const registryOnly = records.filter((r) => r.data.kind === "task" && r.data.status !== "retired" && !seen.has(r.id)).map((r) => r.id);
+      if (registryOnly.length)
+        add(seen.size ? "warning" : "info", "TASKS_NOT_IN_TODO", ".memory/todo.json", `${registryOnly.length} registry task(s) are absent from ${seen.size ? "" : "the empty "}todo.json: ${listed(registryOnly)}.`, "Decide whether these tasks belong in the task file; doctor does not synchronize the two representations.");
     }, ".memory/todo.json");
   else if (records?.some((r) => r.data.kind === "task" && r.data.status !== "retired"))
     add("warning", "TODO_FILE_MISSING", ".memory/todo.json", "Registry tasks exist but the task file is absent.", "Review the project task-file convention before recreating it.");
