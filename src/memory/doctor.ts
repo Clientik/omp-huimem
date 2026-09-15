@@ -1,4 +1,4 @@
-import {existsSync,readFileSync,statSync} from 'node:fs';
+import {existsSync,lstatSync,readFileSync,statSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {MemoryStore,safePath,architectureCheck} from './core';
 import {memoryToolError} from './errors';
@@ -8,16 +8,23 @@ import {projectionStatus} from './projection';
 import {readSettings} from './settings';
 
 export type DoctorIssue={severity:'error'|'warning'|'info';code:string;target:string;message:string;fix:string};
-export type DoctorReport={issues:DoctorIssue[];checked:string[];unavailable:string[]};
+// partial: the section ran, but some of its inputs could not be read or were deliberately not followed.
+export type DoctorReport={issues:DoctorIssue[];checked:string[];partial:string[];unavailable:string[]};
 
 // This is an explicit diagnostic command, never a prompt hook. It opens the existing
 // database read-only: no migrations, health writes, sync, capture or automatic repairs.
 export function diagnoseMemory(root:string):DoctorReport {
-  const report:DoctorReport={issues:[],checked:[],unavailable:[]};
+  const report:DoctorReport={issues:[],checked:[],partial:[],unavailable:[]};
   const add=(severity:DoctorIssue['severity'],code:string,target:string,message:string,fix:string)=>
     report.issues.push({severity,code,target,message,fix});
-  const attempt=<T>(section:string,read:()=>T):T|undefined=>{
-    try {const value=read();report.checked.push(section);return value;}
+  // read may call gap(note) when it completed without some of its inputs; the section is then reported as partial.
+  const attempt=<T>(section:string,read:(gap:(note:string)=>void)=>T):T|undefined=>{
+    try {
+      const gaps:string[]=[];
+      const value=read(note=>gaps.push(note));
+      if(gaps.length) report.partial.push(`${section} (${gaps.join(', ')})`); else report.checked.push(section);
+      return value;
+    }
     catch(error) {
       const d=memoryToolError(error).details;
       report.unavailable.push(section);
@@ -81,10 +88,31 @@ export function diagnoseMemory(root:string):DoctorReport {
     if(!row || row.data.status==='retired') add('warning','REQUIRED_UNAVAILABLE',id,row ? 'Required record is retired.' : 'Required record is missing.',
       'Review the required list with /huimem require. Restore the intended record or explicitly unrequire it.');
   }
-  attempt('ADR basis',()=>{
-    for(const path of listAdrs(root)) if(!readBasis(text(path)).section)
-      add('warning','ADR_WITHOUT_BASIS',path,'No basis section is present.',
-        'Run /huimem adr-audit to inspect possible migration. Existing basis sections are not authenticated by doctor.');
+  // Each ADR is read on its own: one oversized or unreadable document must not hide findings for the others.
+  attempt('ADR basis',gap=>{
+    // listAdrs skips links on purpose (a write through them would leave the project); name them instead of hiding them.
+    const dir=resolve(root,'.memory/adr');
+    const links=!existsSync(dir) ? [] : lstatSync(dir).isSymbolicLink() ? ['.memory/adr']
+      : [...new Bun.Glob('.memory/adr/**').scanSync({cwd:root,onlyFiles:false,followSymlinks:false})]
+        .map(p=>p.split('\\').join('/')).filter(p=>lstatSync(resolve(root,p)).isSymbolicLink()).sort();
+    for(const link of links)
+      add('warning','ADR_NOT_CHECKED',link,'Link in the ADR directory is not followed; documents behind it are not checked.',
+        'Keep project ADRs as regular files inside .memory/adr, or move the link out of that directory.');
+    if(links.length) gap(`${links.length} link(s) not followed`);
+    const paths=listAdrs(root);
+    let unreadable=0;
+    for(const path of paths) {
+      try {
+        if(!readBasis(text(path)).section)
+          add('warning','ADR_WITHOUT_BASIS',path,'No basis section is present.',
+            'Run /huimem adr-audit to inspect possible migration. Existing basis sections are not authenticated by doctor.');
+      } catch(error) {
+        unreadable++;
+        const d=memoryToolError(error).details;
+        add('error',d.code,path,d.message,d.fix);
+      }
+    }
+    if(unreadable) gap(`${unreadable} of ${paths.length} unreadable`);
   });
   if(existsSync(resolve(root,'.memory/architecture.json'))) attempt('architecture',()=>{
     const result=architectureCheck(root,JSON.parse(text('.memory/architecture.json')));
@@ -121,6 +149,7 @@ export function formatDoctor(report:DoctorReport):string {
     'huimem doctor — diagnostic only; no repairs applied.',
     report.issues.length ? `${report.issues.length} finding(s).` : 'No findings in the completed checks; this is not a guarantee of semantic correctness.',
     `Checked: ${report.checked.join(', ') || 'none'}.`,
+    ...(report.partial.length ? ['Partial: '+report.partial.join(', ')+'.'] : []),
     ...(report.unavailable.length ? ['Unavailable: '+report.unavailable.join(', ')+'.'] : []),
     ...issues.map(i=>`${i.severity.toUpperCase()} ${i.code} — ${i.target}\n  ${i.message}\n  Fix: ${i.fix}`),
     ...(report.issues.length>issues.length ? [`${report.issues.length-issues.length} additional findings omitted; address the listed issues and rerun.`] : []),

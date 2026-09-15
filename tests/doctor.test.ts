@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test';
 import {Database} from 'bun:sqlite';
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync,symlinkSync} from 'node:fs';
 import {join} from 'node:path';
 import {MemoryStore} from '../src/memory/core';
 import {diagnoseMemory,formatDoctor} from '../src/memory/doctor';
@@ -165,11 +165,47 @@ test('doctor explains transitive, retired and changed dependencies and invalid e
   expect(found['STALE_RECORD@ret']).toBeUndefined();
 }));
 
+test('one oversized ADR does not hide findings for the other ADRs',()=>fixture(dir=>{
+  enable(dir);
+  mkdirSync(join(dir,'.memory/adr'));
+  for(let i=1;i<=3;i++) writeFileSync(join(dir,`.memory/adr/000${i}.md`),'# Decision');
+  writeFileSync(join(dir,'.memory/adr/0000.md'),'# Large\n'+'x'.repeat(1024*1024+1));
+  const report=diagnoseMemory(dir);
+  expect(report.issues.filter(i=>i.code==='ADR_WITHOUT_BASIS')).toHaveLength(3);
+  const large=report.issues.find(i=>i.code==='DOCTOR_FILE_TOO_LARGE')!;
+  expect(large.target).toBe('.memory/adr/0000.md');
+  expect(report.partial).toEqual(['ADR basis (1 of 4 unreadable)']);
+  expect(report.checked).not.toContain('ADR basis');
+}));
+
+test('links in the ADR directory are named as not checked instead of being skipped silently',()=>fixture(dir=>{
+  enable(dir);
+  const outside=mkdtempSync(join(import.meta.dir,'doctor-outside-'));
+  try {
+    writeFileSync(join(outside,'external.md'),'# External');
+    mkdirSync(join(dir,'.memory/adr'));
+    writeFileSync(join(dir,'.memory/adr/inside.md'),'# Inside');
+    symlinkSync(outside,join(dir,'.memory/adr/linked'),'junction');
+    let fileLink=true;
+    try {symlinkSync(join(outside,'external.md'),join(dir,'.memory/adr/external.md'),'file');} catch {fileLink=false;} // Windows without developer mode
+    const report=diagnoseMemory(dir);
+    const skipped=report.issues.filter(i=>i.code==='ADR_NOT_CHECKED').map(i=>i.target);
+    expect(skipped).toEqual(fileLink ? ['.memory/adr/external.md','.memory/adr/linked'] : ['.memory/adr/linked']);
+    expect(report.issues.filter(i=>i.code==='ADR_WITHOUT_BASIS').map(i=>i.target)).toEqual(['.memory/adr/inside.md']);
+    expect(report.partial).toEqual([`ADR basis (${skipped.length} link(s) not followed)`]);
+    expect(readFileSync(join(outside,'external.md'),'utf8')).toBe('# External');
+    rmSync(join(dir,'.memory/adr'),{recursive:true,force:true});
+    symlinkSync(outside,join(dir,'.memory/adr'),'junction');
+    expect(diagnoseMemory(dir).issues.find(i=>i.code==='ADR_NOT_CHECKED')?.target).toBe('.memory/adr');
+  } finally {rmSync(join(dir,'.memory/adr'),{recursive:true,force:true});rmSync(outside,{recursive:true,force:true});}
+}));
+
 test('formatter caps findings and explicitly reports incomplete sections',()=>{
-  const report={checked:['settings'],unavailable:['database'],issues:Array.from({length:51},(_,i)=>({
+  const report={checked:['settings'],partial:['ADR basis (1 of 2 unreadable)'],unavailable:['database'],issues:Array.from({length:51},(_,i)=>({
     severity:'warning' as const,code:'STALE_RECORD',target:'record-'+i,message:'Changed source',fix:'Recheck source',
   }))};
   const text=formatDoctor(report);
+  expect(text).toContain('Partial: ADR basis (1 of 2 unreadable).');
   expect(text).toContain('Unavailable: database');
   expect(text).toContain('1 additional findings omitted');
   expect(text).not.toContain('record-50');

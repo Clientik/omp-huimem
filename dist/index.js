@@ -1461,7 +1461,7 @@ function initProject(root) {
 }
 
 // src/memory/doctor.ts
-import { existsSync as existsSync2, readFileSync as readFileSync6, statSync as statSync2 } from "fs";
+import { existsSync as existsSync2, lstatSync as lstatSync4, readFileSync as readFileSync6, statSync as statSync2 } from "fs";
 import { resolve as resolve7 } from "path";
 
 // src/memory/errors.ts
@@ -1522,12 +1522,16 @@ Fix: ` + fix }],
 
 // src/memory/doctor.ts
 function diagnoseMemory(root) {
-  const report = { issues: [], checked: [], unavailable: [] };
+  const report = { issues: [], checked: [], partial: [], unavailable: [] };
   const add = (severity, code, target, message, fix) => report.issues.push({ severity, code, target, message, fix });
   const attempt = (section, read) => {
     try {
-      const value = read();
-      report.checked.push(section);
+      const gaps = [];
+      const value = read((note) => gaps.push(note));
+      if (gaps.length)
+        report.partial.push(`${section} (${gaps.join(", ")})`);
+      else
+        report.checked.push(section);
       return value;
     } catch (error) {
       const d = memoryToolError(error).details;
@@ -1596,10 +1600,27 @@ function diagnoseMemory(root) {
       if (!row || row.data.status === "retired")
         add("warning", "REQUIRED_UNAVAILABLE", id, row ? "Required record is retired." : "Required record is missing.", "Review the required list with /huimem require. Restore the intended record or explicitly unrequire it.");
     }
-  attempt("ADR basis", () => {
-    for (const path of listAdrs(root))
-      if (!readBasis(text(path)).section)
-        add("warning", "ADR_WITHOUT_BASIS", path, "No basis section is present.", "Run /huimem adr-audit to inspect possible migration. Existing basis sections are not authenticated by doctor.");
+  attempt("ADR basis", (gap) => {
+    const dir = resolve7(root, ".memory/adr");
+    const links = !existsSync2(dir) ? [] : lstatSync4(dir).isSymbolicLink() ? [".memory/adr"] : [...new Bun.Glob(".memory/adr/**").scanSync({ cwd: root, onlyFiles: false, followSymlinks: false })].map((p) => p.split("\\").join("/")).filter((p) => lstatSync4(resolve7(root, p)).isSymbolicLink()).sort();
+    for (const link of links)
+      add("warning", "ADR_NOT_CHECKED", link, "Link in the ADR directory is not followed; documents behind it are not checked.", "Keep project ADRs as regular files inside .memory/adr, or move the link out of that directory.");
+    if (links.length)
+      gap(`${links.length} link(s) not followed`);
+    const paths = listAdrs(root);
+    let unreadable = 0;
+    for (const path of paths) {
+      try {
+        if (!readBasis(text(path)).section)
+          add("warning", "ADR_WITHOUT_BASIS", path, "No basis section is present.", "Run /huimem adr-audit to inspect possible migration. Existing basis sections are not authenticated by doctor.");
+      } catch (error) {
+        unreadable++;
+        const d = memoryToolError(error).details;
+        add("error", d.code, path, d.message, d.fix);
+      }
+    }
+    if (unreadable)
+      gap(`${unreadable} of ${paths.length} unreadable`);
   });
   if (existsSync2(resolve7(root, ".memory/architecture.json")))
     attempt("architecture", () => {
@@ -1642,6 +1663,7 @@ function formatDoctor(report) {
     "huimem doctor \u2014 diagnostic only; no repairs applied.",
     report.issues.length ? `${report.issues.length} finding(s).` : "No findings in the completed checks; this is not a guarantee of semantic correctness.",
     `Checked: ${report.checked.join(", ") || "none"}.`,
+    ...report.partial.length ? ["Partial: " + report.partial.join(", ") + "."] : [],
     ...report.unavailable.length ? ["Unavailable: " + report.unavailable.join(", ") + "."] : [],
     ...issues.map((i) => `${i.severity.toUpperCase()} ${i.code} \u2014 ${i.target}
   ${i.message}
