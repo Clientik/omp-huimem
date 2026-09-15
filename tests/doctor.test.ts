@@ -121,7 +121,7 @@ test('read-only store rejects writes and doctor reports corrupt storage without 
   writeFileSync(path,'broken sqlite');
   const report=diagnoseMemory(dir);
   expect(report.unavailable).toContain('database');
-  expect(report.issues.some(i=>i.severity==='error')).toBe(true);
+  expect(report.issues.find(i=>i.target==='database')?.fix).toContain('preserve the database');
   expect(readFileSync(path,'utf8')).toBe('broken sqlite');
 }));
 

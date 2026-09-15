@@ -49,7 +49,9 @@ export function memoryToolError(error:unknown,operation?:string,explicitCode?:st
   const native=typeof (error as any)?.code==='string' ? (error as any).code : undefined;
   const code=explicitCode ?? prefix ?? native ?? 'MEMORY_ERROR';
   const storage=/^SQLITE/.test(code) || ['EACCES','EPERM','EROFS','ENOSPC','EIO'].includes(code);
-  const fix=FIXES[code] ?? (storage
+  // A malformed or foreign database file is an integrity problem, not a permissions or space problem.
+  const integrity=/^SQLITE_(CORRUPT|NOTADB)/.test(code);
+  const fix=FIXES[code] ?? (integrity ? FIXES.DATABASE_INTEGRITY : storage
     ? 'Check project storage permissions, available space and memory health with /huimem. Resolve the storage problem before retrying a write.'
     : 'Inspect the error and memory state with /huimem. Correct its cause before retrying; do not repeat the unchanged request.');
   const diagnostic:MemoryDiagnostic={severity:'error',code,message,fix,target:operation ? `project_memory.${operation}` : 'project_memory'};

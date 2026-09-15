@@ -33,6 +33,11 @@ test('native storage failures keep their code and do not suggest changing eviden
 
 test('database and schema errors have specific recovery guidance and IDs are explicitly ASCII',()=>{
   expect(memoryToolError(new Error('DATABASE_INTEGRITY')).details.fix).toContain('verified backup');
+  for(const code of ['SQLITE_CORRUPT','SQLITE_NOTADB']) {
+    const d=memoryToolError(Object.assign(new Error('malformed'),{code})).details;
+    expect(d.code).toBe(code);
+    expect(d.fix).toContain('verified backup');
+  }
   expect(memoryToolError(new Error('UNSUPPORTED_SCHEMA')).details.fix).toContain('compatible');
   expect(memoryToolError(new Error('INVALID_ID')).details.fix).toContain('ASCII');
 });

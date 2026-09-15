@@ -1509,7 +1509,8 @@ function memoryToolError(error, operation, explicitCode) {
   const native = typeof error?.code === "string" ? error.code : undefined;
   const code = explicitCode ?? prefix ?? native ?? "MEMORY_ERROR";
   const storage = /^SQLITE/.test(code) || ["EACCES", "EPERM", "EROFS", "ENOSPC", "EIO"].includes(code);
-  const fix = FIXES[code] ?? (storage ? "Check project storage permissions, available space and memory health with /huimem. Resolve the storage problem before retrying a write." : "Inspect the error and memory state with /huimem. Correct its cause before retrying; do not repeat the unchanged request.");
+  const integrity = /^SQLITE_(CORRUPT|NOTADB)/.test(code);
+  const fix = FIXES[code] ?? (integrity ? FIXES.DATABASE_INTEGRITY : storage ? "Check project storage permissions, available space and memory health with /huimem. Resolve the storage problem before retrying a write." : "Inspect the error and memory state with /huimem. Correct its cause before retrying; do not repeat the unchanged request.");
   const diagnostic = { severity: "error", code, message, fix, target: operation ? `project_memory.${operation}` : "project_memory" };
   return {
     content: [{ type: "text", text: legacy + `

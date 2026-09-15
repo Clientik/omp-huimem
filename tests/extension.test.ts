@@ -873,15 +873,16 @@ test('off and paused memory return the envelope without writing; reads still wor
     expect(unknown.details.fix).toContain('status, recall');
   } finally { f.clean(); }
 });
-test('a corrupt database is reported as a storage failure and still blocks writes', async () => {
+test('a corrupt database is reported as an integrity failure and still blocks writes', async () => {
   const f = fixture(); try {
     mkdirSync(join(f.dir, '.memory/runtime'), { recursive: true });
     writeFileSync(join(f.dir, '.memory/runtime/state.sqlite'), 'corrupt db');
     await f.handlers.before_agent_start({ prompt: 'Work' }, f.ctx);
     const r = await f.tools.project_memory.execute('s', { op: 'status' }, null, null, f.ctx);
     expect(r.isError).toBe(true);
-    expect(r.details.code).toMatch(/^SQLITE/);
-    expect(r.details.fix).toContain('storage');
+    expect(r.details.code).toBe('SQLITE_NOTADB');
+    expect(r.details.fix).toContain('preserve the database');
+    expect(r.details.fix).not.toContain('permissions');
     expect((await f.handlers.tool_call({ toolName: 'write', input: { path: 'src/a' } }, f.ctx)).block).toBe(true);
   } finally { f.clean(); }
 });
