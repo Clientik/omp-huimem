@@ -7,6 +7,7 @@ import { readSettings } from '../memory/settings';
 import { packContext } from '../memory/context-pack';
 import { provenanceNote, readBasis, isAdrRead } from '../memory/provenance';
 import { registerSettingsCommand } from '../ui/huimem-command';
+import { memoryToolError } from '../memory/errors';
 
 // Метка времени до минут: полные ISO-метки с миллисекундами стоили модели ~10 токенов каждая, порядок задаёт код.
 const minute = (iso: string) => iso.slice(0, 16).replace('T', ' ');
@@ -248,10 +249,10 @@ export default function install(pi: ExtensionAPI) {
     }),
     async execute(_id, p: any, _signal, _update, ctx) {
       // Проверяем состояние здесь, а не по флагу: инструмент могут вызвать до первого запроса.
-      if (!deployed(ctx)) return { content: [{ type: 'text', text: NOT_ENABLED }], details: { error: NOT_ENABLED }, isError: true };
+      if (!deployed(ctx)) return memoryToolError(NOT_ENABLED,p.op,'MEMORY_NOT_ENABLED');
       if (p.op === 'commit' && commitsPaused(ctx)) {
         const message='COMMITS_PAUSED: no records or checkpoint saved. Only the user can resume through /huimem resume.';
-        return {content:[{type:'text',text:message}],details:{error:message},isError:true};
+        return memoryToolError(message,p.op);
       }
       try {
         const s = get(ctx); let data: any;
@@ -308,7 +309,7 @@ export default function install(pi: ExtensionAPI) {
       } catch (e: any) {
         // Validation failures are recoverable; storage failure changes health and prevents mutations.
         if (e.code?.startsWith('SQLITE') || /readonly|disk|database|I\/O/i.test(String(e))) healthFailure(ctx,e);
-        return { content: [{ type: 'text', text: String(e) }], details: { error: String(e) }, isError: true };
+        return memoryToolError(e,p.op);
       }
     },
   });

@@ -1848,6 +1848,55 @@ Usage: /huimem ${verb} <id>`);
   }
 }
 
+// src/memory/errors.ts
+var FIXES = {
+  VERSION_CONFLICT: "Recall the record by id, review its current value and version, then use that version as expectedVersion. Do not overwrite an unseen correction.",
+  MISSING_LINK: "Recall each links ID. Use existing record IDs, or create the referenced records in the same commit; links are not file paths.",
+  INVALID_STATUS: "Use a status valid for the kind: fact/procedure/navigation = active, proposed, retired; decision = proposed, accepted, retired; task = todo, doing, done, blocked, retired.",
+  INVALID_KIND: "Use fact, decision, procedure, navigation, or task as kind.",
+  INVALID_VERSION: "Use expectedVersion=0 for a new ID; otherwise recall the ID and use its current non-negative integer version.",
+  INVALID_ID: "Use a non-empty ID of at most 100 characters containing letters, numbers, underscore, dot, colon, slash or hyphen.",
+  INVALID_TEXT: "Supply non-empty text of at most 3000 characters.",
+  INVALID_LINKS: "Supply at most 20 links as record ID strings.",
+  DUPLICATE_ID: "Combine changes for the same ID into one entry per commit.",
+  INVALID_CHECKPOINT: "Supply a non-empty summary of at most 2000 characters and an array of at most 30 changes. An empty changes array is allowed.",
+  INVALID_TASK_SCOPE: "Use an existing task record ID, save that task in this commit, or omit task when the summary is not task-specific.",
+  INVALID_DEPENDENCIES: "Use at most 20 dependsOn entries, each with exactly one record id or project-relative file path. A record cannot depend on itself.",
+  MISSING_DEPENDENCY: "Recall the dependency ID. Use an existing record or create it in the same commit; do not invent a replacement basis.",
+  DEPENDENCY_RETIRED: "Review the retired basis and identify a supported current basis before changing dependsOn.",
+  DEPENDENCY_VERSION: "Recall the dependency and recheck the claim against its current version before retrying.",
+  DEPENDENCY_HASH: "Read the dependency file and recheck the claim against its current contents before retrying.",
+  AUTHORITY_CHANGED: "Reread the relevant project rules and sources, then reconsider the changes before retrying.",
+  SOURCE_ORIGIN_REQUIRED: 'Add source.origin="user" for an exact current user quote, or origin="file" with a relative path and exact file quote.',
+  SOURCE_REQUIRED: "Provide one source: the current user message, a stored episode, or a project file, with an exact quote.",
+  SOURCE: 'Use exactly one source and a verbatim quote present in it. For the current user use origin="user" and quote only; for a file use origin="file", path and quote; for a stored message use origin="episode", episode and quote.',
+  USER_SOURCE_REQUIRED: "An accepted decision needs a stored user message. Use an exact user quote, or keep an unsupported inference proposed.",
+  RATIONALE_REQUIRED: "Supply a non-empty rationale of at most 2000 characters for a decision.",
+  RATIONALE_SOURCE_REQUIRED: "Copy rationale exactly from source.quote. Put additional interpretation in text or keep the decision proposed.",
+  SOURCE_DERIVED: "Use the original episode or source file; RECORDS.md is a generated view, not independent evidence.",
+  SECRET_PATTERN: "Remove credentials from the proposed text and summary. Use a non-secret exact excerpt as evidence.",
+  PATH: "Use a project-relative path that resolves inside this project, without links outside it.",
+  COMMITS_PAUSED: "Ask the user to run /huimem resume if saving should resume. Reads remain available; repeated commit calls will not clear the pause.",
+  MEMORY_NOT_ENABLED: "Ask the user to run /huimem init in the project root, then send a new message.",
+  UNKNOWN_OPERATION: "Use status, recall, episodes, history, evidence or commit as op."
+};
+function memoryToolError(error, operation, explicitCode) {
+  const legacy = String(error);
+  const message = error instanceof Error ? error.message : legacy;
+  const prefix = message.match(/^([A-Z][A-Z0-9_]*)(?=:|$)/)?.[1];
+  const native = typeof error?.code === "string" ? error.code : undefined;
+  const code = explicitCode ?? prefix ?? native ?? "MEMORY_ERROR";
+  const storage = /^SQLITE/.test(code) || ["EACCES", "EPERM", "EROFS", "ENOSPC", "EIO"].includes(code);
+  const fix = FIXES[code] ?? (storage ? "Check project storage permissions, available space and memory health with /huimem. Resolve the storage problem before retrying a write." : "Inspect the error and memory state with /huimem. Correct its cause before retrying; do not repeat the unchanged request.");
+  const diagnostic = { severity: "error", code, message, fix, target: operation ? `project_memory.${operation}` : "project_memory" };
+  return {
+    content: [{ type: "text", text: legacy + `
+Fix: ` + fix }],
+    details: { error: legacy, ...diagnostic },
+    isError: true
+  };
+}
+
 // src/extensions/project-memory.ts
 var minute = (iso) => iso.slice(0, 16).replace("T", " ");
 var textOf = (content) => typeof content === "string" ? content : Array.isArray(content) ? content.filter((x) => x?.type === "text").map((x) => x.text).join(`
@@ -2141,10 +2190,10 @@ Do not claim memory or work was verified.`;
     }),
     async execute(_id, p, _signal, _update, ctx) {
       if (!deployed(ctx))
-        return { content: [{ type: "text", text: NOT_ENABLED }], details: { error: NOT_ENABLED }, isError: true };
+        return memoryToolError(NOT_ENABLED, p.op, "MEMORY_NOT_ENABLED");
       if (p.op === "commit" && commitsPaused(ctx)) {
         const message = "COMMITS_PAUSED: no records or checkpoint saved. Only the user can resume through /huimem resume.";
-        return { content: [{ type: "text", text: message }], details: { error: message }, isError: true };
+        return memoryToolError(message, p.op);
       }
       try {
         const s = get(ctx);
@@ -2224,7 +2273,7 @@ Do not claim memory or work was verified.`;
       } catch (e) {
         if (e.code?.startsWith("SQLITE") || /readonly|disk|database|I\/O/i.test(String(e)))
           healthFailure(ctx, e);
-        return { content: [{ type: "text", text: String(e) }], details: { error: String(e) }, isError: true };
+        return memoryToolError(e, p.op);
       }
     }
   });

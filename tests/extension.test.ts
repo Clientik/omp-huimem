@@ -269,6 +269,23 @@ test('required IDs remain available through status when the final registry has n
   } finally {f.clean();}
 });
 
+test('commit errors expose a code and recovery hint without saving an invalid change',async()=>{
+  const f=fixture();
+  try {
+    await f.handlers.before_agent_start({prompt:'Use SQLite.'},f.ctx);
+    const result=await f.tools.project_memory.execute('invalid',{op:'commit',summary:'test',changes:[{
+      id:'db',kind:'fact',status:'accepted',text:'Use SQLite.',expectedVersion:0,
+      source:{origin:'user',quote:'Use SQLite.'},
+    }]},null,null,f.ctx);
+    expect(result.isError).toBe(true);
+    expect(result.details).toMatchObject({code:'INVALID_STATUS',severity:'error',target:'project_memory.commit'});
+    expect(result.details.fix).toContain('fact/procedure/navigation');
+    expect(result.details.error).toContain('INVALID_STATUS');
+    const store=new MemoryStore(f.dir);
+    try {expect(store.current('db')).toBeNull();} finally {store.close();}
+  } finally {f.clean();}
+});
+
 test('essential tool saves current user decision without asking model for an episode ID', async () => {
   const f=fixture(); try {
     expect(f.tools.project_memory.loadMode).toBe('essential');
