@@ -51,7 +51,18 @@ function sourceText(root: string, path: string) {
 export class MemoryStore {
   db: Database;
   private closed = false;
-  constructor(public root: string) {
+  constructor(public root: string, options: {readOnly?:boolean} = {}) {
+    if(options.readOnly) {
+      const path=safePath(root,'.memory/runtime/state.sqlite');
+      this.db=new Database(path,{readonly:true,strict:true});
+      try {
+        const version=this.db.query("SELECT value FROM meta WHERE key='schema'").get() as any;
+        if(version?.value!=='2') throw new Error('UNSUPPORTED_SCHEMA');
+        const check=this.db.query('PRAGMA quick_check').get() as any;
+        if(check.quick_check!=='ok') throw new Error('DATABASE_INTEGRITY');
+      } catch(e) {this.db.close();throw e;}
+      return; // No schema creation, migrations, probe writes or projection publication.
+    }
     // The directory must resolve inside this project even when symlinks already exist.
     mkdirSync(resolve(root, '.memory'), { recursive: true }); safePath(root, '.memory');
     mkdirSync(resolve(root, '.memory/runtime'), { recursive: true }); safePath(root, '.memory/runtime');
@@ -199,6 +210,11 @@ export class MemoryStore {
     return (this.db.query(`SELECT v.id,v.version,v.data FROM versions v JOIN
       (SELECT id,MAX(version) version FROM versions GROUP BY id) n ON v.id=n.id AND v.version=n.version ORDER BY v.id`).all() as any[])
       .map(r => ({ id: r.id as string, version: r.version as number, data: JSON.parse(r.data) }));
+  }
+  inspectRecords() {
+    const rows=this.latestRecords(),authority=this.authority();
+    const index=new Map(rows.map(r=>[r.id,{version:r.version,data:r.data}]));
+    return rows.map(r=>({...r,staleReasons:this.staleness(r.data,authority,id=>index.get(id) ?? null)}));
   }
   history(id: string) { return this.db.query('SELECT version,data,time FROM versions WHERE id=? ORDER BY version').all(id); }
   private authorityChanged(c: Change, authority: {hash:string; policyHash:string}) {

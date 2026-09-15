@@ -23,6 +23,8 @@ For developers working with an AI agent who want to stop explaining the same pro
 
 ## Install
 
+**In development, not yet validated:** `/huimem doctor` reports stale or missing evidence, unavailable required records, ADRs without a basis section and task-file drift. It opens the existing database read-only and applies no repairs. See the [diagnostic guide](docs/GUIDE.md#doctor). This command is not part of the v0.6.2 release below.
+
 You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model. Local models are supported.
 
 **mnemopi is not required.** huimem uses its own local SQLite through OMP's runtime. `/huimem init` sets `memory.backend: off` for the project; no separate memory service or model is needed.

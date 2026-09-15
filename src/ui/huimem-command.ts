@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { LIMITS, REQUIRED_MAX, readSettings, writeSettings, SETTINGS_PATH } from '../memory/settings';
 import { apply, audit } from '../memory/adr-audit';
 import { initProject } from '../memory/starter';
+import { diagnoseMemory, formatDoctor } from '../memory/doctor';
 
 // Два способа управления поверх одного ядра run(): экран настроек в интерактивном терминале
 // и подкоманды для RPC, -p и скриптов. Сигнатуры диалогов сверены 2026-09-14 с исходником
@@ -37,6 +38,7 @@ const HELP = [
   '  /huimem reset        restore the default limits',
   '  /huimem sync         retry publishing .memory/RECORDS.md from saved records',
   '  /huimem context      inspect the latest memory block prepared for OMP',
+  '  /huimem doctor       diagnose memory, sources and task-file drift without repairs',
   '  /huimem adr-audit    propose moving legacy ADRs into the basis contract (dry run)',
   '  /huimem adr-audit apply   write that migration; originals are backed up',
 ].join('\n');
@@ -57,6 +59,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
   // проверки пределов, require и init не расходятся между двумя способами управления.
   async function run(verb: string | undefined, value: string | undefined, ctx: any, say: (text: string) => unknown = send) {
     if (verb === 'help' || verb === '--help') return say(HELP);
+    if (verb === 'doctor') return say(formatDoctor(diagnoseMemory(ctx.cwd)));
 
     // Память включается явной командой в выбранном проекте, а не сама в каждом каталоге:
     // иначе база со стенограммой появлялась бы в чужих репозиториях (замерено 2026-09-08).
@@ -302,6 +305,8 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
           async () => { await run('sync', undefined, ctx, note); }],
         ['Last memory block', 'Diagnostics of the block prepared for the model; not proof it was used.',
           async () => { await run('context', undefined, ctx); return true; }],
+        ['Memory doctor', 'Inspect sources, required records and task drift; no repairs.',
+          async () => { await run('doctor', undefined, ctx); return true; }],
         ['Legacy ADR migration', 'Shows the plan first and asks before writing anything.',
           async () => adrMigration(ctx)],
         ['OMP settings that affect memory', 'Shown only; the plugin does not change OMP config.',

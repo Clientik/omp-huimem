@@ -16,8 +16,8 @@ test.each([
 });
 
 test('disabled memory, pause and unknown failures have explicit recovery paths',()=>{
-  const disabled=memoryToolError('Memory is off','status','MEMORY_NOT_ENABLED');
-  expect(disabled.details.code).toBe('MEMORY_NOT_ENABLED');
+  const disabled=memoryToolError('PROJECT_MEMORY_NOT_ENABLED: memory is off','status');
+  expect(disabled.details.code).toBe('PROJECT_MEMORY_NOT_ENABLED');
   expect(disabled.details.fix).toContain('/huimem init');
   expect(memoryToolError('COMMITS_PAUSED: paused','commit').details.fix).toContain('user');
   expect(memoryToolError(new Error('Unexpected failure'),'commit').details.code).toBe('MEMORY_ERROR');
@@ -29,4 +29,10 @@ test('native storage failures keep their code and do not suggest changing eviden
   expect(result.details.code).toBe('SQLITE_FULL');
   expect(result.details.fix).toContain('available space');
   expect(result.details.error).toBe(String(error));
+});
+
+test('database and schema errors have specific recovery guidance and IDs are explicitly ASCII',()=>{
+  expect(memoryToolError(new Error('DATABASE_INTEGRITY')).details.fix).toContain('verified backup');
+  expect(memoryToolError(new Error('UNSUPPORTED_SCHEMA')).details.fix).toContain('compatible');
+  expect(memoryToolError(new Error('INVALID_ID')).details.fix).toContain('ASCII');
 });

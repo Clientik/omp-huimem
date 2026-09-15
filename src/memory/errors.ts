@@ -10,7 +10,7 @@ const FIXES: Record<string,string> = {
   INVALID_STATUS: 'Use a status valid for the kind: fact/procedure/navigation = active, proposed, retired; decision = proposed, accepted, retired; task = todo, doing, done, blocked, retired.',
   INVALID_KIND: 'Use fact, decision, procedure, navigation, or task as kind.',
   INVALID_VERSION: 'Use expectedVersion=0 for a new ID; otherwise recall the ID and use its current non-negative integer version.',
-  INVALID_ID: 'Use a non-empty ID of at most 100 characters containing letters, numbers, underscore, dot, colon, slash or hyphen.',
+  INVALID_ID: 'Use a non-empty ID of at most 100 characters containing ASCII letters A-Z/a-z, digits 0-9, underscore, dot, colon, slash or hyphen.',
   INVALID_TEXT: 'Supply non-empty text of at most 3000 characters.',
   INVALID_LINKS: 'Supply at most 20 links as record ID strings.',
   DUPLICATE_ID: 'Combine changes for the same ID into one entry per commit.',
@@ -32,8 +32,13 @@ const FIXES: Record<string,string> = {
   SECRET_PATTERN: 'Remove credentials from the proposed text and summary. Use a non-secret exact excerpt as evidence.',
   PATH: 'Use a project-relative path that resolves inside this project, without links outside it.',
   COMMITS_PAUSED: 'Ask the user to run /huimem resume if saving should resume. Reads remain available; repeated commit calls will not clear the pause.',
-  MEMORY_NOT_ENABLED: 'Ask the user to run /huimem init in the project root, then send a new message.',
+  PROJECT_MEMORY_NOT_ENABLED: 'Ask the user to run /huimem init in the project root, then send a new message.',
+  DATABASE_INTEGRITY: 'Stop memory writes and preserve the database and its WAL files. Restore a verified backup or investigate the corruption before reopening; do not delete the database to silence the error.',
+  UNSUPPORTED_SCHEMA: 'Use a plugin version compatible with this database schema, or restore a compatible backup. Do not manually change the schema marker.',
   UNKNOWN_OPERATION: 'Use status, recall, episodes, history, evidence or commit as op.',
+  INVALID_SETTINGS: 'Correct .memory/settings.json as a JSON object; required accepts at most 10 valid record IDs. Keep a copy before editing.',
+  INVALID_TODO: 'Correct .memory/todo.json: tasks must be an array with unique IDs and valid task statuses. Compare with the registry before editing.',
+  DOCTOR_FILE_TOO_LARGE: 'Inspect the named file separately; doctor limits individual diagnostic document reads to 1 MiB. Do not truncate evidence to suppress this finding.',
 };
 
 export function memoryToolError(error:unknown,operation?:string,explicitCode?:string) {

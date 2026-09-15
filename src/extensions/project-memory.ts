@@ -249,7 +249,7 @@ export default function install(pi: ExtensionAPI) {
     }),
     async execute(_id, p: any, _signal, _update, ctx) {
       // Проверяем состояние здесь, а не по флагу: инструмент могут вызвать до первого запроса.
-      if (!deployed(ctx)) return memoryToolError(NOT_ENABLED,p.op,'MEMORY_NOT_ENABLED');
+      if (!deployed(ctx)) return memoryToolError(NOT_ENABLED,p.op);
       if (p.op === 'commit' && commitsPaused(ctx)) {
         const message='COMMITS_PAUSED: no records or checkpoint saved. Only the user can resume through /huimem resume.';
         return memoryToolError(message,p.op);

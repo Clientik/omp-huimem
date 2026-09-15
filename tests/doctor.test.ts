@@ -1,0 +1,117 @@
+import {test,expect} from 'bun:test';
+import {Database} from 'bun:sqlite';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync} from 'node:fs';
+import {join} from 'node:path';
+import {MemoryStore} from '../src/memory/core';
+import {diagnoseMemory,formatDoctor} from '../src/memory/doctor';
+
+function fixture(fn:(dir:string)=>void) {
+  const dir=mkdtempSync(join(import.meta.dir,'doctor-test-'));
+  try {fn(dir);} finally {rmSync(dir,{recursive:true,force:true});}
+}
+function enable(dir:string) {
+  mkdirSync(join(dir,'.memory'),{recursive:true});
+  writeFileSync(join(dir,'.memory/MEMORY.md'),'# Project memory');
+}
+function seed(s:MemoryStore,id='fact',kind='fact',status='active') {
+  return {id,kind,status,text:'Keep the current design',expectedVersion:0,dependsOn:[],
+    source:{episode:s.capture('r','user','Keep the current design'),quote:'Keep the current design'}};
+}
+const codes=(dir:string)=>diagnoseMemory(dir).issues.map(i=>i.code);
+
+test('doctor does not create memory or initialize an enabled project',()=>fixture(dir=>{
+  expect(codes(dir)).toEqual(['PROJECT_MEMORY_NOT_ENABLED']);
+  expect(existsSync(join(dir,'.memory'))).toBe(false);
+  enable(dir);
+  expect(codes(dir)).toContain('MEMORY_DATABASE_MISSING');
+  expect(existsSync(join(dir,'.memory/runtime'))).toBe(false);
+}));
+
+test.each(['pending','conflict'])('doctor reports %s publication without publishing or touching stored state',state=>fixture(dir=>{
+  enable(dir);
+  const s=new MemoryStore(dir);
+  try {s.commit('r',[seed(s)],'saved');} finally {s.close();}
+  const file=join(dir,'.memory/RECORDS.md'),db=join(dir,'.memory/runtime/state.sqlite');
+  if(state==='pending') rmSync(file); else writeFileSync(file,'Human correction');
+  const before=readFileSync(db);
+  expect(codes(dir)).toContain('PROJECTION_'+state.toUpperCase());
+  expect(readFileSync(db).equals(before)).toBe(true);
+  if(state==='pending') expect(existsSync(file)).toBe(false);
+  else expect(readFileSync(file,'utf8')).toBe('Human correction');
+}));
+
+test('doctor combines missing sources and dependencies, required, ADR and task drift',()=>fixture(dir=>{
+  enable(dir);
+  writeFileSync(join(dir,'source.txt'),'Use the current adapter');
+  const s=new MemoryStore(dir);
+  try {
+    s.commit('r',[
+      {...seed(s,'file'),source:s.fileSource('source.txt','Use the current adapter')},
+      seed(s,'basis'),
+      {...seed(s,'dependent'),dependsOn:[{id:'basis'}]},
+      seed(s,'task','task','todo'),seed(s,'registry-only','task','doing'),
+    ],'saved');
+    // Simulate incomplete restore; doctor must report it, never repair it.
+    s.db.exec("DELETE FROM versions WHERE id='basis'; DELETE FROM episodes");
+  } finally {s.close();}
+  rmSync(join(dir,'source.txt'));
+  mkdirSync(join(dir,'.memory/adr'));
+  writeFileSync(join(dir,'.memory/adr/0001.md'),'# Legacy decision\nNo quoted basis');
+  writeFileSync(join(dir,'.memory/settings.json'),JSON.stringify({required:['missing']}));
+  writeFileSync(join(dir,'.memory/todo.json'),JSON.stringify({tasks:[{id:'task',status:'done'}]}));
+  const report=diagnoseMemory(dir);
+  expect(report.issues.find(i=>i.code==='STALE_RECORD' && i.target==='file')?.message).toContain('missing');
+  expect(report.issues.find(i=>i.code==='STALE_RECORD' && i.target==='dependent')?.message).toContain('basis is missing');
+  for(const code of ['EPISODE_EVIDENCE_INVALID','REQUIRED_UNAVAILABLE','ADR_WITHOUT_BASIS','TASK_STATE_DIFFERS','TASK_NOT_IN_TODO'])
+    expect(report.issues.map(i=>i.code)).toContain(code);
+}));
+
+test('invalid settings and task file do not hide independent ADR findings',()=>fixture(dir=>{
+  enable(dir);
+  writeFileSync(join(dir,'.memory/settings.json'),JSON.stringify({required:['кириллица']}));
+  writeFileSync(join(dir,'.memory/todo.json'),JSON.stringify({tasks:[{id:'x',status:'active'}]}));
+  mkdirSync(join(dir,'.memory/adr'));
+  writeFileSync(join(dir,'.memory/adr/old.md'),'# Decision');
+  const report=diagnoseMemory(dir);
+  expect(report.unavailable).toContain('settings');
+  expect(report.unavailable).toContain('task file');
+  expect(report.issues.map(i=>i.code)).toContain('ADR_WITHOUT_BASIS');
+}));
+
+test('doctor does not migrate a schema-one database',()=>fixture(dir=>{
+  enable(dir);
+  const s=new MemoryStore(dir);
+  s.db.exec("DROP TABLE projection; UPDATE meta SET value='1' WHERE key='schema'");
+  s.close();
+  const path=join(dir,'.memory/runtime/state.sqlite'),before=readFileSync(path);
+  expect(codes(dir)).toContain('UNSUPPORTED_SCHEMA');
+  expect(readFileSync(path).equals(before)).toBe(true);
+  const db=new Database(path,{readonly:true});
+  try {
+    expect(db.query("SELECT value FROM meta WHERE key='schema'").get()).toEqual({value:'1'});
+    expect(db.query("SELECT name FROM sqlite_master WHERE name='projection'").get()).toBeNull();
+  } finally {db.close();}
+}));
+
+test('read-only store rejects writes and doctor reports corrupt storage without replacing it',()=>fixture(dir=>{
+  enable(dir);
+  const writer=new MemoryStore(dir);writer.close();
+  const reader=new MemoryStore(dir,{readOnly:true});
+  try {expect(()=>reader.capture('r','user','Unexpected write')).toThrow();} finally {reader.close();}
+  const path=join(dir,'.memory/runtime/state.sqlite');
+  writeFileSync(path,'broken sqlite');
+  const report=diagnoseMemory(dir);
+  expect(report.unavailable).toContain('database');
+  expect(report.issues.some(i=>i.severity==='error')).toBe(true);
+  expect(readFileSync(path,'utf8')).toBe('broken sqlite');
+}));
+
+test('formatter caps findings and explicitly reports incomplete sections',()=>{
+  const report={checked:['settings'],unavailable:['database'],issues:Array.from({length:51},(_,i)=>({
+    severity:'warning' as const,code:'STALE_RECORD',target:'record-'+i,message:'Changed source',fix:'Recheck source',
+  }))};
+  const text=formatDoctor(report);
+  expect(text).toContain('Unavailable: database');
+  expect(text).toContain('1 additional findings omitted');
+  expect(text).not.toContain('record-50');
+});

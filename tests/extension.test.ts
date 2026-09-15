@@ -11,6 +11,14 @@ describe('built bundle', () => adapterContract(installBundle));
 
 function adapterContract(install: typeof installSource) {
 
+test('/huimem doctor reports an uninitialized database without creating it',async()=>{
+  const f=fixture(); try {
+    await f.commands.huimem.handler('doctor',f.ctx);
+    expect(String(f.notices.at(-1)?.content)).toContain('MEMORY_DATABASE_MISSING');
+    expect(existsSync(join(f.dir,'.memory/runtime/state.sqlite'))).toBe(false);
+  } finally { f.clean(); }
+});
+
 test('partial and aliased ADR reads get provenance without modifying the excerpt',async()=>{
   const f=fixture(); try {
     mkdirSync(join(f.dir,'.memory/adr'),{recursive:true});
@@ -819,6 +827,7 @@ test('off and paused memory return the envelope without writing; reads still wor
     rmSync(join(f.dir, '.memory/MEMORY.md'));
     const off = await f.tools.project_memory.execute('off', { op: 'commit', summary: 's', changes: [] }, null, null, f.ctx);
     expect(off.details.error.startsWith('PROJECT_MEMORY_NOT_ENABLED')).toBe(true);
+    expect(off.details.code).toBe('PROJECT_MEMORY_NOT_ENABLED');
     expect(off.details.fix).toContain('/huimem init');
     expect(existsSync(join(f.dir, '.memory/runtime/state.sqlite'))).toBe(false);
     writeFileSync(join(f.dir, '.memory/MEMORY.md'), '# Память проекта');

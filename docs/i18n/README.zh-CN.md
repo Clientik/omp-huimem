@@ -23,6 +23,8 @@
 
 ## 安装
 
+**开发中，尚未验证：** `/huimem doctor` 报告过期或丢失的证据、不可用的必需记录、缺少依据部分的 ADR，以及任务文件与记录库的差异。它以只读方式打开现有数据库，不执行修复。详见[诊断指南](../GUIDE.md#doctor)。下方的 v0.6.2 发行版尚不包含此命令。
+
 需要安装 [OMP](https://github.com/can1357/oh-my-pi) 并配置主模型，也支持本地模型。
 
 **不需要 mnemopi。** huimem 通过 OMP 运行时使用自己的本地 SQLite。`/huimem init` 会为项目设置 `memory.backend: off`；无需额外的记忆服务或模型。

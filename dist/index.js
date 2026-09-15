@@ -1,8 +1,8 @@
 // @bun
 // src/extensions/project-memory.ts
 import { randomUUID as randomUUID4 } from "crypto";
-import { existsSync as existsSync3, readFileSync as readFileSync7 } from "fs";
-import { resolve as resolve8, relative as relative4 } from "path";
+import { existsSync as existsSync4, readFileSync as readFileSync8 } from "fs";
+import { resolve as resolve9, relative as relative4 } from "path";
 
 // src/memory/core.ts
 import { Database } from "bun:sqlite";
@@ -173,8 +173,24 @@ class MemoryStore {
   root;
   db;
   closed = false;
-  constructor(root) {
+  constructor(root, options = {}) {
     this.root = root;
+    if (options.readOnly) {
+      const path = safePath(root, ".memory/runtime/state.sqlite");
+      this.db = new Database(path, { readonly: true, strict: true });
+      try {
+        const version = this.db.query("SELECT value FROM meta WHERE key='schema'").get();
+        if (version?.value !== "2")
+          throw new Error("UNSUPPORTED_SCHEMA");
+        const check = this.db.query("PRAGMA quick_check").get();
+        if (check.quick_check !== "ok")
+          throw new Error("DATABASE_INTEGRITY");
+      } catch (e) {
+        this.db.close();
+        throw e;
+      }
+      return;
+    }
     mkdirSync(resolve2(root, ".memory"), { recursive: true });
     safePath(root, ".memory");
     mkdirSync(resolve2(root, ".memory/runtime"), { recursive: true });
@@ -382,6 +398,11 @@ class MemoryStore {
   latestRecords() {
     return this.db.query(`SELECT v.id,v.version,v.data FROM versions v JOIN
       (SELECT id,MAX(version) version FROM versions GROUP BY id) n ON v.id=n.id AND v.version=n.version ORDER BY v.id`).all().map((r) => ({ id: r.id, version: r.version, data: JSON.parse(r.data) }));
+  }
+  inspectRecords() {
+    const rows = this.latestRecords(), authority = this.authority();
+    const index = new Map(rows.map((r) => [r.id, { version: r.version, data: r.data }]));
+    return rows.map((r) => ({ ...r, staleReasons: this.staleness(r.data, authority, (id) => index.get(id) ?? null) }));
   }
   history(id) {
     return this.db.query("SELECT version,data,time FROM versions WHERE id=? ORDER BY version").all(id);
@@ -964,8 +985,8 @@ function provenanceNote(basis) {
 }
 
 // src/ui/huimem-command.ts
-import { existsSync as existsSync2, readFileSync as readFileSync6 } from "fs";
-import { resolve as resolve7 } from "path";
+import { existsSync as existsSync3, readFileSync as readFileSync7 } from "fs";
+import { resolve as resolve8 } from "path";
 
 // src/memory/adr-audit.ts
 import { closeSync as closeSync2, fsyncSync as fsyncSync2, lstatSync as lstatSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync4, writeFileSync as writeFileSync3, openSync as openSync2, renameSync as renameSync2, unlinkSync as unlinkSync2 } from "fs";
@@ -1436,6 +1457,195 @@ function initProject(root) {
   return { root: base, created, skipped, differs, gitignoreAdded: missing };
 }
 
+// src/memory/doctor.ts
+import { existsSync as existsSync2, readFileSync as readFileSync6, statSync as statSync2 } from "fs";
+import { resolve as resolve7 } from "path";
+
+// src/memory/errors.ts
+var FIXES = {
+  VERSION_CONFLICT: "Recall the record by id, review its current value and version, then use that version as expectedVersion. Do not overwrite an unseen correction.",
+  MISSING_LINK: "Recall each links ID. Use existing record IDs, or create the referenced records in the same commit; links are not file paths.",
+  INVALID_STATUS: "Use a status valid for the kind: fact/procedure/navigation = active, proposed, retired; decision = proposed, accepted, retired; task = todo, doing, done, blocked, retired.",
+  INVALID_KIND: "Use fact, decision, procedure, navigation, or task as kind.",
+  INVALID_VERSION: "Use expectedVersion=0 for a new ID; otherwise recall the ID and use its current non-negative integer version.",
+  INVALID_ID: "Use a non-empty ID of at most 100 characters containing ASCII letters A-Z/a-z, digits 0-9, underscore, dot, colon, slash or hyphen.",
+  INVALID_TEXT: "Supply non-empty text of at most 3000 characters.",
+  INVALID_LINKS: "Supply at most 20 links as record ID strings.",
+  DUPLICATE_ID: "Combine changes for the same ID into one entry per commit.",
+  INVALID_CHECKPOINT: "Supply a non-empty summary of at most 2000 characters and an array of at most 30 changes. An empty changes array is allowed.",
+  INVALID_TASK_SCOPE: "Use an existing task record ID, save that task in this commit, or omit task when the summary is not task-specific.",
+  INVALID_DEPENDENCIES: "Use at most 20 dependsOn entries, each with exactly one record id or project-relative file path. A record cannot depend on itself.",
+  MISSING_DEPENDENCY: "Recall the dependency ID. Use an existing record or create it in the same commit; do not invent a replacement basis.",
+  DEPENDENCY_RETIRED: "Review the retired basis and identify a supported current basis before changing dependsOn.",
+  DEPENDENCY_VERSION: "Recall the dependency and recheck the claim against its current version before retrying.",
+  DEPENDENCY_HASH: "Read the dependency file and recheck the claim against its current contents before retrying.",
+  AUTHORITY_CHANGED: "Reread the relevant project rules and sources, then reconsider the changes before retrying.",
+  SOURCE_ORIGIN_REQUIRED: 'Add source.origin="user" for an exact current user quote, or origin="file" with a relative path and exact file quote.',
+  SOURCE_REQUIRED: "Provide one source: the current user message, a stored episode, or a project file, with an exact quote.",
+  SOURCE: 'Use exactly one source and a verbatim quote present in it. For the current user use origin="user" and quote only; for a file use origin="file", path and quote; for a stored message use origin="episode", episode and quote.',
+  USER_SOURCE_REQUIRED: "An accepted decision needs a stored user message. Use an exact user quote, or keep an unsupported inference proposed.",
+  RATIONALE_REQUIRED: "Supply a non-empty rationale of at most 2000 characters for a decision.",
+  RATIONALE_SOURCE_REQUIRED: "Copy rationale exactly from source.quote. Put additional interpretation in text or keep the decision proposed.",
+  SOURCE_DERIVED: "Use the original episode or source file; RECORDS.md is a generated view, not independent evidence.",
+  SECRET_PATTERN: "Remove credentials from the proposed text and summary. Use a non-secret exact excerpt as evidence.",
+  PATH: "Use a project-relative path that resolves inside this project, without links outside it.",
+  COMMITS_PAUSED: "Ask the user to run /huimem resume if saving should resume. Reads remain available; repeated commit calls will not clear the pause.",
+  PROJECT_MEMORY_NOT_ENABLED: "Ask the user to run /huimem init in the project root, then send a new message.",
+  DATABASE_INTEGRITY: "Stop memory writes and preserve the database and its WAL files. Restore a verified backup or investigate the corruption before reopening; do not delete the database to silence the error.",
+  UNSUPPORTED_SCHEMA: "Use a plugin version compatible with this database schema, or restore a compatible backup. Do not manually change the schema marker.",
+  UNKNOWN_OPERATION: "Use status, recall, episodes, history, evidence or commit as op.",
+  INVALID_SETTINGS: "Correct .memory/settings.json as a JSON object; required accepts at most 10 valid record IDs. Keep a copy before editing.",
+  INVALID_TODO: "Correct .memory/todo.json: tasks must be an array with unique IDs and valid task statuses. Compare with the registry before editing.",
+  DOCTOR_FILE_TOO_LARGE: "Inspect the named file separately; doctor limits individual diagnostic document reads to 1 MiB. Do not truncate evidence to suppress this finding."
+};
+function memoryToolError(error, operation, explicitCode) {
+  const legacy = String(error);
+  const message = error instanceof Error ? error.message : legacy;
+  const prefix = message.match(/^([A-Z][A-Z0-9_]*)(?=:|$)/)?.[1];
+  const native = typeof error?.code === "string" ? error.code : undefined;
+  const code = explicitCode ?? prefix ?? native ?? "MEMORY_ERROR";
+  const storage = /^SQLITE/.test(code) || ["EACCES", "EPERM", "EROFS", "ENOSPC", "EIO"].includes(code);
+  const fix = FIXES[code] ?? (storage ? "Check project storage permissions, available space and memory health with /huimem. Resolve the storage problem before retrying a write." : "Inspect the error and memory state with /huimem. Correct its cause before retrying; do not repeat the unchanged request.");
+  const diagnostic = { severity: "error", code, message, fix, target: operation ? `project_memory.${operation}` : "project_memory" };
+  return {
+    content: [{ type: "text", text: legacy + `
+Fix: ` + fix }],
+    details: { error: legacy, ...diagnostic },
+    isError: true
+  };
+}
+
+// src/memory/doctor.ts
+function diagnoseMemory(root) {
+  const report = { issues: [], checked: [], unavailable: [] };
+  const add = (severity, code, target, message, fix) => report.issues.push({ severity, code, target, message, fix });
+  const attempt = (section, read) => {
+    try {
+      const value = read();
+      report.checked.push(section);
+      return value;
+    } catch (error) {
+      const d = memoryToolError(error).details;
+      report.unavailable.push(section);
+      add("error", d.code, section, d.message, d.fix);
+      return;
+    }
+  };
+  const text = (path) => {
+    const full = safePath(root, path);
+    if (statSync2(full).size > 1024 * 1024)
+      throw new Error("DOCTOR_FILE_TOO_LARGE: " + path);
+    return readFileSync6(full, "utf8");
+  };
+  if (!existsSync2(resolve7(root, ".memory/MEMORY.md"))) {
+    add("info", "PROJECT_MEMORY_NOT_ENABLED", ".memory/MEMORY.md", "Project memory is not enabled.", "Run /huimem init in the intended project root.");
+    return report;
+  }
+  let records;
+  if (existsSync2(resolve7(root, ".memory/runtime/state.sqlite"))) {
+    let store;
+    try {
+      store = attempt("database", () => new MemoryStore(root, { readOnly: true }));
+      if (store) {
+        records = attempt("records", () => store.inspectRecords());
+        if (records)
+          attempt("episode evidence", () => {
+            for (const row of records) {
+              if (row.data.status === "retired" || !row.data.source.episode)
+                continue;
+              const source = store.episode(row.data.source.episode);
+              const problem = !source ? "Source episode is missing." : typeof source.text !== "string" || !source.text.includes(row.data.source.quote) ? "Saved quote is absent from its source episode." : row.data.kind === "decision" && row.data.status === "accepted" && source.role !== "user" ? "Accepted decision no longer has a user source." : undefined;
+              if (problem)
+                add("warning", "EPISODE_EVIDENCE_INVALID", row.id, problem, "Inspect the original message and record history. Restore verified evidence or explicitly revise the record; do not invent a replacement quote.");
+            }
+          });
+        const projection = attempt("readable registry", () => projectionStatus(store.db, root));
+        if (projection && (projection.state === "conflict" || projection.state === "pending"))
+          add("warning", "PROJECTION_" + projection.state.toUpperCase(), projection.path, projection.error ?? "Readable registry is not synchronized.", "Preserve and reconcile any manual edits, then run /huimem sync. Doctor does not publish files.");
+      }
+    } finally {
+      store?.close();
+    }
+  } else {
+    report.unavailable.push("database");
+    add("warning", "MEMORY_DATABASE_MISSING", ".memory/runtime/state.sqlite", "No memory database exists yet.", "Start a normal OMP conversation in this project to initialize memory; doctor does not create a database.");
+  }
+  if (records)
+    for (const r of records) {
+      if (r.data.status !== "retired" && r.staleReasons.length)
+        add("warning", "STALE_RECORD", r.id, r.staleReasons.join("; "), "Recall this record and recheck its original sources before saving a corrected version.");
+    }
+  const settings = attempt("settings", () => {
+    if (existsSync2(resolve7(root, ".memory/settings.json"))) {
+      const raw = JSON.parse(text(".memory/settings.json"));
+      if (!raw || typeof raw !== "object" || Array.isArray(raw))
+        throw new Error("INVALID_SETTINGS: expected a JSON object");
+      if (raw.required !== undefined && (!Array.isArray(raw.required) || raw.required.length > 10 || raw.required.some((x) => typeof x !== "string" || !/^[a-zA-Z0-9_.:/-]{1,100}$/.test(x))))
+        throw new Error("INVALID_SETTINGS: required must contain at most 10 valid record IDs");
+    }
+    return readSettings(root);
+  });
+  if (records && settings)
+    for (const id of settings.required) {
+      const row = records.find((r) => r.id === id);
+      if (!row || row.data.status === "retired")
+        add("warning", "REQUIRED_UNAVAILABLE", id, row ? "Required record is retired." : "Required record is missing.", "Review the required list with /huimem require. Restore the intended record or explicitly unrequire it.");
+    }
+  attempt("ADR basis", () => {
+    for (const path of listAdrs(root))
+      if (!readBasis(text(path)).section)
+        add("warning", "ADR_WITHOUT_BASIS", path, "No basis section is present.", "Run /huimem adr-audit to inspect possible migration. Existing basis sections are not authenticated by doctor.");
+  });
+  if (existsSync2(resolve7(root, ".memory/architecture.json")))
+    attempt("architecture", () => {
+      const result = architectureCheck(root, JSON.parse(text(".memory/architecture.json")));
+      if (result.configured && !result.ok)
+        for (const failure of result.failures)
+          add("warning", "ARCHITECTURE_FAILED", ".memory/architecture.json", failure, "Inspect /huimem arch and reconcile the code with the project policy.");
+    });
+  if (existsSync2(resolve7(root, ".memory/todo.json")))
+    attempt("task file", () => {
+      const todo = JSON.parse(text(".memory/todo.json"));
+      if (!Array.isArray(todo?.tasks))
+        throw new Error("INVALID_TODO: expected a tasks array");
+      const seen = new Set;
+      for (const task of todo.tasks) {
+        if (typeof task?.id !== "string" || !task.id || !["todo", "doing", "done", "blocked", "retired"].includes(task.status))
+          throw new Error("INVALID_TODO: each task needs an id and a valid task status");
+        if (seen.has(task.id))
+          throw new Error("INVALID_TODO: duplicate task ID " + task.id);
+        seen.add(task.id);
+        if (!records)
+          continue;
+        const row = records.find((r) => r.id === task.id && r.data.kind === "task");
+        if (!row || row.data.status !== task.status)
+          add("warning", "TASK_STATE_DIFFERS", task.id, row ? `todo.json: ${task.status}; registry: ${row.data.status}.` : "Task exists in todo.json but not in the registry.", "Compare todo.json with the task record and its source; reconcile intentionally. Neither copy is overwritten automatically.");
+      }
+      if (records) {
+        for (const row of records.filter((r) => r.data.kind === "task" && r.data.status !== "retired"))
+          if (!seen.has(row.id))
+            add("warning", "TASK_NOT_IN_TODO", row.id, "Registry task is absent from todo.json.", "Decide whether this task belongs in the task file; doctor does not synchronize the two representations.");
+      }
+    });
+  else if (records?.some((r) => r.data.kind === "task" && r.data.status !== "retired"))
+    add("warning", "TODO_FILE_MISSING", ".memory/todo.json", "Registry tasks exist but the task file is absent.", "Review the project task-file convention before recreating it.");
+  return report;
+}
+function formatDoctor(report) {
+  const issues = report.issues.slice(0, 50);
+  return [
+    "huimem doctor \u2014 diagnostic only; no repairs applied.",
+    report.issues.length ? `${report.issues.length} finding(s).` : "No findings in the completed checks; this is not a guarantee of semantic correctness.",
+    `Checked: ${report.checked.join(", ") || "none"}.`,
+    ...report.unavailable.length ? ["Unavailable: " + report.unavailable.join(", ") + "."] : [],
+    ...issues.map((i) => `${i.severity.toUpperCase()} ${i.code} \u2014 ${i.target}
+  ${i.message}
+  Fix: ${i.fix}`),
+    ...report.issues.length > issues.length ? [`${report.issues.length - issues.length} additional findings omitted; address the listed issues and rerun.`] : []
+  ].join(`
+`);
+}
+
 // src/ui/huimem-command.ts
 var HELP = [
   "Usage:",
@@ -1452,6 +1662,7 @@ var HELP = [
   "  /huimem reset        restore the default limits",
   "  /huimem sync         retry publishing .memory/RECORDS.md from saved records",
   "  /huimem context      inspect the latest memory block prepared for OMP",
+  "  /huimem doctor       diagnose memory, sources and task-file drift without repairs",
   "  /huimem adr-audit    propose moving legacy ADRs into the basis contract (dry run)",
   "  /huimem adr-audit apply   write that migration; originals are backed up"
 ].join(`
@@ -1467,6 +1678,8 @@ function registerSettingsCommand(pi, deps) {
   async function run(verb, value, ctx, say = send) {
     if (verb === "help" || verb === "--help")
       return say(HELP);
+    if (verb === "doctor")
+      return say(formatDoctor(diagnoseMemory(ctx.cwd)));
     if (verb === "init") {
       const wasEnabled = deps.deployed(ctx);
       let r;
@@ -1504,7 +1717,7 @@ Start omp in the project root and run /huimem init. Memory turns on with your ne
       deps.setPaused(ctx, verb === "pause");
       return say(verb === "pause" ? "Commits PAUSED for this project in this OMP process. Records and checkpoints cannot be saved through project_memory. Transcript capture, diagnostics and file tools remain active. Restart clears the pause." : "Commits enabled for this project in this OMP process.");
     }
-    const settingsFileExists = existsSync2(resolve7(ctx.cwd, SETTINGS_PATH));
+    const settingsFileExists = existsSync3(resolve8(ctx.cwd, SETTINGS_PATH));
     if (verb === "context") {
       try {
         const store = deps.store(ctx);
@@ -1547,11 +1760,11 @@ ${result.path}` + (result.error ? `
       return say(`Limits restored to defaults: recall ${saved.recallBudget}, injection ${saved.injectionLimit}.`);
     }
     if (verb === "arch") {
-      const path = resolve7(ctx.cwd, ".memory/architecture.json");
+      const path = resolve8(ctx.cwd, ".memory/architecture.json");
       const a2 = deps.architecture(ctx);
       let body;
       try {
-        body = readFileSync6(path, "utf8").trim();
+        body = readFileSync7(path, "utf8").trim();
       } catch {
         body = "(no such file)";
       }
@@ -1763,6 +1976,14 @@ Usage: /huimem ${verb} <id>`);
           }
         ],
         [
+          "Memory doctor",
+          "Inspect sources, required records and task drift; no repairs.",
+          async () => {
+            await run("doctor", undefined, ctx);
+            return true;
+          }
+        ],
+        [
           "Legacy ADR migration",
           "Shows the plan first and asks before writing anything.",
           async () => adrMigration(ctx)
@@ -1848,68 +2069,19 @@ Usage: /huimem ${verb} <id>`);
   }
 }
 
-// src/memory/errors.ts
-var FIXES = {
-  VERSION_CONFLICT: "Recall the record by id, review its current value and version, then use that version as expectedVersion. Do not overwrite an unseen correction.",
-  MISSING_LINK: "Recall each links ID. Use existing record IDs, or create the referenced records in the same commit; links are not file paths.",
-  INVALID_STATUS: "Use a status valid for the kind: fact/procedure/navigation = active, proposed, retired; decision = proposed, accepted, retired; task = todo, doing, done, blocked, retired.",
-  INVALID_KIND: "Use fact, decision, procedure, navigation, or task as kind.",
-  INVALID_VERSION: "Use expectedVersion=0 for a new ID; otherwise recall the ID and use its current non-negative integer version.",
-  INVALID_ID: "Use a non-empty ID of at most 100 characters containing letters, numbers, underscore, dot, colon, slash or hyphen.",
-  INVALID_TEXT: "Supply non-empty text of at most 3000 characters.",
-  INVALID_LINKS: "Supply at most 20 links as record ID strings.",
-  DUPLICATE_ID: "Combine changes for the same ID into one entry per commit.",
-  INVALID_CHECKPOINT: "Supply a non-empty summary of at most 2000 characters and an array of at most 30 changes. An empty changes array is allowed.",
-  INVALID_TASK_SCOPE: "Use an existing task record ID, save that task in this commit, or omit task when the summary is not task-specific.",
-  INVALID_DEPENDENCIES: "Use at most 20 dependsOn entries, each with exactly one record id or project-relative file path. A record cannot depend on itself.",
-  MISSING_DEPENDENCY: "Recall the dependency ID. Use an existing record or create it in the same commit; do not invent a replacement basis.",
-  DEPENDENCY_RETIRED: "Review the retired basis and identify a supported current basis before changing dependsOn.",
-  DEPENDENCY_VERSION: "Recall the dependency and recheck the claim against its current version before retrying.",
-  DEPENDENCY_HASH: "Read the dependency file and recheck the claim against its current contents before retrying.",
-  AUTHORITY_CHANGED: "Reread the relevant project rules and sources, then reconsider the changes before retrying.",
-  SOURCE_ORIGIN_REQUIRED: 'Add source.origin="user" for an exact current user quote, or origin="file" with a relative path and exact file quote.',
-  SOURCE_REQUIRED: "Provide one source: the current user message, a stored episode, or a project file, with an exact quote.",
-  SOURCE: 'Use exactly one source and a verbatim quote present in it. For the current user use origin="user" and quote only; for a file use origin="file", path and quote; for a stored message use origin="episode", episode and quote.',
-  USER_SOURCE_REQUIRED: "An accepted decision needs a stored user message. Use an exact user quote, or keep an unsupported inference proposed.",
-  RATIONALE_REQUIRED: "Supply a non-empty rationale of at most 2000 characters for a decision.",
-  RATIONALE_SOURCE_REQUIRED: "Copy rationale exactly from source.quote. Put additional interpretation in text or keep the decision proposed.",
-  SOURCE_DERIVED: "Use the original episode or source file; RECORDS.md is a generated view, not independent evidence.",
-  SECRET_PATTERN: "Remove credentials from the proposed text and summary. Use a non-secret exact excerpt as evidence.",
-  PATH: "Use a project-relative path that resolves inside this project, without links outside it.",
-  COMMITS_PAUSED: "Ask the user to run /huimem resume if saving should resume. Reads remain available; repeated commit calls will not clear the pause.",
-  MEMORY_NOT_ENABLED: "Ask the user to run /huimem init in the project root, then send a new message.",
-  UNKNOWN_OPERATION: "Use status, recall, episodes, history, evidence or commit as op."
-};
-function memoryToolError(error, operation, explicitCode) {
-  const legacy = String(error);
-  const message = error instanceof Error ? error.message : legacy;
-  const prefix = message.match(/^([A-Z][A-Z0-9_]*)(?=:|$)/)?.[1];
-  const native = typeof error?.code === "string" ? error.code : undefined;
-  const code = explicitCode ?? prefix ?? native ?? "MEMORY_ERROR";
-  const storage = /^SQLITE/.test(code) || ["EACCES", "EPERM", "EROFS", "ENOSPC", "EIO"].includes(code);
-  const fix = FIXES[code] ?? (storage ? "Check project storage permissions, available space and memory health with /huimem. Resolve the storage problem before retrying a write." : "Inspect the error and memory state with /huimem. Correct its cause before retrying; do not repeat the unchanged request.");
-  const diagnostic = { severity: "error", code, message, fix, target: operation ? `project_memory.${operation}` : "project_memory" };
-  return {
-    content: [{ type: "text", text: legacy + `
-Fix: ` + fix }],
-    details: { error: legacy, ...diagnostic },
-    isError: true
-  };
-}
-
 // src/extensions/project-memory.ts
 var minute = (iso) => iso.slice(0, 16).replace("T", " ");
 var textOf = (content) => typeof content === "string" ? content : Array.isArray(content) ? content.filter((x) => x?.type === "text").map((x) => x.text).join(`
 `) : "";
 var reads = new Set(["read", "grep", "find", "glob", "ls", "project_memory"]);
 var ENABLE_MARKER = ".memory/MEMORY.md";
-var deployed = (ctx) => existsSync3(resolve8(ctx.cwd, ENABLE_MARKER));
+var deployed = (ctx) => existsSync4(resolve9(ctx.cwd, ENABLE_MARKER));
 var NOT_ENABLED = "PROJECT_MEMORY_NOT_ENABLED: no " + ENABLE_MARKER + " in this project. " + "Project memory is off here and no database is created. Ask the user to run /huimem init in the project root to enable it.";
 var memoryWrapper = (event) => event.toolName === "write" && (event.input?.path === "xd://project_memory" || event.details?.xdev?.tool === "project_memory");
 function install(pi) {
   const z = pi.zod;
   const pausedProjects = new Set;
-  const commitsPaused = (ctx) => pausedProjects.has(resolve8(ctx.cwd));
+  const commitsPaused = (ctx) => pausedProjects.has(resolve9(ctx.cwd));
   let store, root = "", error = "", run = "", generation = 0;
   let query = "", sourceEpisode = "", lastNotice = "", active = false;
   let policyAtStart;
@@ -1950,7 +2122,7 @@ function install(pi) {
   }
   function policyText(ctx) {
     try {
-      return readFileSync7(resolve8(ctx.cwd, ".memory/architecture.json"), "utf8");
+      return readFileSync8(resolve9(ctx.cwd, ".memory/architecture.json"), "utf8");
     } catch (e) {
       if (e.code === "ENOENT")
         return "";
@@ -2099,7 +2271,7 @@ Do not claim memory or work was verified.`;
       return { block: true, reason: error + "; restore memory storage before mutation." };
     const path = event.input?.path ?? event.input?.file_path;
     if (typeof path === "string") {
-      const rel = relative4(ctx.cwd, resolve8(ctx.cwd, path)).replaceAll("\\", "/").toLowerCase();
+      const rel = relative4(ctx.cwd, resolve9(ctx.cwd, path)).replaceAll("\\", "/").toLowerCase();
       if (rel === ".memory/settings.json")
         return { block: true, reason: "Memory settings, including required records, are changed only by the user with /huimem." };
       if (rel === ".memory/records.md")
@@ -2190,7 +2362,7 @@ Do not claim memory or work was verified.`;
     }),
     async execute(_id, p, _signal, _update, ctx) {
       if (!deployed(ctx))
-        return memoryToolError(NOT_ENABLED, p.op, "MEMORY_NOT_ENABLED");
+        return memoryToolError(NOT_ENABLED, p.op);
       if (p.op === "commit" && commitsPaused(ctx)) {
         const message = "COMMITS_PAUSED: no records or checkpoint saved. Only the user can resume through /huimem resume.";
         return memoryToolError(message, p.op);
@@ -2286,9 +2458,9 @@ Do not claim memory or work was verified.`;
     commitsPaused,
     setPaused: (ctx, value) => {
       if (value)
-        pausedProjects.add(resolve8(ctx.cwd));
+        pausedProjects.add(resolve9(ctx.cwd));
       else
-        pausedProjects.delete(resolve8(ctx.cwd));
+        pausedProjects.delete(resolve9(ctx.cwd));
     }
   });
   pi.registerCommand("project-memory-status", { description: "Show project memory health", handler: async (_args, ctx) => {
