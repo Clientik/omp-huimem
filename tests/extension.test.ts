@@ -19,6 +19,35 @@ test('/huimem doctor reports an uninitialized database without creating it',asyn
   } finally { f.clean(); }
 });
 
+test('/huimem doctor and its menu item report an existing database without changing tables or RECORDS.md',async()=>{
+  const f=fixture(); try {
+    const s=new MemoryStore(f.dir);
+    const seed=(id:string,text:string,v=0,dependsOn:any[]=[])=>({id,kind:'fact',status:'active',text,expectedVersion:v,dependsOn,
+      source:{episode:s.capture('seed','user',text),quote:text}});
+    s.commit('seed',[seed('base','Base rule')],'seed');
+    s.commit('seed',[seed('dep','Depends on base',0,[{id:'base'}])],'seed');
+    s.commit('seed',[seed('base','Base rule v2',1)],'seed');
+    s.close();
+    writeFileSync(join(f.dir,'.memory/RECORDS.md'),'Human correction');
+    const dump=()=>{const db=new MemoryStore(f.dir,{readOnly:true}); try {
+      return ['versions','episodes','checkpoints','health','projection','context_receipts','retrieval_receipts','meta']
+        .map(t=>JSON.stringify(db.db.query(`SELECT * FROM ${t}`).all())).join('\n');
+    } finally {db.close();}};
+    const before=dump();
+    await f.commands.huimem.handler('doctor',f.ctx);
+    const text=String(f.notices.at(-1)?.content);
+    expect(text).toContain('PROJECTION_CONFLICT');
+    expect(text).toContain('STALE_RECORD — dep\n  base changed: version 1 -> 2');
+    expect(dump()).toBe(before);
+    const screens=scriptedUi(f,[starting('Memory doctor')]);
+    await f.commands.huimem.handler('',f.ctx);
+    expect(screens).toHaveLength(1);
+    expect(String(f.notices.at(-1)?.content)).toStartWith('huimem doctor');
+    // The menu opens the normal store for its status line, so only the conflict file is compared after it.
+    expect(readFileSync(join(f.dir,'.memory/RECORDS.md'),'utf8')).toBe('Human correction');
+  } finally { f.clean(); }
+});
+
 test('partial and aliased ADR reads get provenance without modifying the excerpt',async()=>{
   const f=fixture(); try {
     mkdirSync(join(f.dir,'.memory/adr'),{recursive:true});

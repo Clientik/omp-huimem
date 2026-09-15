@@ -106,6 +106,46 @@ test('read-only store rejects writes and doctor reports corrupt storage without 
   expect(readFileSync(path,'utf8')).toBe('broken sqlite');
 }));
 
+test('doctor reads committed data of an open writer without changing tables, and the writer continues',()=>fixture(dir=>{
+  enable(dir);
+  const writer=new MemoryStore(dir);
+  try {
+    writer.commit('r',[seed(writer,'first')],'saved');
+    const tables=()=>(writer.db.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as {name:string}[])
+      .map(t=>JSON.stringify(writer.db.query(`SELECT * FROM "${t.name}"`).all())).join('\n');
+    const before=tables();
+    const report=diagnoseMemory(dir);
+    expect(report.unavailable).toEqual([]);
+    expect(report.issues.map(i=>i.code)).toEqual([]);
+    expect(tables()).toBe(before);
+    writer.commit('r2',[seed(writer,'second')],'after doctor');
+  } finally {writer.close();}
+  const reader=new MemoryStore(dir,{readOnly:true});
+  try {expect(reader.inspectRecords().map(r=>r.id).sort()).toEqual(['first','second']);} finally {reader.close();}
+}));
+
+test('doctor explains transitive, retired and changed dependencies and invalid episode evidence',()=>fixture(dir=>{
+  enable(dir);
+  const s=new MemoryStore(dir);
+  try {
+    s.commit('r',[seed(s,'c'),seed(s,'ret'),seed(s,'quoted'),
+      {...seed(s,'dec','decision','accepted'),rationale:'Keep the current design'}],'base');
+    s.commit('r',[{...seed(s,'b'),dependsOn:[{id:'c'}]},{...seed(s,'x'),dependsOn:[{id:'ret'}]}],'mid');
+    s.commit('r',[{...seed(s,'a'),dependsOn:[{id:'b'}]}],'top');
+    s.commit('r',[{...seed(s,'c'),text:'Changed design',expectedVersion:1},{...seed(s,'ret','fact','retired'),expectedVersion:1}],'change');
+    const episode=(id:string)=>s.current(id)!.source.episode!;
+    s.db.query("UPDATE episodes SET text='Different wording' WHERE id=?").run(episode('quoted'));
+    s.db.query("UPDATE episodes SET role='assistant' WHERE id=?").run(episode('dec'));
+  } finally {s.close();}
+  const found=Object.fromEntries(diagnoseMemory(dir).issues.map(i=>[`${i.code}@${i.target}`,i.message]));
+  expect(found['STALE_RECORD@a']).toBe('b is STALE (c changed: version 1 -> 2)');
+  expect(found['STALE_RECORD@b']).toBe('c changed: version 1 -> 2');
+  expect(found['STALE_RECORD@x']).toBe('ret was retired in version 2');
+  expect(found['EPISODE_EVIDENCE_INVALID@quoted']).toBe('Saved quote is absent from its source episode.');
+  expect(found['EPISODE_EVIDENCE_INVALID@dec']).toBe('Accepted decision no longer has a user source.');
+  expect(found['STALE_RECORD@ret']).toBeUndefined();
+}));
+
 test('formatter caps findings and explicitly reports incomplete sections',()=>{
   const report={checked:['settings'],unavailable:['database'],issues:Array.from({length:51},(_,i)=>({
     severity:'warning' as const,code:'STALE_RECORD',target:'record-'+i,message:'Changed source',fix:'Recheck source',
