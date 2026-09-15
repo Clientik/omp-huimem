@@ -368,7 +368,7 @@ test('automatic prompt capture, recall, stop checkpoint, bounded retry', async (
   const f = fixture(); try {
     await f.handlers.before_agent_start({ prompt: 'Провайдер YooKassa', systemPrompt: 'system' }, f.ctx);
     const context = await f.handlers.context({ messages: [{role:'user',content:'Провайдер?'}] }, f.ctx);
-    expect(JSON.stringify(context)).toContain('sourceEpisode');
+    expect(JSON.stringify(context)).toContain('Memory ready');
     // Контракт изменён 2026-09-08 дважды:
     //  1) отсутствие чекпоинта СООБЩАЕТСЯ, но работу не блокирует — прежде здесь
     //     ожидалось `continue: true`, принудительный повтор, зацикливавший модель;
@@ -452,7 +452,7 @@ test('deploying the marker enables memory on the next prompt, without a restart'
     expect(await f.handlers.context({ messages: [] }, f.ctx)).toBeUndefined();
     writeFileSync(join(f.dir, '.memory/MEMORY.md'), '# Память проекта');
     await f.handlers.before_agent_start({ prompt: 'second' }, f.ctx);
-    expect(JSON.stringify(await f.handlers.context({ messages: [] }, f.ctx))).toContain('sourceEpisode');
+    expect(JSON.stringify(await f.handlers.context({ messages: [] }, f.ctx))).toContain('Memory ready');
   } finally { f.clean(); }
 });
 
@@ -631,7 +631,7 @@ test('/huimem init enables memory in a bare project without copying the starter'
     expect(existsSync(join(f.dir, '.memory/runtime'))).toBe(false);
 
     await f.handlers.before_agent_start({ prompt: 'second' }, f.ctx);
-    expect(JSON.stringify(await f.handlers.context({ messages: [] }, f.ctx))).toContain('sourceEpisode');
+    expect(JSON.stringify(await f.handlers.context({ messages: [] }, f.ctx))).toContain('Memory ready');
     await f.commands.huimem.handler('init', f.ctx);
     expect(last(f)).toContain('already enabled');
     expect(last(f)).toContain('Created: nothing');
@@ -728,10 +728,40 @@ test('a corrupt settings file falls back to defaults without breaking the turn',
     writeFileSync(join(f.dir, '.memory/settings.json'), 'это не json');
     await f.handlers.before_agent_start({ prompt: 'x' }, f.ctx);
     const out: any = await f.handlers.context({ messages: [] }, f.ctx);
-    expect(JSON.stringify(out)).toContain('sourceEpisode');
+    expect(JSON.stringify(out)).toContain('Memory ready');
     await f.commands.huimem.handler('', f.ctx);
     expect(String(f.notices.at(-1)?.content ?? '')).toContain('3200');
   } finally { f.clean(); }
 });
 
+// Сокращения блока (audit/block-reduction-20260915). Приняты по предрегистрированному правилу: время чекпоинтов
+// до минут и сжатый список источников ассистента. Откатаны (не прошли проверку на слабой модели) и закреплены
+// тестом как действующие: ID эпизода и хода в статусе, полный источник у задач и фактов, шаблоны в выдержке.
+test('the block keeps IDs, full sources and templates, with minute checkpoint times and a compact source list', async () => {
+  const f = fixture(); try {
+    const { initProject } = await import('../src/memory/starter');
+    rmSync(join(f.dir, '.memory'), { recursive: true, force: true });
+    initProject(f.dir);
+    mkdirSync(join(f.dir, 'src'), { recursive: true });
+    writeFileSync(join(f.dir, 'src/config.ts'), 'export const port = 8080;\n');
+    const s = new MemoryStore(f.dir);
+    const tq = 'Задача: экспорт счетов.', te = s.capture('seed', 'user', tq);
+    s.commit('t', [{ id: 'task-export', kind: 'task', status: 'doing', expectedVersion: 0, text: 'Экспорт счетов', source: { episode: te, quote: tq } } as any], 'Следующий шаг: колонка НДС.');
+    s.commit('f', [{ id: 'port', kind: 'fact', status: 'active', expectedVersion: 0, text: 'Порт 8080', source: s.fileSource('src/config.ts', 'port = 8080') } as any], 'факт');
+    s.close();
+    const ctxBlock = async () => (await f.handlers.context({ messages: [] }, f.ctx)).messages.find((m: any) => m.customType === 'project-memory-context').content as string;
+    await f.handlers.before_agent_start({ prompt: 'Что дальше по экспорту счетов и какой порт?' }, f.ctx);
+    let text = await ctxBlock();
+    expect(text).toMatch(/sourceEpisode=[0-9a-f-]{36}; run=[0-9a-f-]{36}:\d+/);
+    expect(text).not.toContain('Recent assistant sources');
+    expect(text).toContain('Формат факта:');
+    const rows = text.split('\n').filter(l => l.startsWith('{"id"')).map(l => JSON.parse(l));
+    expect(rows.find(r => r.id === 'task-export').source.episode).toBe(te);
+    expect(rows.find(r => r.id === 'port').source.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(text).toMatch(/- task-export \[doing, matches this request; \d{4}-\d\d-\d\d \d\d:\d\d\]: Следующий шаг: колонка НДС\./);
+    await f.handlers.message_end({ message: { role: 'assistant', content: 'Проверил порт.' } }, f.ctx);
+    text = await ctxBlock();
+    expect(text).toMatch(/Recent assistant sources \(inferences only; episode IDs\): [0-9a-f-]{36}\n/);
+  } finally { f.clean(); }
+});
 }
