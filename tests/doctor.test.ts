@@ -78,19 +78,38 @@ test('invalid settings and task file do not hide independent ADR findings',()=>f
   expect(report.issues.map(i=>i.code)).toContain('ADR_WITHOUT_BASIS');
 }));
 
-test('doctor does not migrate a schema-one database',()=>fixture(dir=>{
+test('doctor reports a pending schema-one migration without migrating, and the normal store then migrates it',()=>fixture(dir=>{
   enable(dir);
   const s=new MemoryStore(dir);
   s.db.exec("DROP TABLE projection; UPDATE meta SET value='1' WHERE key='schema'");
   s.close();
   const path=join(dir,'.memory/runtime/state.sqlite'),before=readFileSync(path);
-  expect(codes(dir)).toContain('UNSUPPORTED_SCHEMA');
+  const issue=diagnoseMemory(dir).issues.find(i=>i.target==='database')!;
+  expect(issue.code).toBe('SCHEMA_MIGRATION_PENDING');
+  expect(issue.fix).toContain('normal OMP conversation');
+  expect(issue.fix).not.toContain('compatible');
   expect(readFileSync(path).equals(before)).toBe(true);
   const db=new Database(path,{readonly:true});
   try {
     expect(db.query("SELECT value FROM meta WHERE key='schema'").get()).toEqual({value:'1'});
     expect(db.query("SELECT name FROM sqlite_master WHERE name='projection'").get()).toBeNull();
   } finally {db.close();}
+  new MemoryStore(dir).close();
+  expect(diagnoseMemory(dir).unavailable).not.toContain('database');
+}));
+
+test('doctor separates an uninitialized database file from an unknown schema',()=>fixture(dir=>{
+  enable(dir);
+  mkdirSync(join(dir,'.memory/runtime'));
+  const path=join(dir,'.memory/runtime/state.sqlite');
+  writeFileSync(path,'');
+  expect(codes(dir)).toContain('SCHEMA_MIGRATION_PENDING');
+  expect(readFileSync(path).length).toBe(0);
+  rmSync(path);
+  const s=new MemoryStore(dir);
+  s.db.exec("UPDATE meta SET value='3' WHERE key='schema'");
+  s.close();
+  expect(codes(dir)).toContain('UNSUPPORTED_SCHEMA');
 }));
 
 test('read-only store rejects writes and doctor reports corrupt storage without replacing it',()=>fixture(dir=>{

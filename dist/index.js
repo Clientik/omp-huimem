@@ -179,8 +179,11 @@ class MemoryStore {
       const path = safePath(root, ".memory/runtime/state.sqlite");
       this.db = new Database(path, { readonly: true, strict: true });
       try {
-        const version = this.db.query("SELECT value FROM meta WHERE key='schema'").get();
-        if (version?.value !== "2")
+        const meta = this.db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").get();
+        const version = meta ? this.db.query("SELECT value FROM meta WHERE key='schema'").get()?.value : undefined;
+        if (version === undefined || version === "1")
+          throw new Error(`SCHEMA_MIGRATION_PENDING: schema ${version ?? "marker missing"}; the next normal OMP conversation in this project migrates it`);
+        if (version !== "2")
           throw new Error("UNSUPPORTED_SCHEMA");
         const check = this.db.query("PRAGMA quick_check").get();
         if (check.quick_check !== "ok")
@@ -1493,6 +1496,7 @@ var FIXES = {
   PROJECT_MEMORY_NOT_ENABLED: "Ask the user to run /huimem init in the project root, then send a new message.",
   DATABASE_INTEGRITY: "Stop memory writes and preserve the database and its WAL files. Restore a verified backup or investigate the corruption before reopening; do not delete the database to silence the error.",
   UNSUPPORTED_SCHEMA: "Use a plugin version compatible with this database schema, or restore a compatible backup. Do not manually change the schema marker.",
+  SCHEMA_MIGRATION_PENDING: "Back up .memory/runtime if needed, then start a normal OMP conversation in this project; this plugin version migrates the database. Doctor itself never migrates. Do not change the schema marker manually.",
   UNKNOWN_OPERATION: "Use status, recall, episodes, history, evidence or commit as op.",
   INVALID_SETTINGS: "Correct .memory/settings.json as a JSON object; required accepts at most 10 valid record IDs. Keep a copy before editing.",
   INVALID_TODO: "Correct .memory/todo.json: tasks must be an array with unique IDs and valid task statuses. Compare with the registry before editing.",

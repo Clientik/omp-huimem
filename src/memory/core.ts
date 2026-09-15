@@ -56,8 +56,12 @@ export class MemoryStore {
       const path=safePath(root,'.memory/runtime/state.sqlite');
       this.db=new Database(path,{readonly:true,strict:true});
       try {
-        const version=this.db.query("SELECT value FROM meta WHERE key='schema'").get() as any;
-        if(version?.value!=='2') throw new Error('UNSUPPORTED_SCHEMA');
+        const meta=this.db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").get();
+        const version=meta ? (this.db.query("SELECT value FROM meta WHERE key='schema'").get() as any)?.value : undefined;
+        // The normal constructor initializes an empty database and migrates schema 1; read-only mode only reports it.
+        if(version===undefined || version==='1')
+          throw new Error(`SCHEMA_MIGRATION_PENDING: schema ${version ?? 'marker missing'}; the next normal OMP conversation in this project migrates it`);
+        if(version!=='2') throw new Error('UNSUPPORTED_SCHEMA');
         const check=this.db.query('PRAGMA quick_check').get() as any;
         if(check.quick_check!=='ok') throw new Error('DATABASE_INTEGRITY');
       } catch(e) {this.db.close();throw e;}

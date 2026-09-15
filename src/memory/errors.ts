@@ -35,6 +35,7 @@ const FIXES: Record<string,string> = {
   PROJECT_MEMORY_NOT_ENABLED: 'Ask the user to run /huimem init in the project root, then send a new message.',
   DATABASE_INTEGRITY: 'Stop memory writes and preserve the database and its WAL files. Restore a verified backup or investigate the corruption before reopening; do not delete the database to silence the error.',
   UNSUPPORTED_SCHEMA: 'Use a plugin version compatible with this database schema, or restore a compatible backup. Do not manually change the schema marker.',
+  SCHEMA_MIGRATION_PENDING: 'Back up .memory/runtime if needed, then start a normal OMP conversation in this project; this plugin version migrates the database. Doctor itself never migrates. Do not change the schema marker manually.',
   UNKNOWN_OPERATION: 'Use status, recall, episodes, history, evidence or commit as op.',
   INVALID_SETTINGS: 'Correct .memory/settings.json as a JSON object; required accepts at most 10 valid record IDs. Keep a copy before editing.',
   INVALID_TODO: 'Correct .memory/todo.json: tasks must be an array with unique IDs and valid task statuses. Compare with the registry before editing.',
