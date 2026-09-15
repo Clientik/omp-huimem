@@ -241,3 +241,12 @@ test('a registry without decisions gets no scope note',()=>fixture(s=>{
   expect(rows(text).map(r=>r.id).sort()).toEqual(['fact-a','fact-b']);
   expect(text).not.toContain('Decision rows:');
 }));
+
+test('a precomputed authority gives the same retrieval as computing it inside',()=>fixture((s,root)=>{
+  save(s,'a','needle one'); save(s,'b','needle two');
+  writeFileSync(join(root,'.memory/MEMORY.md'),'changed');
+  const own=s.recallDetailed('needle',3200);
+  const passed=s.recallDetailed('needle',3200,[],s.authority());
+  expect(passed.text).toBe(own.text);
+  expect(passed.candidates).toEqual(own.candidates);
+}));

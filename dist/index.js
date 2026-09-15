@@ -439,7 +439,7 @@ class MemoryStore {
       if (!r.task || seen.has(r.task))
         continue;
       seen.add(r.task);
-      const record = this.current(r.task);
+      const record = this.latestRow(r.task)?.data;
       const matched = !!record && terms.length > 0 && termScore(terms, record.text + " " + record.id) > 0;
       if (!record || record.status === "retired" || record.status === "done" && !matched)
         continue;
@@ -530,10 +530,10 @@ class MemoryStore {
         throw new Error("DUPLICATE_ID");
       for (const c of changes) {
         this.validate(c);
-        if ((this.current(c.id)?.version ?? 0) !== c.expectedVersion)
+        if ((this.latestRow(c.id)?.version ?? 0) !== c.expectedVersion)
           throw new Error("VERSION_CONFLICT: " + c.id);
         for (const link of c.links ?? [])
-          if (!this.current(link) && !changes.some((x) => x.id === link))
+          if (!this.latestRow(link) && !changes.some((x) => x.id === link))
             throw new Error("MISSING_LINK");
       }
       const pin = (c) => c.dependsOn?.map((d) => {
@@ -566,7 +566,7 @@ class MemoryStore {
       const changedTasks = changes.filter((c) => c.kind === "task").map((c) => c.id);
       let task = scope.task;
       if (task !== undefined) {
-        const own = changes.find((c) => c.id === task), stored = this.current(task);
+        const own = changes.find((c) => c.id === task), stored = this.latestRow(task)?.data;
         if ((own ?? stored)?.kind !== "task")
           throw new Error(`INVALID_TASK_SCOPE: ${task} is not a saved task record; save the task first or omit task`);
       } else if (changedTasks.length === 1)
@@ -588,8 +588,7 @@ class MemoryStore {
   recall(query, budget = 6000) {
     return this.recallDetailed(query, budget).text;
   }
-  recallDetailed(query, budget = 6000, required = []) {
-    const authority = this.authority();
+  recallDetailed(query, budget = 6000, required = [], authority = this.authority()) {
     budget = Math.max(0, Math.min(12000, budget));
     const rows = this.db.query(`SELECT v.data,v.version,n.versionCount FROM versions v JOIN
       (SELECT id,MAX(version) version,COUNT(*) versionCount FROM versions GROUP BY id) n ON v.id=n.id AND v.version=n.version`).all();
@@ -870,7 +869,7 @@ function packContext(i) {
   const omitted = [], trimmed = [];
   const previewFloor = Math.min(i.preview.length, PREVIEW_FLOOR);
   const registryBudget = Math.max(0, Math.min(i.recallBudget, space - previewFloor));
-  let retrieval = i.recall(registryBudget);
+  let retrieval = registryBudget === i.recallBudget ? natural : i.recall(registryBudget);
   let registry = retrieval.text;
   if (registry.length > registryBudget) {
     registry = "";
@@ -2007,7 +2006,7 @@ ${authority.preview}
 `).join("") + (checkpoints.omitted ? `- ${checkpoints.omitted} more task checkpoint(s): project_memory recall id=<task id>
 ` : "") + (checkpoints.unscoped ? `Latest checkpoint without a task [${checkpoints.unscoped.time}]: ${checkpoints.unscoped.summary}
 ` : ""),
-        recall: (budget) => s.recallDetailed(query, budget, cfg.required)
+        recall: (budget) => s.recallDetailed(query, budget, cfg.required, authority)
       });
       content = packed.content;
       const registryOffset = packed.registryOffset;

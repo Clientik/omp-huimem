@@ -240,7 +240,9 @@ export class MemoryStore {
     for (const r of rows) {
       if (!r.task || seen.has(r.task)) continue;
       seen.add(r.task);
-      const record = this.current(r.task);
+      // ЗАМЕРЕНО 2026-09-15 (audit/efficiency-20260915): current() на задачу заново хешировал все канонические
+      // файлы — 10 задач и 60 ADR давали 343 мс на каждый вызов модели. Здесь нужны только статус и текст.
+      const record = this.latestRow(r.task)?.data;
       const matched = !!record && terms.length > 0 && termScore(terms, record.text + ' ' + record.id) > 0;
       if (!record || record.status === 'retired' || (record.status === 'done' && !matched)) continue;
       tasks.push({ task: r.task, status: record.status, summary: r.summary, time: r.time, branch: r.branch ?? null, matched });
@@ -307,8 +309,9 @@ export class MemoryStore {
       if (new Set(changes.map(c => c.id)).size !== changes.length) throw new Error('DUPLICATE_ID');
       for (const c of changes) {
         this.validate(c);
-        if ((this.current(c.id)?.version ?? 0) !== c.expectedVersion) throw new Error('VERSION_CONFLICT: ' + c.id);
-        for (const link of c.links ?? []) if (!this.current(link) && !changes.some(x => x.id === link)) throw new Error('MISSING_LINK');
+        // Для версии и существования записи свежесть не нужна: latestRow не хеширует канонические файлы.
+        if ((this.latestRow(c.id)?.version ?? 0) !== c.expectedVersion) throw new Error('VERSION_CONFLICT: ' + c.id);
+        for (const link of c.links ?? []) if (!this.latestRow(link) && !changes.some(x => x.id === link)) throw new Error('MISSING_LINK');
       }
       // Зависимости закрепляются на текущей версии записи или хеше файла. Переданные версия или хеш,
       // не совпавшие с текущими, отклоняются: запись не должна опираться на прочитанное раньше.
@@ -332,7 +335,7 @@ export class MemoryStore {
       const changedTasks = changes.filter(c => c.kind === 'task').map(c => c.id);
       let task = scope.task;
       if (task !== undefined) {
-        const own = changes.find(c => c.id === task), stored = this.current(task);
+        const own = changes.find(c => c.id === task), stored = this.latestRow(task)?.data;
         if ((own ?? stored)?.kind !== 'task') throw new Error(`INVALID_TASK_SCOPE: ${task} is not a saved task record; save the task first or omit task`);
       } else if (changedTasks.length === 1) task = changedTasks[0];
       this.db.query(`INSERT OR REPLACE INTO checkpoint_archive(run,task,summary,time,branch)
@@ -348,8 +351,8 @@ export class MemoryStore {
   }
   recall(query: string, budget = 6000) { return this.recallDetailed(query,budget).text; }
   // required — явный список ID, заданный пользователем через /huimem require; модель его не меняет.
-  recallDetailed(query: string, budget = 6000, required: string[] = []): RetrievalResult {
-    const authority = this.authority();
+  // authority можно передать уже вычисленным за этот ход: хеш канонических файлов не пересчитывается повторно.
+  recallDetailed(query: string, budget = 6000, required: string[] = [], authority: { hash: string; policyHash: string } = this.authority()): RetrievalResult {
     budget = Math.max(0, Math.min(12000, budget));
     const rows = this.db.query(`SELECT v.data,v.version,n.versionCount FROM versions v JOIN
       (SELECT id,MAX(version) version,COUNT(*) versionCount FROM versions GROUP BY id) n ON v.id=n.id AND v.version=n.version`).all() as any[];

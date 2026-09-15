@@ -128,3 +128,19 @@ test('the git branch is read from files for a normal checkout, a worktree and a 
     expect(gitBranch(wt)).toBe('other');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+// Скорость (audit/efficiency-20260915): список чекпоинтов и проверки commit не пересчитывают хеш канонических файлов.
+test('checkpoint view and commit validation do not rehash canonical files; results match the fresh view',()=>fixture(s=>{
+  for (const [id,text] of [['t1','Экспорт счетов'],['t2','Миграция заказов'],['t3','Токены доступа']]) { s.commit(id,[task(s,id,text)],'шаг '+id); Bun.sleepSync(3); }
+  const proto:any=Object.getPrototypeOf(s); const orig=proto.authority; let calls=0;
+  proto.authority=function(){calls++;return orig.call(this);};
+  try {
+    const view=s.checkpointView('миграция заказов');
+    expect(calls).toBe(0);
+    expect(view.tasks.map(t=>[t.task,t.matched])).toEqual([['t2',true],['t3',false],['t1',false]]);
+    calls=0;
+    s.commit('t4',[],'шаг t2 обновлён',{task:'t2'});
+    expect(calls).toBeLessThanOrEqual(2);
+    expect(()=>s.commit('x',[{...task(s,'t1','Экспорт счетов'),expectedVersion:0}],'конфликт')).toThrow('VERSION_CONFLICT');
+  } finally { proto.authority=orig; }
+}));

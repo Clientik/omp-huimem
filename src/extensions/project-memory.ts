@@ -147,7 +147,7 @@ export default function install(pi: ExtensionAPI) {
             checkpoints.tasks.map(c => `- ${c.task} [${c.status}${c.matched ? ', matches this request' : ''}; ${c.time}${c.branch ? '; branch ' + c.branch : ''}]: ${c.summary}\n`).join('') +
             (checkpoints.omitted ? `- ${checkpoints.omitted} more task checkpoint(s): project_memory recall id=<task id>\n` : '') +
             (checkpoints.unscoped ? `Latest checkpoint without a task [${checkpoints.unscoped.time}]: ${checkpoints.unscoped.summary}\n` : ''),
-        recall: (budget: number) => s.recallDetailed(query, budget, cfg.required) });
+        recall: (budget: number) => s.recallDetailed(query, budget, cfg.required, authority) });
       content = packed.content;
       const registryOffset = packed.registryOffset;
       try { s.recordContext(key(),content,registryOffset,packed.truncated); }

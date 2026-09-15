@@ -84,3 +84,13 @@ test('an empty registry under pressure is not reported as omitted records', () =
   expect(r.content.length).toBeLessThanOrEqual(1500);
   expect((r.content.match(/\[MEMORY_BUDGET[^\]]*\]/)?.[0] ?? '')).not.toContain('registry');
 });
+
+// Скорость (audit/efficiency-20260915): при том же бюджете поиск не повторяется, результат прежний.
+test('the registry search runs once when the pressure path keeps the same budget',()=>{
+  let calls=0;
+  const recall=(budget:number)=>{calls++;return recallOf([rec(1),rec(2)])(budget);};
+  const packed=packContext({...base,limit:4000,recallBudget:1000,preview:'P '.repeat(3000),recall});
+  expect(packed.content.length).toBeLessThanOrEqual(4000);
+  expect(calls).toBe(1);
+  expect(packed.content).toContain(rec(1));
+});

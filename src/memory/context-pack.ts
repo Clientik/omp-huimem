@@ -83,7 +83,8 @@ export function packContext(i: PackInput): PackResult {
   const omitted: string[] = [], trimmed: string[] = [];
   const previewFloor = Math.min(i.preview.length, PREVIEW_FLOOR);
   const registryBudget = Math.max(0, Math.min(i.recallBudget, space - previewFloor));
-  let retrieval = i.recall(registryBudget);
+  // Тот же бюджет — тот же результат поиска: повторный вызов (≈100 мс на большой памяти) не нужен.
+  let retrieval = registryBudget === i.recallBudget ? natural : i.recall(registryBudget);
   let registry = retrieval.text;
   // Заголовок реестра и его собственная пометка занимают место: при крошечном бюджете
   // вывод поиска больше бюджета. Тогда реестр не выдаётся, и это названо в пометке.
