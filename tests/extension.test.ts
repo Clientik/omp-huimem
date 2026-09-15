@@ -781,4 +781,95 @@ test('the block keeps IDs, full sources and templates, with minute checkpoint ti
     expect(text).toMatch(/Recent assistant sources \(inferences only; episode IDs\): [0-9a-f-]{36}\n/);
   } finally { f.clean(); }
 });
+
+// Проверка Claude структурированных ошибок Codex (40ffb13): настоящие отказы через инструмент, без записи.
+const tableCounts = (dir: string) => {
+  const s = new MemoryStore(dir);
+  try { return ['versions', 'checkpoints'].map(t => (s.db.query(`SELECT COUNT(*) n FROM ${t}`).get() as any).n).join('/'); }
+  finally { s.close(); }
+};
+test('real commit failures keep the legacy error, add a code-specific fix, and write nothing', async () => {
+  const f = fixture(); try {
+    const tool = f.tools.project_memory;
+    await f.handlers.before_agent_start({ prompt: 'Используем SQLite. Причина: один файл.' }, f.ctx);
+    const good = { id: 'db', kind: 'decision', status: 'accepted', expectedVersion: 0, text: 'SQLite', rationale: 'один файл', source: { origin: 'user', quote: 'Используем SQLite. Причина: один файл.' } };
+    expect((await tool.execute('ok', { op: 'commit', summary: 's', changes: [good] }, null, null, f.ctx)).isError).not.toBe(true);
+    const cases: [string, any][] = [
+      ['VERSION_CONFLICT', { ...good }],
+      ['MISSING_LINK', { ...good, id: 'orm', links: ['nope'] }],
+      ['INVALID_STATUS', { ...good, id: 'x', kind: 'fact', status: 'accepted' }],
+      ['SOURCE_ORIGIN_REQUIRED', { ...good, id: 'y', source: { quote: 'Используем SQLite. Причина: один файл.' } }],
+      ['RATIONALE_SOURCE_REQUIRED', { ...good, id: 'z', rationale: 'выдуманная причина' }],
+    ];
+    for (const [code, change] of cases) {
+      const before = tableCounts(f.dir);
+      const r = await tool.execute(code, { op: 'commit', summary: 's', changes: [change] }, null, null, f.ctx);
+      expect(r.isError).toBe(true);
+      expect(r.details.code).toBe(code);
+      expect(r.details.error.startsWith('Error: ' + code)).toBe(true);
+      expect(r.content[0].text.startsWith(r.details.error + '\nFix: ')).toBe(true);
+      expect(r.details.fix).not.toContain('Inspect the error');
+      expect(r.details.target).toBe('project_memory.commit');
+      expect(tableCounts(f.dir)).toBe(before);
+    }
+  } finally { f.clean(); }
+});
+test('off and paused memory return the envelope without writing; reads still work while paused', async () => {
+  const f = fixture(); try {
+    rmSync(join(f.dir, '.memory/MEMORY.md'));
+    const off = await f.tools.project_memory.execute('off', { op: 'commit', summary: 's', changes: [] }, null, null, f.ctx);
+    expect(off.details.error.startsWith('PROJECT_MEMORY_NOT_ENABLED')).toBe(true);
+    expect(off.details.fix).toContain('/huimem init');
+    expect(existsSync(join(f.dir, '.memory/runtime/state.sqlite'))).toBe(false);
+    writeFileSync(join(f.dir, '.memory/MEMORY.md'), '# Память проекта');
+    await f.handlers.before_agent_start({ prompt: 'Пауза' }, f.ctx);
+    await f.commands.huimem.handler('pause', f.ctx);
+    const before = tableCounts(f.dir);
+    const paused = await f.tools.project_memory.execute('p', { op: 'commit', summary: 's', changes: [] }, null, null, f.ctx);
+    expect(paused.details).toMatchObject({ code: 'COMMITS_PAUSED', target: 'project_memory.commit' });
+    expect(paused.details.error.startsWith('COMMITS_PAUSED')).toBe(true);
+    expect(tableCounts(f.dir)).toBe(before);
+    expect((await f.tools.project_memory.execute('r', { op: 'status' }, null, null, f.ctx)).isError).not.toBe(true);
+    const unknown = await f.tools.project_memory.execute('u', { op: 'bogus' }, null, null, f.ctx);
+    expect(unknown.details.code).toBe('UNKNOWN_OPERATION');
+    expect(unknown.details.fix).toContain('status, recall');
+  } finally { f.clean(); }
+});
+test('a corrupt database is reported as a storage failure and still blocks writes', async () => {
+  const f = fixture(); try {
+    mkdirSync(join(f.dir, '.memory/runtime'), { recursive: true });
+    writeFileSync(join(f.dir, '.memory/runtime/state.sqlite'), 'corrupt db');
+    await f.handlers.before_agent_start({ prompt: 'Work' }, f.ctx);
+    const r = await f.tools.project_memory.execute('s', { op: 'status' }, null, null, f.ctx);
+    expect(r.isError).toBe(true);
+    expect(r.details.code).toMatch(/^SQLITE/);
+    expect(r.details.fix).toContain('storage');
+    expect((await f.handlers.tool_call({ toolName: 'write', input: { path: 'src/a' } }, f.ctx)).block).toBe(true);
+  } finally { f.clean(); }
+});
+test('the INVALID_STATUS hint lists exactly the statuses validation accepts', async () => {
+  const f = fixture(); try {
+    const { memoryToolError } = await import('../src/memory/errors');
+    const fix = memoryToolError('INVALID_STATUS').details.fix;
+    const listed: Record<string, string[]> = {};
+    for (const part of fix.replace(/^[^:]*:\s*/, '').replace(/\.$/, '').split(';')) {
+      const [kinds, statuses] = part.split('=').map(x => x.trim());
+      for (const k of kinds.split('/')) listed[k.trim()] = statuses.split(',').map(x => x.trim());
+    }
+    expect(Object.keys(listed).sort()).toEqual(['decision', 'fact', 'navigation', 'procedure', 'task']);
+    const s = new MemoryStore(f.dir);
+    try {
+      for (const [kind, statuses] of Object.entries(listed)) {
+        for (const status of [...statuses, 'bogus']) {
+          const quote = `Цитата ${kind} ${status}. Причина: основание.`, episode = s.capture('t', 'user', quote);
+          const change: any = { id: `${kind}-${status}`, kind, status, text: quote, expectedVersion: 0, source: { episode, quote }, ...(kind === 'decision' ? { rationale: 'основание' } : {}) };
+          let error = '';
+          try { s.commit('t', [change], 's'); } catch (e) { error = String(e); }
+          if (status === 'bogus') expect(error).toContain('INVALID_STATUS');
+          else expect(error).not.toContain('INVALID_STATUS');
+        }
+      }
+    } finally { s.close(); }
+  } finally { f.clean(); }
+});
 }
