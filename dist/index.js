@@ -632,8 +632,7 @@ class MemoryStore {
       ...r.stale && (r.c.dependsOn || r.staleBecause.some((x) => !x.startsWith("canonical"))) ? { staleBecause: r.staleBecause.slice(0, 3) } : {},
       ...r.tier === 0 ? { required: "set by the user; applies even when unrelated to the question" } : {},
       ...r.c.kind === "decision" ? {
-        sourceRole: r.c.source.episode ? this.episode(r.c.source.episode)?.role ?? "unknown" : "file",
-        claimScope: "Quote is evidence of what the source said, not proof of additional explanations. Unverified interpretation available via recall by ID/history."
+        sourceRole: r.c.source.episode ? this.episode(r.c.source.episode)?.role ?? "unknown" : "file"
       } : { text: r.c.text },
       rationale: r.c.rationale,
       source,
@@ -641,26 +640,35 @@ class MemoryStore {
       ...extra
     }) + `
 `;
+    const decisionNote = `Decision rows: the quote is evidence of what the source said, not proof of additional explanations. Unverified interpretation available via recall by ID/history.
+`;
+    let noteShown = false;
+    const withNote = (r, l) => r.c.kind === "decision" && !noteShown ? decisionNote + l : l;
+    const take = (r, l) => {
+      out += l;
+      if (r.c.kind === "decision")
+        noteShown = true;
+    };
     const header = out.length, share = Math.floor(budget / 2);
     for (const r of eligible) {
       const reserve = omittedNotice.length + requiredReserve;
       const fits = (l) => out.length + l.length + reserve <= budget;
       const inShare = (l) => out.length - header + l.length <= share;
-      let line = render(r, r.c.source);
+      let line = withNote(r, render(r, r.c.source));
       if (r.tier === 0 && !(fits(line) && inShare(line))) {
         const quote2 = r.c.source.quote;
         for (let n = quote2.length - 1;n >= 80; n = Math.floor(n * 0.85)) {
           const cut = quote2.slice(0, n), at = Math.max(cut.lastIndexOf(" "), cut.lastIndexOf(`
 `));
           const shown2 = at > 40 ? cut.slice(0, at) : cut;
-          line = render(r, { ...r.c.source, quote: shown2 }, { quoteClipped: `shown ${shown2.length} of ${quote2.length} characters from the start; recall by id for the full quote` });
+          line = withNote(r, render(r, { ...r.c.source, quote: shown2 }, { quoteClipped: `shown ${shown2.length} of ${quote2.length} characters from the start; recall by id for the full quote` }));
           if (fits(line) && inShare(line))
             break;
         }
         if (quote2.length > 80 && fits(line) && inShare(line)) {
           reasons.set(r.c.id, "quote-clipped");
           unseen.push(r.c.id);
-          out += line;
+          take(r, line);
           continue;
         }
         reasons.set(r.c.id, "budget");
@@ -676,7 +684,7 @@ class MemoryStore {
         continue;
       }
       reasons.set(r.c.id, "selected");
-      out += line;
+      take(r, line);
     }
     const notShown = [...unseen, ...inactive];
     let requiredText = requiredNotice(notShown);

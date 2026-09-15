@@ -214,3 +214,30 @@ test('missing and retired required records are named, never silently dropped',()
   expect(result.text).toContain('old-rule (retired)');
   expect(rows(result.text).map(r=>r.id)).not.toContain('old-rule');
 }));
+
+// Оговорка о границе цитаты — одна строка перед первым решением вместо поля в каждой строке.
+// Слепая серия 12 на 12 (audit/claimscope-20260914) не показала ухудшения: 11 из 12 у обоих вариантов.
+test('decision rows carry one scope note before the first decision, counted in the budget',()=>fixture(s=>{
+  for(let i=0;i<8;i++) decide(s,`pay-${i}`,`Платежи: правило ${i}. Причина: банк ${i}.`,`банк ${i}`);
+  save(s,'fact-a','Платежи: факт без решения');
+  const result=s.recallDetailed('платежи');
+  const lines=result.text.split('\n');
+  expect(lines.filter(l=>l.startsWith('Decision rows:'))).toHaveLength(1);
+  const note=lines.findIndex(l=>l.startsWith('Decision rows:'));
+  expect(JSON.parse(lines[note+1]).kind).toBe('decision');
+  expect(result.text).not.toContain('"claimScope"');
+  for(const budget of [300,700,1200,2000]) {
+    const r=s.recallDetailed('платежи',budget);
+    expect(r.text.length).toBeLessThanOrEqual(budget);
+    const hasDecision=rows(r.text).some(x=>x.kind==='decision');
+    expect(r.text.includes('Decision rows:')).toBe(hasDecision);
+  }
+}));
+
+test('a registry without decisions gets no scope note',()=>fixture(s=>{
+  save(s,'fact-a','Порт сервиса 8080');
+  save(s,'fact-b','Порт базы 5432');
+  const text=s.recallDetailed('порт').text;
+  expect(rows(text).map(r=>r.id).sort()).toEqual(['fact-a','fact-b']);
+  expect(text).not.toContain('Decision rows:');
+}));

@@ -394,9 +394,14 @@ export class MemoryStore {
         ...(r.tier === 0 ? { required: 'set by the user; applies even when unrelated to the question' } : {}),
         ...(r.c.kind === 'decision' ? {
           sourceRole: r.c.source.episode ? this.episode(r.c.source.episode)?.role ?? 'unknown' : 'file',
-          claimScope: 'Quote is evidence of what the source said, not proof of additional explanations. Unverified interpretation available via recall by ID/history.',
         } : { text: r.c.text }),
         rationale: r.c.rationale, source, links: r.c.links, ...extra }) + '\n';
+    // Оговорка о границе цитаты стоит один раз перед первой строкой решения, а не в каждой строке;
+    // её место учитывается в бюджете вместе с этой строкой. Смысл совпадает с CLAIM SCOPE блока.
+    const decisionNote = 'Decision rows: the quote is evidence of what the source said, not proof of additional explanations. Unverified interpretation available via recall by ID/history.\n';
+    let noteShown = false;
+    const withNote = (r: typeof records[number], l: string) => r.c.kind === 'decision' && !noteShown ? decisionNote + l : l;
+    const take = (r: typeof records[number], l: string) => { out += l; if (r.c.kind === 'decision') noteShown = true; };
     const header = out.length, share = Math.floor(budget / 2);
     for (const r of eligible) {
       const reserve = omittedNotice.length + requiredReserve;
@@ -404,7 +409,7 @@ export class MemoryStore {
       // Обязательные записи вместе занимают не больше половины бюджета, чтобы не вытеснять
       // сведения по текущему вопросу. Если даже сокращённая запись не помещается, назвать пропуск.
       const inShare = (l: string) => out.length - header + l.length <= share;
-      let line = render(r, r.c.source);
+      let line = withNote(r, render(r, r.c.source));
       if (r.tier === 0 && !(fits(line) && inShare(line))) {
         // Обязательная запись не уходит целиком из-за длинной цитаты: показывается её точное
         // начало с явной пометкой, полная цитата — по ID. Начало цитаты остаётся дословным.
@@ -412,18 +417,18 @@ export class MemoryStore {
         for (let n = quote.length - 1; n >= 80; n = Math.floor(n * 0.85)) {
           const cut = quote.slice(0, n), at = Math.max(cut.lastIndexOf(' '), cut.lastIndexOf('\n'));
           const shown = at > 40 ? cut.slice(0, at) : cut;
-          line = render(r, { ...r.c.source, quote: shown },
-            { quoteClipped: `shown ${shown.length} of ${quote.length} characters from the start; recall by id for the full quote` });
+          line = withNote(r, render(r, { ...r.c.source, quote: shown },
+            { quoteClipped: `shown ${shown.length} of ${quote.length} characters from the start; recall by id for the full quote` }));
           if (fits(line) && inShare(line)) break;
         }
-        if (quote.length > 80 && fits(line) && inShare(line)) { reasons.set(r.c.id,'quote-clipped'); unseen.push(r.c.id); out += line; continue; }
+        if (quote.length > 80 && fits(line) && inShare(line)) { reasons.set(r.c.id,'quote-clipped'); unseen.push(r.c.id); take(r, line); continue; }
         reasons.set(r.c.id,'budget'); omitted=true; unseen.push(r.c.id); continue;
       }
       if (out.length + line.length + reserve > budget) {
         reasons.set(r.c.id,'budget'); omitted=true; if (r.tier === 0) unseen.push(r.c.id); continue;
       }
       reasons.set(r.c.id,'selected');
-      out += line;
+      take(r, line);
     }
     const notShown = [...unseen, ...inactive];
     let requiredText=requiredNotice(notShown);
