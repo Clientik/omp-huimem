@@ -1500,6 +1500,9 @@ var FIXES = {
   UNKNOWN_OPERATION: "Use status, recall, episodes, history, evidence or commit as op.",
   INVALID_SETTINGS: "Correct .memory/settings.json as a JSON object; required accepts at most 10 valid record IDs. Keep a copy before editing.",
   INVALID_TODO: "Correct .memory/todo.json: tasks must be an array with unique IDs and valid task statuses. Compare with the registry before editing.",
+  INVALID_POLICY: 'Correct .memory/architecture.json as JSON: with configured true, each rule needs an id, a non-empty files array of project-relative globs without "..", and a non-empty forbidden string. Keep a copy before editing.',
+  POLICY_SCAN_LIMIT: "Narrow the rule files globs in .memory/architecture.json; one rule may match at most 10000 files.",
+  EISDIR: "A directory stands where a file is expected. Move it aside and restore the expected file; do not delete its contents unreviewed.",
   DOCTOR_FILE_TOO_LARGE: "Inspect the named file separately; doctor limits individual diagnostic document reads to 1 MiB. Do not truncate evidence to suppress this finding."
 };
 function memoryToolError(error, operation, explicitCode) {
@@ -1524,7 +1527,7 @@ Fix: ` + fix }],
 function diagnoseMemory(root) {
   const report = { issues: [], checked: [], partial: [], unavailable: [] };
   const add = (severity, code, target, message, fix) => report.issues.push({ severity, code, target, message, fix });
-  const attempt = (section, read) => {
+  const attempt = (section, read, target = section) => {
     try {
       const gaps = [];
       const value = read((note) => gaps.push(note));
@@ -1536,7 +1539,7 @@ function diagnoseMemory(root) {
     } catch (error) {
       const d = memoryToolError(error).details;
       report.unavailable.push(section);
-      add("error", d.code, section, d.message, d.fix);
+      add("error", d.code, target, d.message, d.fix);
       return;
     }
   };
@@ -1546,6 +1549,14 @@ function diagnoseMemory(root) {
       throw new Error("DOCTOR_FILE_TOO_LARGE: " + path);
     return readFileSync6(full, "utf8");
   };
+  const json = (path, code) => {
+    const raw = text(path);
+    try {
+      return JSON.parse(raw);
+    } catch (error) {
+      throw new Error(`${code}: ${path} is not valid JSON (${error instanceof Error ? error.message : String(error)})`);
+    }
+  };
   if (!existsSync2(resolve7(root, ".memory/MEMORY.md"))) {
     add("info", "PROJECT_MEMORY_NOT_ENABLED", ".memory/MEMORY.md", "Project memory is not enabled.", "Run /huimem init in the intended project root.");
     return report;
@@ -1554,7 +1565,7 @@ function diagnoseMemory(root) {
   if (existsSync2(resolve7(root, ".memory/runtime/state.sqlite"))) {
     let store;
     try {
-      store = attempt("database", () => new MemoryStore(root, { readOnly: true }));
+      store = attempt("database", () => new MemoryStore(root, { readOnly: true }), ".memory/runtime/state.sqlite");
       if (store) {
         records = attempt("records", () => store.inspectRecords());
         if (records)
@@ -1586,14 +1597,14 @@ function diagnoseMemory(root) {
     }
   const settings = attempt("settings", () => {
     if (existsSync2(resolve7(root, ".memory/settings.json"))) {
-      const raw = JSON.parse(text(".memory/settings.json"));
+      const raw = json(".memory/settings.json", "INVALID_SETTINGS");
       if (!raw || typeof raw !== "object" || Array.isArray(raw))
         throw new Error("INVALID_SETTINGS: expected a JSON object");
       if (raw.required !== undefined && (!Array.isArray(raw.required) || raw.required.length > 10 || raw.required.some((x) => typeof x !== "string" || !/^[a-zA-Z0-9_.:/-]{1,100}$/.test(x))))
         throw new Error("INVALID_SETTINGS: required must contain at most 10 valid record IDs");
     }
     return readSettings(root);
-  });
+  }, ".memory/settings.json");
   if (records && settings)
     for (const id of settings.required) {
       const row = records.find((r) => r.id === id);
@@ -1621,17 +1632,17 @@ function diagnoseMemory(root) {
     }
     if (unreadable)
       gap(`${unreadable} of ${paths.length} unreadable`);
-  });
+  }, ".memory/adr");
   if (existsSync2(resolve7(root, ".memory/architecture.json")))
     attempt("architecture", () => {
-      const result = architectureCheck(root, JSON.parse(text(".memory/architecture.json")));
+      const result = architectureCheck(root, json(".memory/architecture.json", "INVALID_POLICY"));
       if (result.configured && !result.ok)
         for (const failure of result.failures)
           add("warning", "ARCHITECTURE_FAILED", ".memory/architecture.json", failure, "Inspect /huimem arch and reconcile the code with the project policy.");
-    });
+    }, ".memory/architecture.json");
   if (existsSync2(resolve7(root, ".memory/todo.json")))
     attempt("task file", () => {
-      const todo = JSON.parse(text(".memory/todo.json"));
+      const todo = json(".memory/todo.json", "INVALID_TODO");
       if (!Array.isArray(todo?.tasks))
         throw new Error("INVALID_TODO: expected a tasks array");
       const seen = new Set;
@@ -1652,7 +1663,7 @@ function diagnoseMemory(root) {
           if (!seen.has(row.id))
             add("warning", "TASK_NOT_IN_TODO", row.id, "Registry task is absent from todo.json.", "Decide whether this task belongs in the task file; doctor does not synchronize the two representations.");
       }
-    });
+    }, ".memory/todo.json");
   else if (records?.some((r) => r.data.kind === "task" && r.data.status !== "retired"))
     add("warning", "TODO_FILE_MISSING", ".memory/todo.json", "Registry tasks exist but the task file is absent.", "Review the project task-file convention before recreating it.");
   return report;

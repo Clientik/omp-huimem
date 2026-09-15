@@ -39,6 +39,9 @@ const FIXES: Record<string,string> = {
   UNKNOWN_OPERATION: 'Use status, recall, episodes, history, evidence or commit as op.',
   INVALID_SETTINGS: 'Correct .memory/settings.json as a JSON object; required accepts at most 10 valid record IDs. Keep a copy before editing.',
   INVALID_TODO: 'Correct .memory/todo.json: tasks must be an array with unique IDs and valid task statuses. Compare with the registry before editing.',
+  INVALID_POLICY: 'Correct .memory/architecture.json as JSON: with configured true, each rule needs an id, a non-empty files array of project-relative globs without "..", and a non-empty forbidden string. Keep a copy before editing.',
+  POLICY_SCAN_LIMIT: 'Narrow the rule files globs in .memory/architecture.json; one rule may match at most 10000 files.',
+  EISDIR: 'A directory stands where a file is expected. Move it aside and restore the expected file; do not delete its contents unreviewed.',
   DOCTOR_FILE_TOO_LARGE: 'Inspect the named file separately; doctor limits individual diagnostic document reads to 1 MiB. Do not truncate evidence to suppress this finding.',
 };
 

@@ -18,7 +18,8 @@ export function diagnoseMemory(root:string):DoctorReport {
   const add=(severity:DoctorIssue['severity'],code:string,target:string,message:string,fix:string)=>
     report.issues.push({severity,code,target,message,fix});
   // read may call gap(note) when it completed without some of its inputs; the section is then reported as partial.
-  const attempt=<T>(section:string,read:(gap:(note:string)=>void)=>T):T|undefined=>{
+  // target names the file behind a file-backed section, so a failure points at what to open.
+  const attempt=<T>(section:string,read:(gap:(note:string)=>void)=>T,target=section):T|undefined=>{
     try {
       const gaps:string[]=[];
       const value=read(note=>gaps.push(note));
@@ -28,7 +29,7 @@ export function diagnoseMemory(root:string):DoctorReport {
     catch(error) {
       const d=memoryToolError(error).details;
       report.unavailable.push(section);
-      add('error',d.code,section,d.message,d.fix);
+      add('error',d.code,target,d.message,d.fix);
       return undefined;
     }
   };
@@ -36,6 +37,10 @@ export function diagnoseMemory(root:string):DoctorReport {
     const full=safePath(root,path);
     if(statSync(full).size>1024*1024) throw new Error('DOCTOR_FILE_TOO_LARGE: '+path);
     return readFileSync(full,'utf8');
+  };
+  const json=(path:string,code:string)=>{
+    const raw=text(path);
+    try {return JSON.parse(raw);} catch(error) {throw new Error(`${code}: ${path} is not valid JSON (${error instanceof Error ? error.message : String(error)})`);}
   };
   if(!existsSync(resolve(root,'.memory/MEMORY.md'))) {
     add('info','PROJECT_MEMORY_NOT_ENABLED','.memory/MEMORY.md','Project memory is not enabled.','Run /huimem init in the intended project root.');
@@ -45,7 +50,7 @@ export function diagnoseMemory(root:string):DoctorReport {
   if(existsSync(resolve(root,'.memory/runtime/state.sqlite'))) {
     let store:MemoryStore|undefined;
     try {
-      store=attempt('database',()=>new MemoryStore(root,{readOnly:true}));
+      store=attempt('database',()=>new MemoryStore(root,{readOnly:true}),'.memory/runtime/state.sqlite');
       if(store) {
         records=attempt('records',()=>store!.inspectRecords());
         if(records) attempt('episode evidence',()=>{
@@ -76,13 +81,13 @@ export function diagnoseMemory(root:string):DoctorReport {
   }
   const settings=attempt('settings',()=>{
     if(existsSync(resolve(root,'.memory/settings.json'))) {
-      const raw=JSON.parse(text('.memory/settings.json'));
+      const raw=json('.memory/settings.json','INVALID_SETTINGS');
       if(!raw || typeof raw!=='object' || Array.isArray(raw)) throw new Error('INVALID_SETTINGS: expected a JSON object');
       if(raw.required!==undefined && (!Array.isArray(raw.required) || raw.required.length>10 || raw.required.some((x:unknown)=>typeof x!=='string' || !/^[a-zA-Z0-9_.:/-]{1,100}$/.test(x))))
         throw new Error('INVALID_SETTINGS: required must contain at most 10 valid record IDs');
     }
     return readSettings(root);
-  });
+  },'.memory/settings.json');
   if(records && settings) for(const id of settings.required) {
     const row=records.find(r=>r.id===id);
     if(!row || row.data.status==='retired') add('warning','REQUIRED_UNAVAILABLE',id,row ? 'Required record is retired.' : 'Required record is missing.',
@@ -113,14 +118,14 @@ export function diagnoseMemory(root:string):DoctorReport {
       }
     }
     if(unreadable) gap(`${unreadable} of ${paths.length} unreadable`);
-  });
+  },'.memory/adr');
   if(existsSync(resolve(root,'.memory/architecture.json'))) attempt('architecture',()=>{
-    const result=architectureCheck(root,JSON.parse(text('.memory/architecture.json')));
+    const result=architectureCheck(root,json('.memory/architecture.json','INVALID_POLICY'));
     if(result.configured && !result.ok) for(const failure of result.failures)
       add('warning','ARCHITECTURE_FAILED','.memory/architecture.json',failure,'Inspect /huimem arch and reconcile the code with the project policy.');
-  });
+  },'.memory/architecture.json');
   if(existsSync(resolve(root,'.memory/todo.json'))) attempt('task file',()=>{
-    const todo=JSON.parse(text('.memory/todo.json'));
+    const todo=json('.memory/todo.json','INVALID_TODO');
     if(!Array.isArray(todo?.tasks)) throw new Error('INVALID_TODO: expected a tasks array');
     const seen=new Set<string>();
     for(const task of todo.tasks) {
@@ -137,7 +142,7 @@ export function diagnoseMemory(root:string):DoctorReport {
     if(records) for(const row of records.filter(r=>r.data.kind==='task' && r.data.status!=='retired'))
       if(!seen.has(row.id)) add('warning','TASK_NOT_IN_TODO',row.id,'Registry task is absent from todo.json.',
         'Decide whether this task belongs in the task file; doctor does not synchronize the two representations.');
-  });
+  },'.memory/todo.json');
   else if(records?.some(r=>r.data.kind==='task' && r.data.status!=='retired'))
     add('warning','TODO_FILE_MISSING','.memory/todo.json','Registry tasks exist but the task file is absent.','Review the project task-file convention before recreating it.');
   return report;

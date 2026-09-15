@@ -84,7 +84,7 @@ test('doctor reports a pending schema-one migration without migrating, and the n
   s.db.exec("DROP TABLE projection; UPDATE meta SET value='1' WHERE key='schema'");
   s.close();
   const path=join(dir,'.memory/runtime/state.sqlite'),before=readFileSync(path);
-  const issue=diagnoseMemory(dir).issues.find(i=>i.target==='database')!;
+  const issue=diagnoseMemory(dir).issues.find(i=>i.target==='.memory/runtime/state.sqlite')!;
   expect(issue.code).toBe('SCHEMA_MIGRATION_PENDING');
   expect(issue.fix).toContain('normal OMP conversation');
   expect(issue.fix).not.toContain('compatible');
@@ -121,7 +121,7 @@ test('read-only store rejects writes and doctor reports corrupt storage without 
   writeFileSync(path,'broken sqlite');
   const report=diagnoseMemory(dir);
   expect(report.unavailable).toContain('database');
-  expect(report.issues.find(i=>i.target==='database')?.fix).toContain('preserve the database');
+  expect(report.issues.find(i=>i.target==='.memory/runtime/state.sqlite')?.fix).toContain('preserve the database');
   expect(readFileSync(path,'utf8')).toBe('broken sqlite');
 }));
 
@@ -163,6 +163,26 @@ test('doctor explains transitive, retired and changed dependencies and invalid e
   expect(found['EPISODE_EVIDENCE_INVALID@quoted']).toBe('Saved quote is absent from its source episode.');
   expect(found['EPISODE_EVIDENCE_INVALID@dec']).toBe('Accepted decision no longer has a user source.');
   expect(found['STALE_RECORD@ret']).toBeUndefined();
+}));
+
+test('failures of file-backed sections name the file and get a hint for that file',()=>fixture(dir=>{
+  enable(dir);
+  const errorFor=(path:string)=>diagnoseMemory(dir).issues.find(i=>i.severity==='error' && i.target===path);
+  for(const [path,code] of [['.memory/settings.json','INVALID_SETTINGS'],['.memory/architecture.json','INVALID_POLICY'],['.memory/todo.json','INVALID_TODO']]) {
+    writeFileSync(join(dir,path),'{broken');
+    const issue=errorFor(path)!;
+    expect(issue.code).toBe(code);
+    expect(issue.message).toContain(path+' is not valid JSON');
+    expect(issue.fix).toContain(path);
+    rmSync(join(dir,path));
+  }
+  writeFileSync(join(dir,'.memory/architecture.json'),JSON.stringify({configured:true,rules:[{id:'no-files'}]}));
+  expect(errorFor('.memory/architecture.json')?.fix).toContain('non-empty files array');
+  rmSync(join(dir,'.memory/architecture.json'));
+  mkdirSync(join(dir,'.memory/settings.json'));
+  const folder=errorFor('.memory/settings.json')!;
+  expect(folder.code).toBe('EISDIR');
+  expect(folder.fix).toContain('directory stands where a file is expected');
 }));
 
 test('one oversized ADR does not hide findings for the other ADRs',()=>fixture(dir=>{
