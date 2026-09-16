@@ -7,6 +7,8 @@ import {readBasis} from './provenance';
 import {projectionStatus} from './projection';
 import {readSettings,LIMITS} from './settings';
 
+const settingValue=(value:unknown) => typeof value==='number' && !Number.isFinite(value) ? String(value) : JSON.stringify(value);
+
 export type DoctorIssue={severity:'error'|'warning'|'info';code:string;target:string;message:string;fix:string};
 // partial: the section ran, but some of its inputs could not be read or were deliberately not followed.
 export type DoctorReport={issues:DoctorIssue[];checked:string[];partial:string[];unavailable:string[]};
@@ -91,7 +93,7 @@ export function diagnoseMemory(root:string):DoctorReport {
         const l=LIMITS[key];
         if(raw[key]!==undefined && raw[key]!==used[key])
           add('warning','SETTING_ADJUSTED','.memory/settings.json',
-            `${key} ${JSON.stringify(raw[key])} is not an integer within ${l.min}–${l.max}; ${used[key]} is used.`,
+            `${key} ${settingValue(raw[key])} is not an integer within ${l.min}–${l.max}; ${used[key]} is used.`,
             `Set ${key} with /huimem ${key==='recallBudget' ? 'recall' : 'limit'} or the settings screen, which apply the same limits.`);
       }
     }

@@ -78,6 +78,29 @@ test('invalid settings and task file do not hide independent ADR findings',()=>f
   expect(report.issues.map(i=>i.code)).toContain('ADR_WITHOUT_BASIS');
 }));
 
+test('doctor and the normal store refuse a foreign non-empty SQLite schema',()=>fixture(dir=>{
+  enable(dir);
+  mkdirSync(join(dir,'.memory/runtime'),{recursive:true});
+  const path=join(dir,'.memory/runtime/state.sqlite');
+  const foreign=new Database(path);
+  foreign.exec('CREATE TABLE foreign_data(value TEXT)');
+  foreign.query('INSERT INTO foreign_data VALUES (?)').run('keep me');
+  foreign.close();
+  const before=readFileSync(path);
+  const report=diagnoseMemory(dir);
+  expect(report.issues.find(i=>i.target===path.replaceAll('\\','/'))?.code ?? report.issues.find(i=>i.code==='FOREIGN_SCHEMA')?.code).toBe('FOREIGN_SCHEMA');
+  expect(()=>new MemoryStore(dir)).toThrow('FOREIGN_SCHEMA');
+  expect(readFileSync(path).equals(before)).toBe(true);
+}));
+
+test('doctor names non-finite setting values without serializing Infinity as null',()=>fixture(dir=>{
+  enable(dir);
+  writeFileSync(join(dir,'.memory/settings.json'),' {"recallBudget":1e999} ');
+  const issue=diagnoseMemory(dir).issues.find(i=>i.code==='SETTING_ADJUSTED');
+  expect(issue?.message).toContain('Infinity');
+  expect(issue?.message).not.toContain('null is not an integer');
+}));
+
 test('doctor reports a pending schema-one migration without migrating, and the normal store then migrates it',()=>fixture(dir=>{
   enable(dir);
   const s=new MemoryStore(dir);
