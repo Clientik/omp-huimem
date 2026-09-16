@@ -806,7 +806,9 @@ test('the block keeps IDs, full sources and templates, with minute checkpoint ti
     const ctxBlock = async () => (await f.handlers.context({ messages: [] }, f.ctx)).messages.find((m: any) => m.customType === 'project-memory-context').content as string;
     await f.handlers.before_agent_start({ prompt: 'Что дальше по экспорту счетов и какой порт?' }, f.ctx);
     let text = await ctxBlock();
-    expect(text).toMatch(/sourceEpisode=[0-9a-f-]{36}; run=[0-9a-f-]{36}:\d+/);
+    // Технические ID убраны из блока (audit/rules-status-20260915, вариант B); эпизод подставляется origin="user".
+    expect(text).not.toContain('sourceEpisode=');
+    expect(text).toMatch(/^Memory ready\n/);
     expect(text).not.toContain('Recent assistant sources');
     expect(text).toContain('Формат факта:');
     const rows = text.split('\n').filter(l => l.startsWith('{"id"')).map(l => JSON.parse(l));
