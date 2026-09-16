@@ -60,11 +60,16 @@ export class MemoryStore {
         const known=new Set(['meta','episodes','versions','checkpoints','health','projection','context_receipts','retrieval_receipts','checkpoint_scope','checkpoint_archive']);
         const foreign=tables.filter(name=>!known.has(name));
         if(foreign.length) throw new Error(`FOREIGN_SCHEMA: unexpected table(s): ${foreign.join(', ')}`);
-        const meta=tables.includes('meta') ? {present:true} : null;
-        const version=meta ? (this.db.query("SELECT value FROM meta WHERE key='schema'").get() as any)?.value : undefined;
+        const meta=tables.includes('meta');
+        let version: string|undefined;
+        if(meta) {
+          try { version=(this.db.query("SELECT value FROM meta WHERE key='schema'").get() as any)?.value; }
+          catch { throw new Error('FOREIGN_SCHEMA: meta table has no huimem schema marker'); }
+        }
         // The normal constructor initializes an empty database and migrates schema 1; read-only mode only reports it.
-        if(version===undefined || version==='1')
-          throw new Error(`SCHEMA_MIGRATION_PENDING: schema ${version ?? (meta ? 'marker missing' : 'empty database')}; the next normal OMP conversation in this project ${version === '1' ? 'migrates it' : 'initializes it'}`);
+        if(!tables.length || version==='1')
+          throw new Error(`SCHEMA_MIGRATION_PENDING: schema ${version ?? 'empty database'}; the next normal OMP conversation in this project ${version === '1' ? 'migrates it' : 'initializes it'}`);
+        if(!version) throw new Error('FOREIGN_SCHEMA: meta table has no huimem schema marker');
         if(version!=='2') throw new Error('UNSUPPORTED_SCHEMA');
         const check=this.db.query('PRAGMA quick_check').get() as any;
         if(check.quick_check!=='ok') throw new Error('DATABASE_INTEGRITY');
@@ -82,6 +87,14 @@ export class MemoryStore {
       const known=new Set(['meta','episodes','versions','checkpoints','health','projection','context_receipts','retrieval_receipts','checkpoint_scope','checkpoint_archive']);
       const foreign=existing.filter(name=>!known.has(name));
       if(foreign.length) throw new Error(`FOREIGN_SCHEMA: unexpected table(s): ${foreign.join(', ')}`);
+      if(existing.length) {
+        if(!existing.includes('meta')) throw new Error('FOREIGN_SCHEMA: no huimem schema marker');
+        let marker:any;
+        try { marker=this.db.query("SELECT value FROM meta WHERE key='schema'").get(); }
+        catch { throw new Error('FOREIGN_SCHEMA: meta table has no huimem schema marker'); }
+        if(!marker?.value) throw new Error('FOREIGN_SCHEMA: meta table has no huimem schema marker');
+        if(!['1','2'].includes(marker.value)) throw new Error('UNSUPPORTED_SCHEMA');
+      }
       this.db.exec(`PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS episodes (id TEXT PRIMARY KEY, session TEXT, role TEXT, text TEXT, time TEXT);

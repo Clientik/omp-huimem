@@ -93,6 +93,20 @@ test('doctor and the normal store refuse a foreign non-empty SQLite schema',()=>
   expect(readFileSync(path).equals(before)).toBe(true);
 }));
 
+test('a meta table without a huimem schema marker is not initialized in place',()=>fixture(dir=>{
+  enable(dir);
+  mkdirSync(join(dir,'.memory/runtime'),{recursive:true});
+  const path=join(dir,'.memory/runtime/state.sqlite');
+  const foreign=new Database(path);
+  foreign.exec('CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)');
+  foreign.query('INSERT INTO meta VALUES (?,?)').run('owner','other-app');
+  foreign.close();
+  const before=readFileSync(path);
+  expect(diagnoseMemory(dir).issues.map(i=>i.code)).toContain('FOREIGN_SCHEMA');
+  expect(()=>new MemoryStore(dir)).toThrow('FOREIGN_SCHEMA');
+  expect(readFileSync(path).equals(before)).toBe(true);
+}));
+
 test('doctor names non-finite setting values without serializing Infinity as null',()=>fixture(dir=>{
   enable(dir);
   writeFileSync(join(dir,'.memory/settings.json'),' {"recallBudget":1e999} ');
