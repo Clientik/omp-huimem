@@ -179,10 +179,24 @@ class MemoryStore {
       const path = safePath(root, ".memory/runtime/state.sqlite");
       this.db = new Database(path, { readonly: true, strict: true });
       try {
-        const meta = this.db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").get();
-        const version = meta ? this.db.query("SELECT value FROM meta WHERE key='schema'").get()?.value : undefined;
-        if (version === undefined || version === "1")
-          throw new Error(`SCHEMA_MIGRATION_PENDING: schema ${version ?? "marker missing"}; the next normal OMP conversation in this project migrates it`);
+        const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().map((row) => row.name);
+        const known = new Set(["meta", "episodes", "versions", "checkpoints", "health", "projection", "context_receipts", "retrieval_receipts", "checkpoint_scope", "checkpoint_archive"]);
+        const foreign = tables.filter((name) => !known.has(name));
+        if (foreign.length)
+          throw new Error(`FOREIGN_SCHEMA: unexpected table(s): ${foreign.join(", ")}`);
+        const meta = tables.includes("meta");
+        let version;
+        if (meta) {
+          try {
+            version = this.db.query("SELECT value FROM meta WHERE key='schema'").get()?.value;
+          } catch {
+            throw new Error("FOREIGN_SCHEMA: meta table has no huimem schema marker");
+          }
+        }
+        if (!tables.length || version === "1")
+          throw new Error(`SCHEMA_MIGRATION_PENDING: schema ${version ?? "empty database"}; the next normal OMP conversation in this project ${version === "1" ? "migrates it" : "initializes it"}`);
+        if (!version)
+          throw new Error("FOREIGN_SCHEMA: meta table has no huimem schema marker");
         if (version !== "2")
           throw new Error("UNSUPPORTED_SCHEMA");
         const check = this.db.query("PRAGMA quick_check").get();
@@ -207,6 +221,25 @@ class MemoryStore {
     }
     this.db = new Database(dbPath, { create: true, strict: true });
     try {
+      const existing = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().map((row) => row.name);
+      const known = new Set(["meta", "episodes", "versions", "checkpoints", "health", "projection", "context_receipts", "retrieval_receipts", "checkpoint_scope", "checkpoint_archive"]);
+      const foreign = existing.filter((name) => !known.has(name));
+      if (foreign.length)
+        throw new Error(`FOREIGN_SCHEMA: unexpected table(s): ${foreign.join(", ")}`);
+      if (existing.length) {
+        if (!existing.includes("meta"))
+          throw new Error("FOREIGN_SCHEMA: no huimem schema marker");
+        let marker;
+        try {
+          marker = this.db.query("SELECT value FROM meta WHERE key='schema'").get();
+        } catch {
+          throw new Error("FOREIGN_SCHEMA: meta table has no huimem schema marker");
+        }
+        if (!marker?.value)
+          throw new Error("FOREIGN_SCHEMA: meta table has no huimem schema marker");
+        if (!["1", "2"].includes(marker.value))
+          throw new Error("UNSUPPORTED_SCHEMA");
+      }
       this.db.exec(`PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS episodes (id TEXT PRIMARY KEY, session TEXT, role TEXT, text TEXT, time TEXT);
@@ -806,17 +839,19 @@ function readSettings(root) {
   try {
     const raw = JSON.parse(readFileSync3(resolve3(root, SETTINGS_PATH), "utf8"));
     return {
+      enabled: raw?.enabled !== false,
       recallBudget: clamp(raw?.recallBudget, LIMITS.recallBudget),
       injectionLimit: clamp(raw?.injectionLimit, LIMITS.injectionLimit),
       required: requiredIds(raw?.required)
     };
   } catch {
-    return { recallBudget: LIMITS.recallBudget.default, injectionLimit: LIMITS.injectionLimit.default, required: [] };
+    return { enabled: true, recallBudget: LIMITS.recallBudget.default, injectionLimit: LIMITS.injectionLimit.default, required: [] };
   }
 }
 function writeSettings(root, next) {
   const merged = { ...readSettings(root), ...next };
   const value = {
+    enabled: merged.enabled !== false,
     recallBudget: clamp(merged.recallBudget, LIMITS.recallBudget),
     injectionLimit: clamp(merged.injectionLimit, LIMITS.injectionLimit),
     required: requiredIds(merged.required)
@@ -1495,9 +1530,11 @@ var FIXES = {
   PATH: "Use a project-relative path that resolves inside this project, without links outside it.",
   COMMITS_PAUSED: "Ask the user to run /huimem resume if saving should resume. Reads remain available; repeated commit calls will not clear the pause.",
   PROJECT_MEMORY_NOT_ENABLED: "Ask the user to run /huimem init in the project root, then send a new message.",
+  PROJECT_MEMORY_OFF: "Memory is switched off for this project. Ask the user to run /huimem on if this work should be remembered; otherwise continue without memory and do not write .memory files by hand.",
   DATABASE_INTEGRITY: "Stop memory writes and preserve the database and its WAL files. Restore a verified backup or investigate the corruption before reopening; do not delete the database to silence the error.",
   UNSUPPORTED_SCHEMA: "Use a plugin version compatible with this database schema, or restore a compatible backup. Do not manually change the schema marker.",
-  SCHEMA_MIGRATION_PENDING: "Back up .memory/runtime if needed, then start a normal OMP conversation in this project; this plugin version migrates the database. Doctor itself never migrates. Do not change the schema marker manually.",
+  SCHEMA_MIGRATION_PENDING: "Back up .memory/runtime if needed, then start a normal OMP conversation in this project; this plugin initializes an empty database or migrates schema 1. Doctor itself never writes. Do not change the schema marker manually.",
+  FOREIGN_SCHEMA: "The memory path contains a database that is not a huimem database. Preserve it, move it aside or choose a clean .memory/runtime/state.sqlite, then initialize huimem; do not let this plugin migrate the foreign schema.",
   UNKNOWN_OPERATION: "Use status, recall, episodes, history, evidence or commit as op.",
   INVALID_SETTINGS: "Correct .memory/settings.json as a JSON object; required accepts at most 10 valid record IDs. Keep a copy before editing.",
   INVALID_TODO: "Correct .memory/todo.json: tasks must be an array with unique IDs and valid task statuses. Compare with the registry before editing.",
@@ -1525,6 +1562,7 @@ Fix: ` + fix }],
 }
 
 // src/memory/doctor.ts
+var settingValue = (value) => typeof value === "number" && !Number.isFinite(value) ? String(value) : JSON.stringify(value);
 function diagnoseMemory(root) {
   const report = { issues: [], checked: [], partial: [], unavailable: [] };
   const add = (severity, code, target, message, fix) => report.issues.push({ severity, code, target, message, fix });
@@ -1607,11 +1645,13 @@ function diagnoseMemory(root) {
       for (const key of ["recallBudget", "injectionLimit"]) {
         const l = LIMITS[key];
         if (raw[key] !== undefined && raw[key] !== used[key])
-          add("warning", "SETTING_ADJUSTED", ".memory/settings.json", `${key} ${JSON.stringify(raw[key])} is not an integer within ${l.min}\u2013${l.max}; ${used[key]} is used.`, `Set ${key} with /huimem ${key === "recallBudget" ? "recall" : "limit"} or the settings screen, which apply the same limits.`);
+          add("warning", "SETTING_ADJUSTED", ".memory/settings.json", `${key} ${settingValue(raw[key])} is not an integer within ${l.min}\u2013${l.max}; ${used[key]} is used.`, `Set ${key} with /huimem ${key === "recallBudget" ? "recall" : "limit"} or the settings screen, which apply the same limits.`);
       }
     }
     return readSettings(root);
   }, ".memory/settings.json");
+  if (settings && !settings.enabled)
+    add("info", "PROJECT_MEMORY_OFF", ".memory/settings.json", "Memory is switched off in this project; nothing is injected, recorded or saved.", "Run /huimem on to switch it back. Saved records and files are untouched while it is off.");
   if (records && settings)
     for (const id of settings.required) {
       const row = records.find((r) => r.id === id);
@@ -1702,6 +1742,8 @@ function formatDoctor(report) {
 var HELP = [
   "Usage:",
   "  /huimem init         enable memory in this project: create missing starter files, never overwrite",
+  "  /huimem off          switch memory off in this project: no block, no capture, no commits",
+  "  /huimem on           switch it back on",
   "  /huimem pause        block commits in this project for this OMP process",
   "  /huimem resume       allow commits again",
   "  /huimem              memory state for this project",
@@ -1732,6 +1774,15 @@ function registerSettingsCommand(pi, deps) {
       return say(HELP);
     if (verb === "doctor")
       return say(formatDoctor(diagnoseMemory(ctx.cwd)));
+    if (verb === "off" || verb === "on") {
+      if (!deps.deployed(ctx))
+        return say(deps.notEnabled);
+      const want = verb === "on";
+      if (deps.switchedOn(ctx) === want)
+        return say(`Memory is already ${want ? "on" : "off"} in this project.`);
+      deps.setEnabled(ctx, want);
+      return say(want ? `Memory is ON from the next message: the block is injected again, messages are recorded and project_memory works. File: ${SETTINGS_PATH}` : `Memory is OFF from the next message: no memory block, no recorded messages, no commits. Saved records and files stay untouched; /huimem on restores it. File: ${SETTINGS_PATH}`);
+    }
     if (verb === "init") {
       const wasEnabled = deps.deployed(ctx);
       let r;
@@ -1915,20 +1966,26 @@ Usage: /huimem ${verb} <id>`);
       return say(`Unknown subcommand: ${verb}
 
 ` + HELP);
+    const on = deps.switchedOn(ctx);
     let counts = "unavailable", projection = "unavailable";
-    try {
-      const s = deps.store(ctx);
-      const st = s.status();
-      const { projection: view, ...metrics } = st;
-      counts = Object.entries(metrics).map(([k, v]) => `${k}=${v}`).join(" \xB7 ");
-      projection = view.state + (view.error ? " \u2014 " + view.error : "");
-    } catch (e) {
-      counts = "ERROR: " + String(e);
-    }
-    const a = deps.architecture(ctx);
+    if (!on) {
+      counts = "not read while memory is off";
+      projection = "not read while memory is off";
+    } else
+      try {
+        const s = deps.store(ctx);
+        const st = s.status();
+        const { projection: view, ...metrics } = st;
+        counts = Object.entries(metrics).map(([k, v]) => `${k}=${v}`).join(" \xB7 ");
+        projection = view.state + (view.error ? " \u2014 " + view.error : "");
+      } catch (e) {
+        counts = "ERROR: " + String(e);
+      }
+    const a = on ? deps.architecture(ctx) : { configured: false, ok: false, failures: [] };
     const err = deps.health();
     return say([
       "huimem project memory",
+      `Memory:             ${on ? "ON" : "OFF (/huimem on to switch it back)"}`,
       `Commits:            ${deps.commitsPaused(ctx) ? "PAUSED (this process)" : "enabled"}`,
       "Requires OMP + a main model. No mnemopi, memory server or additional model required.",
       "",
@@ -1972,16 +2029,27 @@ Usage: /huimem ${verb} <id>`);
       }
       const cfg = readSettings(ctx.cwd);
       let records = "?", view = "unavailable";
-      try {
-        const st = deps.store(ctx).status();
-        records = String(st.records);
-        view = st.projection.state;
-      } catch (e) {
-        view = "ERROR: " + String(e);
-      }
-      const a = deps.architecture(ctx);
+      if (!cfg.enabled) {
+        records = "off";
+        view = "off";
+      } else
+        try {
+          const st = deps.store(ctx).status();
+          records = String(st.records);
+          view = st.projection.state;
+        } catch (e) {
+          view = "ERROR: " + String(e);
+        }
+      const a = cfg.enabled ? deps.architecture(ctx) : { configured: false, ok: false, failures: [] };
       const paused = deps.commitsPaused(ctx);
       const items = [
+        [
+          `Memory: ${cfg.enabled ? "ON" : "OFF"}`,
+          "Enter switches project memory off or on. Off means no memory block, no recorded messages and no commits; saved records stay.",
+          async () => {
+            await run(cfg.enabled ? "off" : "on", undefined, ctx, note);
+          }
+        ],
         [
           `Commits: ${paused ? "PAUSED" : "enabled"}`,
           "Enter toggles. Pause blocks project_memory commit in this OMP process; a restart clears it.",
@@ -2059,7 +2127,7 @@ Usage: /huimem ${verb} <id>`);
         ["Close", "Esc also closes.", async () => true]
       ];
       const health = deps.health();
-      const pick = await ui.select(`huimem \xB7 ${ctx.cwd} \xB7 ${records} records${health ? " \xB7 " + health : ""}`, items.map(([label, description]) => ({ label, description })), { initialIndex: cursor });
+      const pick = await ui.select(`huimem \xB7 ${ctx.cwd} \xB7 ${cfg.enabled ? records + " records" : "memory OFF"}${health ? " \xB7 " + health : ""}`, items.map(([label, description]) => ({ label, description })), { initialIndex: cursor });
       const index = items.findIndex(([label]) => label === pick);
       if (index < 0)
         return;
@@ -2129,6 +2197,9 @@ var reads = new Set(["read", "grep", "find", "glob", "ls", "project_memory"]);
 var ENABLE_MARKER = ".memory/MEMORY.md";
 var deployed = (ctx) => existsSync4(resolve9(ctx.cwd, ENABLE_MARKER));
 var NOT_ENABLED = "PROJECT_MEMORY_NOT_ENABLED: no " + ENABLE_MARKER + " in this project. " + "Project memory is off here and no database is created. Ask the user to run /huimem init in the project root to enable it.";
+var SWITCHED_OFF = "PROJECT_MEMORY_OFF: memory is switched off in this project. " + "Nothing is read, saved or injected. Only the user can switch it on with /huimem on.";
+var switchedOn = (ctx) => readSettings(ctx.cwd).enabled;
+var memoryOn = (ctx) => deployed(ctx) && switchedOn(ctx);
 var memoryWrapper = (event) => event.toolName === "write" && (event.input?.path === "xd://project_memory" || event.details?.xdev?.tool === "project_memory");
 function install(pi) {
   const z = pi.zod;
@@ -2196,7 +2267,7 @@ function install(pi) {
     }
   }
   pi.on("before_agent_start", async (event, ctx) => {
-    active = deployed(ctx);
+    active = memoryOn(ctx);
     if (!active) {
       store?.close();
       store = undefined;
@@ -2366,7 +2437,7 @@ Do not claim memory or work was verified.`;
     }
   });
   pi.on("session.compacting", (_event, ctx) => {
-    if (!deployed(ctx))
+    if (!memoryOn(ctx))
       return;
     return { context: [
       "Preserve provenance. A user decision establishes only what the user explicitly said. Do not infer missing causal mechanisms, alternatives, or consequences. Assistant explanations and ADR text are not additional user evidence. If an explanation appears only in assistant text, omit it or label it unverified. Quote the original user rationale exactly when available. Do not promote previous summary inferences to facts."
@@ -2414,6 +2485,8 @@ Do not claim memory or work was verified.`;
     async execute(_id, p, _signal, _update, ctx) {
       if (!deployed(ctx))
         return memoryToolError(NOT_ENABLED, p.op);
+      if (!switchedOn(ctx))
+        return memoryToolError(SWITCHED_OFF, p.op);
       if (p.op === "commit" && commitsPaused(ctx)) {
         const message = "COMMITS_PAUSED: no records or checkpoint saved. Only the user can resume through /huimem resume.";
         return memoryToolError(message, p.op);
@@ -2503,6 +2576,16 @@ Do not claim memory or work was verified.`;
   registerSettingsCommand(pi, {
     deployed,
     notEnabled: NOT_ENABLED,
+    switchedOn,
+    setEnabled: (ctx, value) => {
+      writeSettings(ctx.cwd, { enabled: value });
+      active = memoryOn(ctx);
+      if (!active) {
+        store?.close();
+        store = undefined;
+        root = "";
+      }
+    },
     store: (ctx) => get(ctx),
     architecture: (ctx) => check(ctx),
     health: () => error,
@@ -2515,8 +2598,12 @@ Do not claim memory or work was verified.`;
     }
   });
   pi.registerCommand("project-memory-status", { description: "Show project memory health", handler: async (_args, ctx) => {
-    if (!deployed(ctx)) {
-      pi.sendMessage({ customType: "project-memory-status", content: JSON.stringify({ enabled: false, reason: NOT_ENABLED }), display: true });
+    if (!memoryOn(ctx)) {
+      pi.sendMessage({
+        customType: "project-memory-status",
+        content: JSON.stringify({ enabled: false, reason: deployed(ctx) ? SWITCHED_OFF : NOT_ENABLED }),
+        display: true
+      });
       return;
     }
     try {

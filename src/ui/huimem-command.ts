@@ -16,6 +16,8 @@ import { diagnoseMemory, formatDoctor } from '../memory/doctor';
 export type CommandDeps = {
   deployed: (ctx: any) => boolean;
   notEnabled: string;
+  switchedOn: (ctx: any) => boolean;
+  setEnabled: (ctx: any, value: boolean) => void;
   store: (ctx: any) => any;
   architecture: (ctx: any) => { configured: boolean; ok: boolean; failures: string[] };
   health: () => string;
@@ -26,6 +28,8 @@ export type CommandDeps = {
 const HELP = [
   'Usage:',
   '  /huimem init         enable memory in this project: create missing starter files, never overwrite',
+  '  /huimem off          switch memory off in this project: no block, no capture, no commits',
+  '  /huimem on           switch it back on',
   '  /huimem pause        block commits in this project for this OMP process',
   '  /huimem resume       allow commits again',
   '  /huimem              memory state for this project',
@@ -60,6 +64,18 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
   async function run(verb: string | undefined, value: string | undefined, ctx: any, say: (text: string) => unknown = send) {
     if (verb === 'help' || verb === '--help') return say(HELP);
     if (verb === 'doctor') return say(formatDoctor(diagnoseMemory(ctx.cwd)));
+
+    // Выключатель проекта. Он сильнее паузы: блок памяти не собирается, эпизоды не пишутся,
+    // инструмент отвечает отказом. Состояние лежит в .memory/settings.json и переживает перезапуск.
+    if (verb === 'off' || verb === 'on') {
+      if (!deps.deployed(ctx)) return say(deps.notEnabled);
+      const want = verb === 'on';
+      if (deps.switchedOn(ctx) === want) return say(`Memory is already ${want ? 'on' : 'off'} in this project.`);
+      deps.setEnabled(ctx, want);
+      return say(want
+        ? `Memory is ON from the next message: the block is injected again, messages are recorded and project_memory works. File: ${SETTINGS_PATH}`
+        : `Memory is OFF from the next message: no memory block, no recorded messages, no commits. Saved records and files stay untouched; /huimem on restores it. File: ${SETTINGS_PATH}`);
+    }
 
     // Память включается явной командой в выбранном проекте, а не сама в каждом каталоге:
     // иначе база со стенограммой появлялась бы в чужих репозиториях (замерено 2026-09-08).
@@ -226,19 +242,23 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
     if (verb) return say(`Unknown subcommand: ${verb}\n\n` + HELP);
 
     // Без аргументов — состояние.
+    const on = deps.switchedOn(ctx);
     let counts = 'unavailable', projection='unavailable';
-    try {
+    // Выключенная память не открывает базу: иначе /huimem сам создал бы её в выключенном проекте.
+    if (!on) { counts = 'not read while memory is off'; projection = 'not read while memory is off'; }
+    else try {
       const s = deps.store(ctx);
       const st = s.status();
       const {projection: view,...metrics}=st;
       counts = Object.entries(metrics).map(([k, v]) => `${k}=${v}`).join(' · ');
       projection = view.state + (view.error ? ' — '+view.error : '');
     } catch (e) { counts = 'ERROR: ' + String(e); }
-    const a = deps.architecture(ctx);
+    const a = on ? deps.architecture(ctx) : { configured: false, ok: false, failures: [] };
     const err = deps.health();
     return say(
       [
         'huimem project memory',
+        `Memory:             ${on ? 'ON' : 'OFF (/huimem on to switch it back)'}`,
         `Commits:            ${deps.commitsPaused(ctx) ? 'PAUSED (this process)' : 'enabled'}`,
         'Requires OMP + a main model. No mnemopi, memory server or additional model required.',
         '',
@@ -285,12 +305,17 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       }
       const cfg = readSettings(ctx.cwd);
       let records = '?', view = 'unavailable';
-      try { const st = deps.store(ctx).status(); records = String(st.records); view = st.projection.state; }
+      // Пока память выключена, экран её не открывает: база не создаётся и не читается.
+      if (!cfg.enabled) { records = 'off'; view = 'off'; }
+      else try { const st = deps.store(ctx).status(); records = String(st.records); view = st.projection.state; }
       catch (e) { view = 'ERROR: ' + String(e); }
-      const a = deps.architecture(ctx);
+      const a = cfg.enabled ? deps.architecture(ctx) : { configured: false, ok: false, failures: [] };
       const paused = deps.commitsPaused(ctx);
       // Действие возвращает true, если после него экран закрывается: вывод длинный и его нужно прочитать.
       const items: [string, string, () => Promise<boolean | void>][] = [
+        [`Memory: ${cfg.enabled ? 'ON' : 'OFF'}`,
+          'Enter switches project memory off or on. Off means no memory block, no recorded messages and no commits; saved records stay.',
+          async () => { await run(cfg.enabled ? 'off' : 'on', undefined, ctx, note); }],
         [`Commits: ${paused ? 'PAUSED' : 'enabled'}`, 'Enter toggles. Pause blocks project_memory commit in this OMP process; a restart clears it.',
           async () => { await run(paused ? 'resume' : 'pause', undefined, ctx, note); }],
         [`Recall budget: ${cfg.recallBudget}`, `Characters of registry records per turn, ${LIMITS.recallBudget.min}–${LIMITS.recallBudget.max}.`,
@@ -316,7 +341,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
         ['Close', 'Esc also closes.', async () => true],
       ];
       const health = deps.health();
-      const pick = await ui.select(`huimem · ${ctx.cwd} · ${records} records${health ? ' · ' + health : ''}`,
+      const pick = await ui.select(`huimem · ${ctx.cwd} · ${cfg.enabled ? records + ' records' : 'memory OFF'}${health ? ' · ' + health : ''}`,
         items.map(([label, description]) => ({ label, description })), { initialIndex: cursor });
       const index = items.findIndex(([label]) => label === pick);
       if (index < 0) return;

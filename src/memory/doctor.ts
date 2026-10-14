@@ -99,6 +99,9 @@ export function diagnoseMemory(root:string):DoctorReport {
     }
     return readSettings(root);
   },'.memory/settings.json');
+  if(settings && !settings.enabled)
+    add('info','PROJECT_MEMORY_OFF','.memory/settings.json','Memory is switched off in this project; nothing is injected, recorded or saved.',
+      'Run /huimem on to switch it back. Saved records and files are untouched while it is off.');
   if(records && settings) for(const id of settings.required) {
     const row=records.find(r=>r.id===id);
     if(!row || row.data.status==='retired') add('warning','REQUIRED_UNAVAILABLE',id,row ? 'Required record is retired.' : 'Required record is missing.',

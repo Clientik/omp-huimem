@@ -67,10 +67,17 @@ Native GitHub installation in OMP 18.1.5 is user-scoped; `--scope project` does 
 
 **Settings screen:** in the terminal, `/huimem` opens a screen built from OMP's own dialogs.
 Each row shows the current value; Enter changes it or runs the action, Esc closes. From there
-you can pause commits, set the recall budget and injection limit, pick required records from
+you can switch memory off and on for this project, pause commits, set the recall budget and
+injection limit, pick required records from
 the registry, republish `RECORDS.md`, inspect the last memory block, migrate legacy ADRs and
 reset limits. In a project without memory the same screen offers to enable it. Values are
-stored per project in `.memory/settings.json`. In RPC and `-p` modes `/huimem` prints the state
+stored per project in `.memory/settings.json`.
+
+**Switch (since v0.6.4):** `/huimem off` silences memory in this project — no memory block, no
+recorded messages, no commits — and `/huimem on` brings it back. Saved records and files stay
+untouched; the state lives in `.memory/settings.json` and survives a restart. Use it for ordinary
+conversations in a project that otherwise uses memory. `/huimem pause` is narrower: it blocks only
+commits, and only in the running OMP process. In RPC and `-p` modes `/huimem` prints the state
 instead, and every action stays available as a subcommand (`/huimem help`). `/huimem omp` lists
 the OMP settings that affect memory; the plugin reports them and never rewrites that config.
 `huimem` cannot be selected under `memory.backend`: that list is a closed enum in OMP and

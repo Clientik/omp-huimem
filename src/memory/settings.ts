@@ -7,7 +7,9 @@ export const SETTINGS_PATH = '.memory/settings.json';
 
 // required — ID записей, которые выдаются в каждом ходе независимо от вопроса. Задаёт только
 // пользователь командой /huimem require; правка файла инструментами модели заблокирована.
-export type Settings = { recallBudget: number; injectionLimit: number; required: string[] };
+// enabled — выключатель памяти для этого проекта. Он принадлежит проекту и переживает перезапуск,
+// в отличие от pause: пауза запрещает только commit и живёт в одном процессе OMP.
+export type Settings = { enabled: boolean; recallBudget: number; injectionLimit: number; required: string[] };
 export const REQUIRED_MAX = 10;
 const requiredIds = (v: unknown): string[] => Array.isArray(v)
   ? [...new Set(v.filter((x): x is string => typeof x === 'string' && /^[a-zA-Z0-9_.:/-]{1,100}$/.test(x)))].slice(0, REQUIRED_MAX) : [];
@@ -28,6 +30,8 @@ export function readSettings(root: string): Settings {
   try {
     const raw = JSON.parse(readFileSync(resolve(root, SETTINGS_PATH), 'utf8'));
     return {
+      // Отсутствие поля — память включена: прежние проекты продолжают работать как раньше.
+      enabled: raw?.enabled !== false,
       recallBudget: clamp(raw?.recallBudget, LIMITS.recallBudget),
       injectionLimit: clamp(raw?.injectionLimit, LIMITS.injectionLimit),
       required: requiredIds(raw?.required),
@@ -35,13 +39,14 @@ export function readSettings(root: string): Settings {
   } catch {
     // Повреждённый или отсутствующий файл не должен ронять сессию: работаем на значениях
     // по умолчанию. Молчаливой подмены нет — /huimem показывает, что читается сейчас.
-    return { recallBudget: LIMITS.recallBudget.default, injectionLimit: LIMITS.injectionLimit.default, required: [] };
+    return { enabled: true, recallBudget: LIMITS.recallBudget.default, injectionLimit: LIMITS.injectionLimit.default, required: [] };
   }
 }
 
 export function writeSettings(root: string, next: Partial<Settings>): Settings {
   const merged = { ...readSettings(root), ...next };
   const value: Settings = {
+    enabled: merged.enabled !== false,
     recallBudget: clamp(merged.recallBudget, LIMITS.recallBudget),
     injectionLimit: clamp(merged.injectionLimit, LIMITS.injectionLimit),
     required: requiredIds(merged.required),

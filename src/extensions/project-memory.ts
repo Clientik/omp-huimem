@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve, relative } from 'node:path';
 import { MemoryStore, architectureCheck, gitBranch } from '../memory/core';
-import { readSettings } from '../memory/settings';
+import { readSettings, writeSettings } from '../memory/settings';
 import { packContext } from '../memory/context-pack';
 import { provenanceNote, readBasis, isAdrRead } from '../memory/provenance';
 import { registerSettingsCommand } from '../ui/huimem-command';
@@ -29,6 +29,12 @@ const ENABLE_MARKER = '.memory/MEMORY.md';
 const deployed = (ctx: any) => existsSync(resolve(ctx.cwd, ENABLE_MARKER));
 const NOT_ENABLED = 'PROJECT_MEMORY_NOT_ENABLED: no ' + ENABLE_MARKER + ' in this project. ' +
   'Project memory is off here and no database is created. Ask the user to run /huimem init in the project root to enable it.';
+// Выключатель проекта: память развёрнута, но пользователь отключил её для обычных разговоров.
+// Отличается от паузы: пауза запрещает только commit и действует до перезапуска процесса.
+const SWITCHED_OFF = 'PROJECT_MEMORY_OFF: memory is switched off in this project. ' +
+  'Nothing is read, saved or injected. Only the user can switch it on with /huimem on.';
+const switchedOn = (ctx: any) => readSettings(ctx.cwd).enabled;
+const memoryOn = (ctx: any) => deployed(ctx) && switchedOn(ctx);
 const memoryWrapper = (event: any) => event.toolName === 'write' &&
   (event.input?.path === 'xd://project_memory' || event.details?.xdev?.tool === 'project_memory');
 
@@ -80,7 +86,7 @@ export default function install(pi: ExtensionAPI) {
   pi.on('before_agent_start', async (event: any, ctx) => {
     // Пересчитываем на каждом запросе, а не один раз при загрузке: развернув starter,
     // память получаешь со следующего сообщения, без перезапуска omp.
-    active = deployed(ctx);
+    active = memoryOn(ctx);
     if (!active) { store?.close(); store = undefined; root = ''; error = ''; return; }
     run = randomUUID(); generation = 0; recentSources.length = 0;
     query = event.prompt ?? ''; sourceEpisode = '';
@@ -222,7 +228,7 @@ export default function install(pi: ExtensionAPI) {
   pi.on('session.compacting', (_event: any, ctx) => {
     // Compaction can precede the first prompt after resume; check deployment directly.
     // Adds guidance to native summarization, without replacing its prompt or result.
-    if (!deployed(ctx)) return;
+    if (!memoryOn(ctx)) return;
     return { context: [
       'Preserve provenance. A user decision establishes only what the user explicitly said. Do not infer missing causal mechanisms, alternatives, or consequences. Assistant explanations and ADR text are not additional user evidence. If an explanation appears only in assistant text, omit it or label it unverified. Quote the original user rationale exactly when available. Do not promote previous summary inferences to facts.'
     ] };
@@ -251,6 +257,7 @@ export default function install(pi: ExtensionAPI) {
     async execute(_id, p: any, _signal, _update, ctx) {
       // Проверяем состояние здесь, а не по флагу: инструмент могут вызвать до первого запроса.
       if (!deployed(ctx)) return memoryToolError(NOT_ENABLED,p.op);
+      if (!switchedOn(ctx)) return memoryToolError(SWITCHED_OFF,p.op);
       if (p.op === 'commit' && commitsPaused(ctx)) {
         const message='COMMITS_PAUSED: no records or checkpoint saved. Only the user can resume through /huimem resume.';
         return memoryToolError(message,p.op);
@@ -315,7 +322,8 @@ export default function install(pi: ExtensionAPI) {
     },
   });
   registerSettingsCommand(pi, {
-    deployed, notEnabled: NOT_ENABLED,
+    deployed, notEnabled: NOT_ENABLED, switchedOn,
+    setEnabled: (ctx: any, value: boolean) => { writeSettings(ctx.cwd, { enabled: value }); active = memoryOn(ctx); if (!active) { store?.close(); store = undefined; root = ''; } },
     store: (ctx: any) => get(ctx),
     architecture: (ctx: any) => check(ctx),
     health: () => error,
@@ -325,8 +333,9 @@ export default function install(pi: ExtensionAPI) {
     },
   });
   pi.registerCommand('project-memory-status', { description: 'Show project memory health', handler: async (_args, ctx) => {
-    if (!deployed(ctx)) {
-      pi.sendMessage({ customType: 'project-memory-status', content: JSON.stringify({ enabled: false, reason: NOT_ENABLED }), display: true });
+    if (!memoryOn(ctx)) {
+      pi.sendMessage({ customType: 'project-memory-status',
+        content: JSON.stringify({ enabled: false, reason: deployed(ctx) ? SWITCHED_OFF : NOT_ENABLED }), display: true });
       return;
     }
     try { const text = JSON.stringify({ ...get(ctx).status(), architecture: check(ctx), error });

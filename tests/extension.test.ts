@@ -11,6 +11,39 @@ describe('built bundle', () => adapterContract(installBundle));
 
 function adapterContract(install: typeof installSource) {
 
+// Выключатель проекта: пользователь глушит память для обычных разговоров, не удаляя записи.
+test('/huimem off stops the block, the transcript and commits; /huimem on restores them',async()=>{
+  const f=fixture(); try {
+    const block=async()=>{
+      await f.handlers.before_agent_start({prompt:'Что по проекту?'},f.ctx);
+      const ctxEvent=await f.handlers.context({messages:[{role:'user',content:'Что по проекту?'}]},f.ctx);
+      return ctxEvent?.messages?.find((m:any)=>m.customType==='project-memory-context')?.content as string|undefined;
+    };
+    expect(await block()).toContain('Memory ready');
+    const episodes=()=>{const s=new MemoryStore(f.dir); try {return (s.db.query('SELECT COUNT(*) n FROM episodes').get() as any).n;} finally {s.close();}};
+    const before=episodes();
+    expect(before).toBeGreaterThan(0);
+
+    await f.commands.huimem.handler('off',f.ctx);
+    expect(String(f.notices.at(-1)?.content)).toContain('Memory is OFF');
+    expect(JSON.parse(readFileSync(join(f.dir,'.memory/settings.json'),'utf8')).enabled).toBe(false);
+    expect(await block()).toBeUndefined();
+    expect(episodes()).toBe(before);
+    const denied=await f.tools.project_memory.execute('x',{op:'status'},null,null,f.ctx);
+    expect(denied.isError).toBe(true);
+    expect(denied.details.code).toBe('PROJECT_MEMORY_OFF');
+    expect(denied.details.fix).toContain('/huimem on');
+    // Выключенная память не открывает базу и не трогает сохранённое.
+    await f.commands.huimem.handler('',f.ctx);
+    expect(String(f.notices.at(-1)?.content)).toContain('Memory:             OFF');
+
+    await f.commands.huimem.handler('on',f.ctx);
+    expect(await block()).toContain('Memory ready');
+    expect(episodes()).toBeGreaterThan(before);
+    expect((await f.tools.project_memory.execute('y',{op:'status'},null,null,f.ctx)).isError).not.toBe(true);
+  } finally { f.clean(); }
+});
+
 test('/huimem doctor reports an uninitialized database without creating it',async()=>{
   const f=fixture(); try {
     await f.commands.huimem.handler('doctor',f.ctx);
@@ -637,7 +670,9 @@ test('/huimem opens a settings screen in the terminal and applies choices throug
     const main = screens.filter(x => x.title.startsWith('huimem ·'));
     expect(main[1].labels).toContain('Recall budget: 4500');
     expect(main[3].labels).toContain('Commits: PAUSED');
-    expect(main[3].initialIndex).toBe(0);
+    // Первый пункт — выключатель памяти, поэтому курсор возвращается на строку Commits.
+    expect(main[3].initialIndex).toBe(1);
+    expect(main[0].labels[0]).toBe('Memory: ON');
     expect(screens.find(x => x.title.startsWith('Required records'))!.labels).toContain('[ ] security-rule');
     const denied = await f.tools.project_memory.execute('x', { op: 'commit', changes: [], summary: 'x' }, null, null, f.ctx);
     expect(String(denied.content[0].text)).toContain('COMMITS_PAUSED');

@@ -33,6 +33,7 @@ const FIXES: Record<string,string> = {
   PATH: 'Use a project-relative path that resolves inside this project, without links outside it.',
   COMMITS_PAUSED: 'Ask the user to run /huimem resume if saving should resume. Reads remain available; repeated commit calls will not clear the pause.',
   PROJECT_MEMORY_NOT_ENABLED: 'Ask the user to run /huimem init in the project root, then send a new message.',
+  PROJECT_MEMORY_OFF: 'Memory is switched off for this project. Ask the user to run /huimem on if this work should be remembered; otherwise continue without memory and do not write .memory files by hand.',
   DATABASE_INTEGRITY: 'Stop memory writes and preserve the database and its WAL files. Restore a verified backup or investigate the corruption before reopening; do not delete the database to silence the error.',
   UNSUPPORTED_SCHEMA: 'Use a plugin version compatible with this database schema, or restore a compatible backup. Do not manually change the schema marker.',
   SCHEMA_MIGRATION_PENDING: 'Back up .memory/runtime if needed, then start a normal OMP conversation in this project; this plugin initializes an empty database or migrates schema 1. Doctor itself never writes. Do not change the schema marker manually.',
