@@ -11,6 +11,25 @@ describe('built bundle', () => adapterContract(installBundle));
 
 function adapterContract(install: typeof installSource) {
 
+// ЗАМЕРЕНО в живом проекте HUICAD 2026-10-14: модель за две сессии не сделала ни одного commit,
+// написала .memory руками и проверяла файлы скриптами. Пометка приходит ровно в этот момент.
+test('a hand edit of a memory document is allowed but answered with a pointer to commit',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Запиши решение'},f.ctx);
+    const content=[{type:'text',text:'wrote 120 chars'}];
+    for(const path of ['.memory/MEMORY.md','.memory/todo.json','.memory/adr/0002-x.md','.memory/PROJECT.md']) {
+      const result=await f.handlers.tool_result({toolName:'write',input:{path},content,isError:false},f.ctx);
+      expect(result?.content[0].text).toContain('MEMORY_DOCUMENT_EDITED');
+      expect(result.content[0].text).toContain('project_memory commit');
+      expect(result.content.slice(1)).toEqual(content); // исходный результат не подменяется
+    }
+    // Чужие файлы и неудачные записи не комментируются.
+    expect(await f.handlers.tool_result({toolName:'write',input:{path:'src/a.ts'},content,isError:false},f.ctx)).toBeUndefined();
+    expect(await f.handlers.tool_result({toolName:'write',input:{path:'.memory/MEMORY.md'},content,isError:true},f.ctx)).toBeUndefined();
+    expect(await f.handlers.tool_result({toolName:'read',input:{path:'.memory/MEMORY.md'},content,isError:false},f.ctx)).toBeUndefined();
+  } finally { f.clean(); }
+});
+
 // Выключатель проекта: пользователь глушит память для обычных разговоров, не удаляя записи.
 test('/huimem off stops the block, the transcript and commits; /huimem on restores them',async()=>{
   const f=fixture(); try {

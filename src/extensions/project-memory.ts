@@ -15,6 +15,8 @@ const minute = (iso: string) => iso.slice(0, 16).replace('T', ' ');
 const textOf = (content: any): string => typeof content === 'string' ? content :
   Array.isArray(content) ? content.filter(x => x?.type === 'text').map(x => x.text).join('\n') : '';
 const reads = new Set(['read','grep','find','glob','ls','project_memory']);
+// Инструменты записи OMP: по ним узнаём ручную правку документов памяти.
+const writes = new Set(['write','edit','apply_patch','multi_edit']);
 // ПАМЯТЬ ВКЛЮЧАЕТСЯ ЯВНО, ПО ПРОЕКТУ. Расширение ставится глобально и грузится всюду,
 // где запущен omp. Без этой проверки оно заводило `.memory/runtime/state.sqlite` в любом
 // каталоге — в том числе в чужих репозиториях, где память не нужна, а `.gitignore` её не
@@ -141,7 +143,12 @@ export default function install(pi: ExtensionAPI) {
         (saved
           ? 'A checkpoint for this run is already saved. Do not call commit again unless something durable actually changed. '
           : 'project_memory commit is AVAILABLE if something durable changed (decision, fact, task state). It is optional: skip it for trivial exchanges. ') +
-        'Commit also publishes .memory/RECORDS.md automatically; do not edit this generated view or treat it as independent evidence. ' +
+        // ПРИЧИНА ПРАВКИ 2026-10-14: в живом проекте HUICAD модель записала «registry commit не использован,
+        // чтобы не менять generated RECORDS.md» и за две сессии не сохранила ни одной записи, заполняя
+        // .memory руками и проверяя файлы скриптами. Прежний текст запрещал править RECORDS.md, и запрет
+        // был прочитан как запрет на commit. Теперь сказано, что публикация — часть нормальной работы.
+        'Publishing .memory/RECORDS.md is part of saving, not a reason to skip commit; never hand-edit that generated view or cite it as evidence. '
+        + 'Do not leave durable facts only in hand-written .memory documents and do not re-verify those files with scripts: the saved record and its source are the evidence. ' +
         'An empty changes array is allowed when nothing durable changed, but a non-empty summary is always required. Reuse IDs for corrections; read the current version first. ' +
         'For a current user decision use source.origin="user" and quote the current user message; IDs are filled by code. ' +
         'For a file observation use source.origin="file", path and exact quote; the hash is computed by code. ' +
@@ -193,6 +200,13 @@ export default function install(pi: ExtensionAPI) {
     // Conservative invalidation: unknown tools may mutate, even if they return an error.
     if (!reads.has(event.toolName) && !memoryWrapper(event)) generation++;
     const path=event.input?.path ?? event.input?.file_path;
+    // Документы .memory остаются человеческими и правятся: это принятое ранее решение, его не отменяем.
+    // Но правка руками — тот момент, когда запись в реестр чаще всего пропускают, поэтому здесь напоминание.
+    if(!event.isError && writes.has(event.toolName) && typeof path==='string' && Array.isArray(event.content)) {
+      const rel=relative(ctx.cwd, resolve(ctx.cwd,path)).split('\\').join('/').toLowerCase();
+      if(rel==='.memory/memory.md' || rel==='.memory/project.md' || rel==='.memory/todo.json' || rel.startsWith('.memory/adr/'))
+        return { content:[{type:'text',text:'MEMORY_DOCUMENT_EDITED: this file is a project document, not the registry. Save the same decision, fact or task state with project_memory commit, quoting its source; the registry keeps versions, evidence and staleness. Do not verify this edit with scripts: read back the saved record instead.'},...event.content] };
+    }
     if(event.toolName==='read' && !event.isError && typeof path==='string' && Array.isArray(event.content)) {
       if(isAdrRead(ctx.cwd,path)) {
         // Inspect only the returned excerpt. Never expand a partial read to the full file.
