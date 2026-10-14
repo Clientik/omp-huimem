@@ -76,7 +76,7 @@
 ### 1. Подключите расширение
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.6.3
+omp plugin install github:Clientik/omp-huimem#v0.6.4
 ```
 
 В OMP 18.1.5 этот способ устанавливает плагин на уровне пользователя: `--scope project` здесь не поддерживается, поэтому расширение загружается во всех проектах, где вы запускаете OMP.
@@ -88,7 +88,7 @@ omp plugin install github:Clientik/omp-huimem#v0.6.3
 Запасной способ — прямая загрузка:
 
 ```sh
-git clone --branch v0.6.3 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.6.4 https://github.com/Clientik/omp-huimem.git
 ```
 
 Перейдите в свой рабочий проект и запустите:
