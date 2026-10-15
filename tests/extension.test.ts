@@ -61,6 +61,33 @@ test('after an upgrade the block states once what changed, then stops repeating 
   } finally { f.clean(); }
 });
 
+// Компакция заменяет историю пересказом, а пересказ правила блока доказательством не считают.
+// Сказать об этом можно только один раз: безусловное требование сохранять уже давало 89 чекпоинтов
+// за 300 секунд в одном запросе (см. commitRules), поэтому принуждения здесь нет.
+test('after the history is compacted the block says so once',async()=>{
+  const f=fixture(); try {
+    const block=async()=>{
+      await f.handlers.before_agent_start({prompt:'Продолжаем'},f.ctx);
+      const event=await f.handlers.context({messages:[{role:'user',content:'Продолжаем'}]},f.ctx);
+      return event?.messages?.find((m:any)=>m.customType==='project-memory-context')?.content as string;
+    };
+    expect(await block()).not.toContain('HISTORY_COMPACTED');
+    await f.handlers.session_before_compact({},f.ctx);
+    const after=await block();
+    expect(after).toContain('HISTORY_COMPACTED');
+    expect(after).toContain('The summary is not evidence');
+    expect(after).toContain('project_memory episodes');
+    // Правила и состояние на месте: отметка добавлена, а не подменила блок.
+    expect(after).toContain('project_memory commit');
+    // Второй ход — тишина.
+    expect(await block()).not.toContain('HISTORY_COMPACTED');
+    // Пути мимо session_before_compact (shake, snapcompact, overflow) отмечаются так же.
+    await f.handlers.auto_compaction_start({reason:'threshold',action:'snapcompact'},f.ctx);
+    expect(await block()).toContain('HISTORY_COMPACTED');
+    expect(await block()).not.toContain('HISTORY_COMPACTED');
+  } finally { f.clean(); }
+});
+
 // ЗАМЕРЕНО 2026-10-15 в живой сессии HUICAD: модель 20 минут выясняла канонический набор и
 // читала для этого исходники самого плагина (core.ts трижды). Блок называл файлы, но не говорил,
 // что набор полный и задан плагином, поэтому перечень читался как пример.
