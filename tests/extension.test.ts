@@ -61,6 +61,24 @@ test('after an upgrade the block states once what changed, then stops repeating 
   } finally { f.clean(); }
 });
 
+// ЗАМЕРЕНО 2026-10-15 в живой сессии HUICAD: модель 20 минут выясняла канонический набор и
+// читала для этого исходники самого плагина (core.ts трижды). Блок называл файлы, но не говорил,
+// что набор полный и задан плагином, поэтому перечень читался как пример.
+test('the block states that the canonical file set is complete and fixed',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Где память проекта?'},f.ctx);
+    const event=await f.handlers.context({messages:[{role:'user',content:'Где память?'}]},f.ctx);
+    const block=event?.messages?.find((m:any)=>m.customType==='project-memory-context')?.content as string;
+    expect(block).toContain('complete set, fixed by this plugin');
+    expect(block).toContain('nothing else is project memory');
+    // Генерируемый вид назван отдельно: его искали в наборе и правили руками.
+    expect(block).toContain('RECORDS.md is generated from the registry');
+    // Сами файлы по-прежнему перечислены поимённо.
+    expect(block).toContain('.memory/MEMORY.md');
+    expect(block).toContain('.memory/todo.json');
+  } finally { f.clean(); }
+});
+
 // ЗАМЕРЕНО 2026-10-15 по базе HUICAD: 100 вставок блока с нулём записей. Пустой реестр ничем
 // не отличался от неудачного поиска, и выдержка рукописных документов выглядела как память.
 test('an empty registry is stated, and the statement goes away after the first commit',async()=>{
@@ -349,7 +367,7 @@ test('when everything fits, the block is not trimmed and carries no budget marke
     const out:any=await f.handlers.context({messages:[]},f.ctx);
     const content=out.messages.find((m:any)=>m.customType==='project-memory-context').content;
     expect(content).not.toContain('MEMORY_BUDGET');
-    expect(content).toContain('Canonical preview');
+    expect(content).toContain('Canonical files');
     expect(content).toContain('Previous checkpoint');
     expect(recordLines(content).map(l=>JSON.parse(l).id)).toEqual(['db']);
     const t=new MemoryStore(f.dir); expect(t.lastContext().truncated).toBe(false); t.close();

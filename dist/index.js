@@ -2476,7 +2476,7 @@ ${upgrade}${empty}`;
         sourceOrder,
         claimScope,
         commitRules,
-        preview: `Canonical preview (TRUNCATED; read relevant files before relying on it):
+        preview: `Canonical files \u2014 complete set, fixed by this plugin; nothing else is project memory, and .memory/RECORDS.md is generated from the registry rather than part of it. Preview is TRUNCATED; read a file before relying on it:
 ${authority.preview}
 `,
         recent: recentSources.length ? `Recent assistant sources (inferences only; episode IDs): ${recentSources.map((r) => r.episode).join(", ")}
