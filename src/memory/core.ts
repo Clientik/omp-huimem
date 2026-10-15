@@ -256,6 +256,49 @@ export class MemoryStore {
     return c.kind==='fact' && c.source.path && c.sourcePolicyHash
       ? c.sourcePolicyHash!==authority.policyHash : c.authorityHash!==authority.hash;
   }
+  // ЗАМЕРЕНО 2026-10-15 на настоящем проекте HUICAD: выдержка собиралась встык и резалась
+  // одним срезом в 2400 символов, поэтому последние по порядку файлы исчезали целиком —
+  // три ADR не упоминались вовсе, и модель не знала, что они существуют, а todo.json
+  // обрывался посреди задачи. Бюджет тот же, но каждый канонический файл назван, и место
+  // делится между ними, а не достаётся первым по алфавиту.
+  static preview(items: { path: string; text?: string; nameOnly?: boolean }[], budget = 2400): string {
+    const line = (i: { path: string }) => i.path.replaceAll('\\', '/') + '\n';
+    const names = items.filter(i => i.nameOnly), texts = items.filter(i => !i.nameOnly);
+    // ADR перечисляются именами под одной общей пометкой: прежде каждый нёс свою копию той же
+    // фразы по 86 символов, и на три документа уходило место, которого не хватало им самим.
+    const note = names.length ? '[Documents listed above without text: read on demand; accepted status does not verify their explanations.]' : '';
+    const missing = '[Not shown here; read the file.]';
+    const want = (i: { path: string; text?: string }) => Math.min((i.text ?? '').length, 900);
+    const body = (take: Record<string, number>) =>
+      // Короткий документ показывается целиком: порог в 40 символов относится к доле от
+      // длинного файла, а не к файлу, который и так весь короче порога.
+      [...texts.map(i => line(i) + ((take[i.path] ?? 0) >= Math.min(want(i), 40) && (take[i.path] ?? 0) > 0
+        ? (i.text ?? '').slice(0, take[i.path]) : missing)),
+       ...(names.length ? [names.map(line).join('') + note] : [])].join('\n');
+    const take: Record<string, number> = {};
+    let rest = budget - body(take).length;
+    // Две раздачи: сначала равная доля, затем остаток от коротких файлов — длинным.
+    for (const pass of [0, 1]) {
+      const need = texts.filter(i => (take[i.path] ?? 0) < want(i));
+      if (!need.length || rest <= 0) break;
+      const share = Math.floor(rest / need.length);
+      if (share <= 0) break;
+      for (const item of need) {
+        // Пока доля меньше строки, место занимает пометка об отсутствии — её и возвращаем в общий счёт.
+        const freed = (take[item.path] ?? 0) === 0 && share >= 40 ? missing.length : 0;
+        const add = Math.min(want(item) - (take[item.path] ?? 0), pass === 0 ? share + freed : rest + freed);
+        take[item.path] = (take[item.path] ?? 0) + add; rest -= add - freed;
+      }
+    }
+    let out = body(take);
+    // Страховка от перебора: имена и пометки обязательны, лишнее снимается с самой большой доли.
+    for (let guard = 0; out.length > budget && guard < texts.length; guard++) {
+      const widest = texts.reduce((a, b) => (take[b.path] ?? 0) > (take[a.path] ?? 0) ? b : a);
+      take[widest.path] = Math.max(0, (take[widest.path] ?? 0) - (out.length - budget));
+      out = body(take);
+    }
+    return out;
+  }
   authority() {
     const paths = ['.memory/MEMORY.md','.memory/todo.json','.memory/PROJECT.md','.memory/architecture.json',
       ...new Bun.Glob('.memory/adr/**/*.md').scanSync({cwd:this.root,onlyFiles:true,followSymlinks:false})].sort();
@@ -265,10 +308,10 @@ export class MemoryStore {
       catch(e: any) { if(e.code === 'ENOENT') parts.push(path+'\n[MISSING]'); else throw e; }
     }
     const policyHash=hash(parts.filter((_,i)=>['.memory/MEMORY.md','.memory/PROJECT.md','.memory/architecture.json'].includes(paths[i])).join('\n'));
-    return { hash: hash(parts.join('\n')), policyHash, paths, preview: parts.map((p,i)=>
-      paths[i].replaceAll('\\','/').startsWith('.memory/adr/')
-        ? paths[i].replaceAll('\\','/')+'\n[Document available on demand; accepted status does not verify its explanations.]'
-        : p.slice(0,900)).join('\n').slice(0,2400) };
+    return { hash: hash(parts.join('\n')), policyHash, paths, preview: MemoryStore.preview(paths.map((path,i)=>
+      path.replaceAll('\\','/').startsWith('.memory/adr/')
+        ? { path, nameOnly: true }
+        : { path, text: parts[i].slice(path.length+1) })) };
   }
   checkpoint(run: string) { return this.db.query('SELECT * FROM checkpoints WHERE run=?').get(run) as any; }
   latestCheckpoint() { return this.db.query('SELECT * FROM checkpoints ORDER BY time DESC LIMIT 1').get() as any; }

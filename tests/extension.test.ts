@@ -61,6 +61,29 @@ test('after an upgrade the block states once what changed, then stops repeating 
   } finally { f.clean(); }
 });
 
+// ЗАМЕРЕНО 2026-10-15 по базе HUICAD: 100 вставок блока с нулём записей. Пустой реестр ничем
+// не отличался от неудачного поиска, и выдержка рукописных документов выглядела как память.
+test('an empty registry is stated, and the statement goes away after the first commit',async()=>{
+  const f=fixture(); try {
+    const block=async()=>{
+      await f.handlers.before_agent_start({prompt:'Что известно о проекте?'},f.ctx);
+      const event=await f.handlers.context({messages:[{role:'user',content:'Что известно?'}]},f.ctx);
+      return event?.messages?.find((m:any)=>m.customType==='project-memory-context')?.content as string;
+    };
+    const before=await block();
+    expect(before).toContain('REGISTRY EMPTY');
+    expect(before).toContain('not saved memory');
+    // Сказано один раз в состоянии блока, а не вместо правил.
+    expect(before).toContain('project_memory commit');
+    const saved=await f.tools.project_memory.execute('id',{op:'commit',summary:'Решение сохранено',
+      changes:[{id:'stack',kind:'decision',status:'accepted',text:'UI на hui-vue',rationale:'Что известно',
+        expectedVersion:0,source:{origin:'user',quote:'Что известно о проекте?'}}]},null,null,f.ctx);
+    expect(saved.isError).not.toBe(true);
+    const after=await block();
+    expect(after).not.toContain('REGISTRY EMPTY');
+  } finally { f.clean(); }
+});
+
 // Свежий проект обновлением не является: сообщать об изменении правил там нечего.
 test('a project that starts on this version is never told about an upgrade',async()=>{
   const f=fixture(); try {
