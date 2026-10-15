@@ -6,13 +6,14 @@
 // прошлом ходу, и компакция могла перенести их в свою сводку. Без явной сводки изменений
 // модель продолжает работать по старым правилам, не зная, что они другие.
 // Соответствие package.json проверяет scripts/check-package.ts.
-export const PLUGIN_VERSION = '0.6.5';
+export const PLUGIN_VERSION = '0.6.6';
 
 // Одна строка на версию: только то, что меняет ПОВЕДЕНИЕ модели, уже видевшей прежний блок.
 // Не журнал изменений для человека — его место в README. Длина важна: строка попадает в блок.
 export const UPGRADE_NOTES: Record<string, string> = {
   '0.6.4': 'project memory can be switched off per project; publishing .memory/RECORDS.md is part of saving and not a reason to skip commit; durable facts must not stay only in hand-written .memory documents, and those documents are not re-verified with scripts',
   '0.6.5': 'an empty registry is now stated in this block instead of looking like a failed search',
+  '0.6.6': 'the canonical file list above is the complete, fixed set and needs no discovery in the plugin source; a freshly compacted history is announced once, and its summary is not evidence',
 };
 
 // Сравнение версий по числовым частям: 0.6.10 новее 0.6.9, строковое сравнение этого не даёт.

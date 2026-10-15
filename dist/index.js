@@ -130,10 +130,11 @@ function syncProjection(db, root) {
 }
 
 // src/memory/version.ts
-var PLUGIN_VERSION = "0.6.5";
+var PLUGIN_VERSION = "0.6.6";
 var UPGRADE_NOTES = {
   "0.6.4": "project memory can be switched off per project; publishing .memory/RECORDS.md is part of saving and not a reason to skip commit; durable facts must not stay only in hand-written .memory documents, and those documents are not re-verified with scripts",
-  "0.6.5": "an empty registry is now stated in this block instead of looking like a failed search"
+  "0.6.5": "an empty registry is now stated in this block instead of looking like a failed search",
+  "0.6.6": "the canonical file list above is the complete, fixed set and needs no discovery in the plugin source; a freshly compacted history is announced once, and its summary is not evidence"
 };
 function compareVersions(a, b) {
   const parts = (v) => v.split(".").map((n) => Number.parseInt(n, 10) || 0);
