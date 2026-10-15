@@ -9,7 +9,7 @@
 
 Keep project knowledge across sessions without running another model. Current facts live in readable files; evidence and revision history live in local SQLite. One OMP extension, no memory server, embeddings service, or background LLM.
 
-> **Preview v0.6.4 · Tested with OMP 18.1.5.** Upstream Pi is not supported. Memory makes project context easier to recover and inspect; it does not eliminate hallucinations.
+> **Preview v0.6.5 · Tested with OMP 18.1.5.** Upstream Pi is not supported. Memory makes project context easier to recover and inspect; it does not eliminate hallucinations.
 
 ## Why use it?
 
@@ -23,7 +23,17 @@ For developers working with an AI agent who want to stop explaining the same pro
 
 ## Install
 
-**New in v0.6.4:** `/huimem off` and `/huimem on` switch project memory off and back on, and the
+**New in v0.6.5:** a plugin upgrade now reaches a conversation that is already running. The
+database records which build wrote it, and after an upgrade the next memory block states once what
+changed in the memory rules, so a resumed session stops following the rules it saw on earlier turns.
+Settings keep keys this version does not know, so switching builds in either direction no longer
+erases them. Every canonical document now gets a share of the preview and is named even when its
+text does not fit — previously the last documents by sort order, including every ADR, disappeared
+from the block entirely. An empty registry is stated in one line instead of looking like a search
+that found nothing. `/huimem` shows the running build and what wrote the database; `/huimem doctor`
+reports a pending upgrade as info.
+
+**Since v0.6.4:** `/huimem off` and `/huimem on` switch project memory off and back on, and the
 commit rules now say plainly that durable facts belong in the registry rather than in hand-written
 `.memory` documents. **Since v0.6.3:** `/huimem doctor` reports stale or missing evidence, unavailable required records, ADRs without a basis section and task-file drift. It opens the existing database read-only and applies no repairs. See the [diagnostic guide](docs/GUIDE.md#doctor). Check results and the fixes that followed are in [validation](docs/VALIDATION.md).
 
@@ -36,7 +46,7 @@ You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model
 **Legacy ADRs:** `/huimem adr-audit` lists ADRs without a basis section that can be moved into the contract, and writes nothing. `/huimem adr-audit apply` inserts the user's quote from the registry as the basis and keeps every original line under an "Interpretation [?]" heading, after a byte-exact backup to `.memory/adr-backup/`. A document is migrated only when exactly one accepted decision names it by path, its rationale is an exact excerpt of the quote, and the quote is re-checked at migration time against the stored message, which must exist and belong to the user; otherwise it is reported as `UNVERIFIED` and nothing is written. v0.5.0 skipped that last check: if you ran `apply` with it on an edited, merged or restored database, compare each migrated basis with the original message. Linked conversation decisions show STALE afterwards. In a preregistered 20-vs-20 test the migrated documents had no outright misattribution, but a reliability gain over unmigrated ones was not statistically proven.
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.6.4
+omp plugin install github:Clientik/omp-huimem#v0.6.5
 ```
 
 > [!IMPORTANT]
@@ -58,7 +68,7 @@ After `init`, ask the agent to use the `initmem` skill to map the actual code. D
 **Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
 ```sh
-git clone --branch v0.6.4 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.6.5 https://github.com/Clientik/omp-huimem.git
 # Run from your working project, using the cloned repository's absolute path:
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```
