@@ -4,6 +4,7 @@ import { LIMITS, REQUIRED_MAX, readSettings, writeSettings, SETTINGS_PATH } from
 import { apply, audit } from '../memory/adr-audit';
 import { initProject } from '../memory/starter';
 import { diagnoseMemory, formatDoctor } from '../memory/doctor';
+import { PLUGIN_VERSION, upgradeNotes } from '../memory/version';
 
 // Два способа управления поверх одного ядра run(): экран настроек в интерактивном терминале
 // и подкоманды для RPC, -p и скриптов. Сигнатуры диалогов сверены 2026-09-14 с исходником
@@ -244,6 +245,9 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
     // Без аргументов — состояние.
     const on = deps.switchedOn(ctx);
     let counts = 'unavailable', projection='unavailable';
+    // Версия сборки видна всегда, даже при выключенной памяти: именно её сверяют после
+    // `omp plugin upgrade`, когда непонятно, подхватил ли открытый чат новый плагин.
+    let build = PLUGIN_VERSION;
     // Выключенная память не открывает базу: иначе /huimem сам создал бы её в выключенном проекте.
     if (!on) { counts = 'not read while memory is off'; projection = 'not read while memory is off'; }
     else try {
@@ -252,12 +256,18 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       const {projection: view,...metrics}=st;
       counts = Object.entries(metrics).map(([k, v]) => `${k}=${v}`).join(' · ');
       projection = view.state + (view.error ? ' — '+view.error : '');
+      const writer = s.writerVersion();
+      const pending = s.pendingUpgrade();
+      if (writer && writer !== PLUGIN_VERSION) build += ` · database last written by ${writer}`;
+      if (pending) build += ` · upgrade summary from ${pending.from} is delivered to the model on the next message`;
+      else if (writer === PLUGIN_VERSION) build += ' · database stamped by this version';
     } catch (e) { counts = 'ERROR: ' + String(e); }
     const a = on ? deps.architecture(ctx) : { configured: false, ok: false, failures: [] };
     const err = deps.health();
     return say(
       [
         'huimem project memory',
+        `Plugin:             ${build}`,
         `Memory:             ${on ? 'ON' : 'OFF (/huimem on to switch it back)'}`,
         `Commits:            ${deps.commitsPaused(ctx) ? 'PAUSED (this process)' : 'enabled'}`,
         'Requires OMP + a main model. No mnemopi, memory server or additional model required.',

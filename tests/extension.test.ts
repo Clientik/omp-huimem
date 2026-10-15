@@ -5,6 +5,7 @@ import { MemoryStore } from '../src/memory/core';
 import { LIMITS } from '../src/memory/settings';
 import installSource from '../src/extensions/project-memory';
 import installBundle from '../dist/index.js';
+import { PLUGIN_VERSION } from '../src/memory/version';
 
 describe('source adapter', () => adapterContract(installSource));
 describe('built bundle', () => adapterContract(installBundle));
@@ -27,6 +28,47 @@ test('a hand edit of a memory document is allowed but answered with a pointer to
     expect(await f.handlers.tool_result({toolName:'write',input:{path:'src/a.ts'},content,isError:false},f.ctx)).toBeUndefined();
     expect(await f.handlers.tool_result({toolName:'write',input:{path:'.memory/MEMORY.md'},content,isError:true},f.ctx)).toBeUndefined();
     expect(await f.handlers.tool_result({toolName:'read',input:{path:'.memory/MEMORY.md'},content,isError:false},f.ctx)).toBeUndefined();
+  } finally { f.clean(); }
+});
+
+// ПРИЧИНА 2026-10-15: OMP загружает расширение при старте процесса, поэтому `omp plugin upgrade`
+// не доходит до открытого разговора, а после перезапуска в контексте остаются прежние правила.
+// Сводка изменений доставляется один раз через блок — иначе модель работает по старым правилам.
+test('after an upgrade the block states once what changed, then stops repeating it',async()=>{
+  const f=fixture(); try {
+    // База уже существует и помечена прежней сборкой: именно это состояние даёт обновление.
+    const old=new MemoryStore(f.dir);
+    try { old.db.query("INSERT OR REPLACE INTO meta VALUES ('plugin','0.6.3')").run(); } finally { old.close(); }
+    const block=async()=>{
+      await f.handlers.before_agent_start({prompt:'Продолжаем работу'},f.ctx);
+      const event=await f.handlers.context({messages:[{role:'user',content:'Продолжаем работу'}]},f.ctx);
+      return event?.messages?.find((m:any)=>m.customType==='project-memory-context')?.content as string;
+    };
+    const first=await block();
+    expect(first).toContain('PLUGIN_UPGRADED 0.6.3 -> '+PLUGIN_VERSION);
+    expect(first).toContain('the rules in this block are the current ones');
+    // Сводка стоит в обязательной части блока, рядом с состоянием, а не после выдержек.
+    expect(first.indexOf('PLUGIN_UPGRADED')).toBeLessThan(first.indexOf('SOURCE ORDER'));
+    // Правила памяти никуда не делись: сводка добавлена, а не заменила их.
+    expect(first).toContain('project_memory commit');
+    // Второй ход — тишина: один раз сказано, дальше это шум на каждом ходу.
+    expect(await block()).not.toContain('PLUGIN_UPGRADED');
+    const s=new MemoryStore(f.dir);
+    try {
+      expect(s.writerVersion()).toBe(PLUGIN_VERSION);
+      expect(s.pendingUpgrade()).toBeNull();
+    } finally { s.close(); }
+  } finally { f.clean(); }
+});
+
+// Свежий проект обновлением не является: сообщать об изменении правил там нечего.
+test('a project that starts on this version is never told about an upgrade',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Начинаем'},f.ctx);
+    const event=await f.handlers.context({messages:[{role:'user',content:'Начинаем'}]},f.ctx);
+    const content=event?.messages?.find((m:any)=>m.customType==='project-memory-context')?.content as string;
+    expect(content).toContain('Memory ready');
+    expect(content).not.toContain('PLUGIN_UPGRADED');
   } finally { f.clean(); }
 });
 

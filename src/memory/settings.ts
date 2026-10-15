@@ -26,6 +26,21 @@ export const LIMITS = {
 const clamp = (v: unknown, l: { min: number; max: number; default: number }) =>
   typeof v === 'number' && Number.isFinite(v) ? Math.min(l.max, Math.max(l.min, Math.round(v))) : l.default;
 
+// Файл настроек переживает смену версии плагина в обе стороны. ПРИЧИНА 2026-10-15:
+// writeSettings пересобирал файл из известных полей, поэтому любая настройка, которой эта
+// версия не знает, молча исчезала — достаточно было один раз выполнить /huimem off сборкой
+// постарше, чтобы потерять настройки поновее. Незнакомые ключи сохраняются как есть.
+function readRaw(root: string): Record<string, unknown> {
+  try {
+    const raw = JSON.parse(readFileSync(resolve(root, SETTINGS_PATH), 'utf8'));
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  } catch { return {}; }
+}
+const KNOWN = ['enabled', 'recallBudget', 'injectionLimit', 'required'];
+export function unknownKeys(root: string): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(readRaw(root)).filter(([k]) => !KNOWN.includes(k)));
+}
+
 export function readSettings(root: string): Settings {
   try {
     const raw = JSON.parse(readFileSync(resolve(root, SETTINGS_PATH), 'utf8'));
@@ -51,6 +66,7 @@ export function writeSettings(root: string, next: Partial<Settings>): Settings {
     injectionLimit: clamp(merged.injectionLimit, LIMITS.injectionLimit),
     required: requiredIds(merged.required),
   };
-  writeFileSync(resolve(root, SETTINGS_PATH), JSON.stringify(value, null, 2) + '\n');
+  // Известные поля перезаписываются проверенными значениями, чужие остаются нетронутыми.
+  writeFileSync(resolve(root, SETTINGS_PATH), JSON.stringify({ ...unknownKeys(root), ...value }, null, 2) + '\n');
   return value;
 }

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { resolve, relative, isAbsolute } from 'node:path';
 import { projectionStatus, stageProjection, syncProjection } from './projection';
+import { PLUGIN_VERSION } from './version';
 
 export type Source = { episode?: string; path?: string; hash?: string; quote: string };
 export type RetrievalCandidate = { id:string; version:number; stale:boolean; score:number; pinned:boolean; selectionBasis:string[]; reason:string; supersededVersions:number };
@@ -117,6 +118,15 @@ export class MemoryStore {
         this.db.exec('CREATE TABLE IF NOT EXISTS checkpoint_archive(run TEXT, task TEXT, summary TEXT, time TEXT, branch TEXT, PRIMARY KEY(run,task))');
         if(version?.value==='1') stageProjection(this.db);
         this.db.query("INSERT OR REPLACE INTO meta VALUES ('schema','2')").run();
+        // Метка версии плагина. Схема остаётся 2: это не миграция данных, а след того, кто
+        // писал последним. Прежние версии ключ не читают и не ломаются от него.
+        const writer=this.db.query("SELECT value FROM meta WHERE key='plugin'").get() as any;
+        if(writer?.value!==PLUGIN_VERSION) {
+          // Переход помечается только для существующей базы: на пустой это не обновление,
+          // а первый запуск, и сводку изменений модели показывать не за что.
+          if(existing.length) this.db.query("INSERT OR REPLACE INTO meta VALUES ('upgradeFrom',?)").run(writer?.value ?? 'unknown');
+          this.db.query("INSERT OR REPLACE INTO meta VALUES ('plugin',?)").run(PLUGIN_VERSION);
+        }
       }).immediate();
       const check = this.db.query('PRAGMA quick_check').get() as any;
       if (check.quick_check !== 'ok') throw new Error('DATABASE_INTEGRITY');
@@ -499,6 +509,22 @@ export class MemoryStore {
     return {text:out,queryHash:hash(query),budget,candidates,counts,totalCandidates:records.length,detailsOmitted:Math.max(0,records.length-200),
       requiredOmissions:notShown,requiredCount:required.length,truncated:omitted || notShown.length>0};
   }
+  // Кто писал в эту базу последним. Читается и в режиме только для чтения: doctor
+  // сообщает расхождение, не прикасаясь к базе.
+  writerVersion(): string | undefined {
+    try { return (this.db.query("SELECT value FROM meta WHERE key='plugin'").get() as any)?.value; }
+    catch { return undefined; }
+  }
+  // Незавершённый переход: версия сменилась, но сводка изменений ещё не доставлена модели.
+  pendingUpgrade(): { from: string; to: string } | null {
+    try {
+      const row=this.db.query("SELECT value FROM meta WHERE key='upgradeFrom'").get() as any;
+      return row?.value ? { from: row.value as string, to: PLUGIN_VERSION } : null;
+    } catch { return null; }
+  }
+  // Вызывается только после того, как сводка действительно попала в блок: иначе переход
+  // потеряется молча, как это и происходило до 0.6.5.
+  clearUpgrade() { this.db.query("DELETE FROM meta WHERE key='upgradeFrom'").run(); }
   status() {
     return { records: (this.db.query('SELECT COUNT(DISTINCT id) n FROM versions').get() as any).n,
       episodes: (this.db.query('SELECT COUNT(*) n FROM episodes').get() as any).n,

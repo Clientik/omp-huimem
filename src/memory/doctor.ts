@@ -6,6 +6,7 @@ import {listAdrs} from './adr-audit';
 import {readBasis} from './provenance';
 import {projectionStatus} from './projection';
 import {readSettings,LIMITS} from './settings';
+import {PLUGIN_VERSION,compareVersions} from './version';
 
 const settingValue=(value:unknown) => typeof value==='number' && !Number.isFinite(value) ? String(value) : JSON.stringify(value);
 
@@ -54,6 +55,20 @@ export function diagnoseMemory(root:string):DoctorReport {
     try {
       store=attempt('database',()=>new MemoryStore(root,{readOnly:true}),'.memory/runtime/state.sqlite');
       if(store) {
+        // Какая сборка писала в базу последней. Расхождение с запущенной — это ещё не поломка:
+        // так выглядит момент после `omp plugin upgrade`, пока в проекте не прошёл обычный ход.
+        attempt('plugin version',()=>{
+          const writer=store!.writerVersion();
+          if(!writer) add('info','PLUGIN_VERSION_UNSTAMPED','.memory/runtime/state.sqlite',
+            `This database carries no plugin version mark; running ${PLUGIN_VERSION}.`,
+            'A version mark appears on the first normal OMP conversation after this upgrade. Nothing to repair.');
+          else if(compareVersions(writer,PLUGIN_VERSION)<0) add('info','PLUGIN_UPGRADE_PENDING','.memory/runtime/state.sqlite',
+            `This database was last written by ${writer}; running ${PLUGIN_VERSION}.`,
+            'Send one message in this project: the mark updates and the model is told once what changed in the memory rules.');
+          else if(compareVersions(writer,PLUGIN_VERSION)>0) add('info','PLUGIN_OLDER_THAN_DATABASE','.memory/runtime/state.sqlite',
+            `This database was last written by ${writer}, which is newer than the running ${PLUGIN_VERSION}.`,
+            'Data stays compatible while the schema matches; upgrade the plugin to get the behaviour that wrote it.');
+        },'.memory/runtime/state.sqlite');
         records=attempt('records',()=>store!.inspectRecords());
         if(records) attempt('episode evidence',()=>{
           for(const row of records!) {

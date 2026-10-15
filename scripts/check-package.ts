@@ -19,4 +19,11 @@ assert(readFileSync('starter/.omp/RULES.md', 'utf8').trim().length > 0, 'Starter
 // so an agent could run `make test`, get success, and report checks as passed.
 const make = readFileSync('starter/Makefile', 'utf8');
 assert(make.includes('exit 2'), 'Unconfigured make targets must fail, not exit 0');
+// Версия в рантайме помечает базу и управляет сводкой изменений для модели. Расхождение с
+// манифестом означало бы, что установленный плагин помечает базу чужим номером.
+const runtime = readFileSync('src/memory/version.ts', 'utf8');
+const stamped = runtime.match(/PLUGIN_VERSION = '([^']+)'/)?.[1];
+assert.equal(stamped, manifest.version, 'PLUGIN_VERSION must match package.json version');
+const notes = runtime.match(/UPGRADE_NOTES[^{]*\{([\s\S]*?)\};/)?.[1] ?? '';
+assert(notes.includes(`'${manifest.version}':`), 'UPGRADE_NOTES must describe the current version');
 console.log('Package manifest, seven skills, starter and dependency checks passed.');
