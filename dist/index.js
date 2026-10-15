@@ -2105,6 +2105,7 @@ Usage: /huimem ${verb} <id>`);
     return say([
       "huimem project memory",
       `Plugin:             ${build}`,
+      `Effort:             ${deps.thinkingLevel() ?? "not reported by this OMP build"}`,
       `Memory:             ${on ? "ON" : "OFF (/huimem on to switch it back)"}`,
       `Commits:            ${deps.commitsPaused(ctx) ? "PAUSED (this process)" : "enabled"}`,
       "Requires OMP + a main model. No mnemopi, memory server or additional model required.",
@@ -2749,6 +2750,13 @@ Do not claim memory or work was verified.`;
     architecture: (ctx) => check(ctx),
     health: () => error,
     commitsPaused,
+    thinkingLevel: () => {
+      try {
+        return typeof pi.getThinkingLevel === "function" ? pi.getThinkingLevel() : undefined;
+      } catch {
+        return;
+      }
+    },
     setPaused: (ctx, value) => {
       if (value)
         pausedProjects.add(resolve9(ctx.cwd));

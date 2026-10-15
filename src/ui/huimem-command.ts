@@ -24,6 +24,10 @@ export type CommandDeps = {
   health: () => string;
   commitsPaused: (ctx: any) => boolean;
   setPaused: (ctx: any, value: boolean) => void;
+  // Только чтение. Уровень размышления принадлежит OMP; память его показывает, но не меняет:
+  // ЗАМЕРЕНО 2026-10-14 в HUICAD — проектный autoThinkingMaxEffort: high не перекрыл глобальный
+  // max, и расхождение пришлось искать по файлам сессий. Метода может не быть в старом OMP.
+  thinkingLevel: () => string | undefined;
 };
 
 const HELP = [
@@ -268,6 +272,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       [
         'huimem project memory',
         `Plugin:             ${build}`,
+        `Effort:             ${deps.thinkingLevel() ?? 'not reported by this OMP build'}`,
         `Memory:             ${on ? 'ON' : 'OFF (/huimem on to switch it back)'}`,
         `Commits:            ${deps.commitsPaused(ctx) ? 'PAUSED (this process)' : 'enabled'}`,
         'Requires OMP + a main model. No mnemopi, memory server or additional model required.',

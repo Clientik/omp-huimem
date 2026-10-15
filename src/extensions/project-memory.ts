@@ -383,6 +383,9 @@ export default function install(pi: ExtensionAPI) {
     architecture: (ctx: any) => check(ctx),
     health: () => error,
     commitsPaused,
+    // Показываем то, что сообщает OMP, и ничего не переключаем: смена модели или усилия из плагина
+    // памяти была бы незаметным вмешательством в чужую работу. Старые сборки метода не имеют.
+    thinkingLevel: () => { try { return typeof pi.getThinkingLevel === 'function' ? pi.getThinkingLevel() : undefined; } catch { return undefined; } },
     setPaused: (ctx: any, value: boolean) => {
       if(value) pausedProjects.add(resolve(ctx.cwd)); else pausedProjects.delete(resolve(ctx.cwd));
     },

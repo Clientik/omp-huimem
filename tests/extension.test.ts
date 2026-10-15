@@ -61,6 +61,23 @@ test('after an upgrade the block states once what changed, then stops repeating 
   } finally { f.clean(); }
 });
 
+// Расхождение «в проекте high, по факту max» пришлось искать по файлам сессий. Память уровень
+// показывает, но не меняет: переключать модель или усилие из плагина памяти — вмешательство,
+// которого пользователь не просил.
+test('/huimem reports the thinking level and survives an OMP build without that method',async()=>{
+  const f=fixture(); try {
+    await f.commands.huimem.handler('',f.ctx);
+    expect(String(f.notices.at(-1)?.content)).toContain('Effort:             high');
+    f.omp.thinking='max';
+    await f.commands.huimem.handler('',f.ctx);
+    expect(String(f.notices.at(-1)?.content)).toContain('Effort:             max');
+    // Старая сборка OMP: метода нет — строка остаётся, но честно говорит, что уровень не сообщён.
+    f.omp.hasMethod=false;
+    await f.commands.huimem.handler('',f.ctx);
+    expect(String(f.notices.at(-1)?.content)).toContain('not reported by this OMP build');
+  } finally { f.clean(); }
+});
+
 // Компакция заменяет историю пересказом, а пересказ правила блока доказательством не считают.
 // Сказать об этом можно только один раз: безусловное требование сохранять уже давало 89 чекпоинтов
 // за 300 секунд в одном запросе (см. commitRules), поэтому принуждения здесь нет.
@@ -571,14 +588,17 @@ function fixture() {
   writeFileSync(join(dir, '.memory/MEMORY.md'), '# Память проекта');
   const handlers: any = {}, tools: any = {}, notices: any[] = [], commands: any = {};
   const chain: any = new Proxy(() => chain, { get: () => chain });
+  // Уровень размышления сообщает OMP; в старых сборках метода нет, поэтому он подменяем.
+  const omp: any = { thinking: 'high' as string | undefined, hasMethod: true };
   const pi: any = { zod: chain, on: (n: string, fn: any) => handlers[n] = fn,
     registerTool: (t: any) => tools[t.name] = t,
     registerCommand: (n: string, d: any) => commands[n] = d,
     sendMessage: (m: any) => notices.push(m) };
+  Object.defineProperty(pi, 'getThinkingLevel', { get: () => omp.hasMethod ? () => omp.thinking : undefined });
   const ctx: any = { cwd: dir, hasUI: true, ui: { notify: (s: string) => notices.push(s) },
     sessionManager: { getSessionId: () => 'session-test' } };
   install(pi);
-  return { dir, handlers, tools, ctx, notices, commands, clean() { handlers.session_shutdown?.({},ctx); rmSync(dir,{recursive:true,force:true}); } };
+  return { dir, handlers, tools, ctx, notices, commands, omp, clean() { handlers.session_shutdown?.({},ctx); rmSync(dir,{recursive:true,force:true}); } };
 }
 test('automatic prompt capture, recall, stop checkpoint, bounded retry', async () => {
   const f = fixture(); try {
