@@ -52,13 +52,19 @@ export default function install(pi: ExtensionAPI) {
   // История только что свернулась. Признак живёт в процессе, а не в базе: он относится к этому
   // разговору, а не к проекту. Снимается, как только сказан один раз.
   let compacted = false;
+  // Про ненастроенную архитектуру сказано один раз за процесс: это не событие хода.
+  let saidUnconfigured = false;
   let policyAtStart: string | undefined;
   const recentSources: { episode: string; role: string }[] = [];
-  function notify(ctx: any, message: string) {
+  // ПРИЧИНА 2026-10-17: уровень был один — 'error', поэтому «ход что-то менял, а чекпоинта нет»
+  // выглядело для пользователя так же, как повреждённая база, и он спрашивал, что за ошибка.
+  // Сигнатура OMP: notify(message, 'info' | 'warning' | 'error'). Отказ хранилища остаётся
+  // ошибкой; совет — предупреждение; ненастроенная проверка — сведение.
+  function notify(ctx: any, message: string, level: 'info' | 'warning' | 'error' = 'warning') {
     if (lastNotice === message) return;
     lastNotice = message;
-    console.error('[project-memory] ' + message);
-    if (ctx.hasUI) ctx.ui.notify(message, 'error');
+    (level === 'error' ? console.error : level === 'warning' ? console.warn : console.info)('[project-memory] ' + message);
+    if (ctx.hasUI) ctx.ui.notify(message, level);
   }
   function get(ctx: any) {
     if (!store || root !== ctx.cwd) {
@@ -68,11 +74,11 @@ export default function install(pi: ExtensionAPI) {
         const view=store.status().projection;
         if(view.state==='pending' || view.state==='conflict') notify(ctx,'READABLE_MEMORY_'+view.state.toUpperCase()+': '+(view.error ?? 'Use /huimem sync.'));
       }
-      catch (e) { error = 'MEMORY_ERROR: ' + String(e); notify(ctx,error); throw e; }
+      catch (e) { error = 'MEMORY_ERROR: ' + String(e); notify(ctx,error,'error'); throw e; }
     }
     return store;
   }
-  function healthFailure(ctx: any, e: unknown) { error = 'MEMORY_ERROR: ' + String(e); notify(ctx,error); }
+  function healthFailure(ctx: any, e: unknown) { error = 'MEMORY_ERROR: ' + String(e); notify(ctx,error,'error'); }
   function key() { return `${run}:${generation}`; }
   function policyText(ctx: any) {
     try { return readFileSync(resolve(ctx.cwd,'.memory/architecture.json'),'utf8'); }
@@ -267,15 +273,26 @@ export default function install(pi: ExtensionAPI) {
       const changedSomething = generation > 0;
       const missing = changedSomething && !commitsPaused(ctx) && !s.checkpoint(key());
       if (!missing && !(arch.configured && !arch.ok)) {
-        if (!arch.configured) notify(ctx, 'ARCHITECTURE_UNCONFIGURED: architectural conformance is not verified.');
+        // Ненастроенная проверка — состояние проекта, а не событие конца хода. Говорится
+        // один раз на процесс и уровнем «сведение»: на каждом ходу это был шум со словом Error.
+        if (!arch.configured && !saidUnconfigured) {
+          saidUnconfigured = true;
+          notify(ctx, 'ARCHITECTURE_UNCONFIGURED: architectural conformance is not verified in this project (/huimem arch).', 'info');
+        }
         return;
       }
-      const reason = missing ? 'CHECKPOINT_MISSING: use project_memory commit before completing.' : 'ARCHITECTURE_FAILED: ' + arch.failures.join('; ');
       // ПРИНУДИТЕЛЬНОЕ ПРОДОЛЖЕНИЕ УБРАНО. `continue: true` запускал новый ход,
       // тот заново получал указание записать чекпоинт, и цикл не сходился.
       // Отсутствие чекпоинта теперь сообщается, но работу не блокирует:
       // видимое предупреждение честнее бесконечной попытки исправить.
-      notify(ctx, reason + ' No automatic continuation is scheduled.');
+      // ПРИЧИНА 2026-10-17: текст начинался со «CHECKPOINT_MISSING: use ... before completing»
+      // и выводился уровнем error, поэтому читался как сбой — пользователь спросил, что это за
+      // ошибка. Ничего не сломалось: ход завершён, ничего не потеряно, повтор не назначается.
+      notify(ctx, missing
+        ? 'CHECKPOINT_MISSING: this turn changed something and nothing was saved to the registry. '
+          + 'Nothing failed and nothing is lost; no automatic continuation is scheduled. '
+          + 'Use project_memory commit if anything durable changed.'
+        : 'ARCHITECTURE_FAILED: ' + arch.failures.join('; ') + ' No automatic continuation is scheduled.');
     } catch (e) { healthFailure(ctx,e); }
   });
   pi.on('session.compacting', (_event: any, ctx) => {

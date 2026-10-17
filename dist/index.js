@@ -2438,15 +2438,16 @@ function install(pi) {
   let store, root = "", error = "", run = "", generation = 0;
   let query = "", sourceEpisode = "", lastNotice = "", active = false;
   let compacted = false;
+  let saidUnconfigured = false;
   let policyAtStart;
   const recentSources = [];
-  function notify(ctx, message) {
+  function notify(ctx, message, level = "warning") {
     if (lastNotice === message)
       return;
     lastNotice = message;
-    console.error("[project-memory] " + message);
+    (level === "error" ? console.error : level === "warning" ? console.warn : console.info)("[project-memory] " + message);
     if (ctx.hasUI)
-      ctx.ui.notify(message, "error");
+      ctx.ui.notify(message, level);
   }
   function get(ctx) {
     if (!store || root !== ctx.cwd) {
@@ -2461,7 +2462,7 @@ function install(pi) {
           notify(ctx, "READABLE_MEMORY_" + view.state.toUpperCase() + ": " + (view.error ?? "Use /huimem sync."));
       } catch (e) {
         error = "MEMORY_ERROR: " + String(e);
-        notify(ctx, error);
+        notify(ctx, error, "error");
         throw e;
       }
     }
@@ -2469,7 +2470,7 @@ function install(pi) {
   }
   function healthFailure(ctx, e) {
     error = "MEMORY_ERROR: " + String(e);
-    notify(ctx, error);
+    notify(ctx, error, "error");
   }
   function key() {
     return `${run}:${generation}`;
@@ -2689,12 +2690,13 @@ Do not claim memory or work was verified.`;
       const changedSomething = generation > 0;
       const missing = changedSomething && !commitsPaused(ctx) && !s.checkpoint(key());
       if (!missing && !(arch.configured && !arch.ok)) {
-        if (!arch.configured)
-          notify(ctx, "ARCHITECTURE_UNCONFIGURED: architectural conformance is not verified.");
+        if (!arch.configured && !saidUnconfigured) {
+          saidUnconfigured = true;
+          notify(ctx, "ARCHITECTURE_UNCONFIGURED: architectural conformance is not verified in this project (/huimem arch).", "info");
+        }
         return;
       }
-      const reason = missing ? "CHECKPOINT_MISSING: use project_memory commit before completing." : "ARCHITECTURE_FAILED: " + arch.failures.join("; ");
-      notify(ctx, reason + " No automatic continuation is scheduled.");
+      notify(ctx, missing ? "CHECKPOINT_MISSING: this turn changed something and nothing was saved to the registry. " + "Nothing failed and nothing is lost; no automatic continuation is scheduled. " + "Use project_memory commit if anything durable changed." : "ARCHITECTURE_FAILED: " + arch.failures.join("; ") + " No automatic continuation is scheduled.");
     } catch (e) {
       healthFailure(ctx, e);
     }

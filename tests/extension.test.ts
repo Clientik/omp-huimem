@@ -108,6 +108,38 @@ test('the commit contract is stated in the tool, and the block keeps policy with
   } finally { f.clean(); }
 });
 
+// ПРИЧИНА 2026-10-17: все уведомления уходили уровнем 'error', и пользователь спросил, что за
+// ошибка «CHECKPOINT_MISSING». Ничего не сломалось: ход завершён, ничего не потеряно, повтор не
+// назначается. Уровни теперь по смыслу, и отказ хранилища отличается от совета.
+test('a notice carries the level its meaning deserves',async()=>{
+  const f=fixture(); try {
+    const level=(part:string)=>f.levels.filter(l=>l.message.includes(part)).map(l=>l.level);
+    await f.handlers.before_agent_start({prompt:'Работаем'},f.ctx);
+    // Ход без изменений молчит; ненастроенная архитектура — сведение, и один раз на процесс.
+    await f.handlers.session_stop({},f.ctx);
+    expect(level('ARCHITECTURE_UNCONFIGURED')).toEqual(['info']);
+    await f.handlers.before_agent_start({prompt:'И ещё раз'},f.ctx);
+    await f.handlers.session_stop({},f.ctx);
+    expect(level('ARCHITECTURE_UNCONFIGURED')).toEqual(['info']);
+    // Ход что-то менял, чекпоинта нет: это предупреждение и прямо сказано, что это не сбой.
+    await f.handlers.tool_result({toolName:'write',isError:false},f.ctx);
+    await f.handlers.session_stop({},f.ctx);
+    expect(level('CHECKPOINT_MISSING')).toEqual(['warning']);
+    const said=f.notices.map(String).find(x=>x.includes('CHECKPOINT_MISSING'))!;
+    expect(said).toContain('Nothing failed and nothing is lost');
+    expect(said).toContain('no automatic continuation is scheduled');
+  } finally { f.clean(); }
+});
+
+test('a storage failure is still an error',async()=>{
+  const f=fixture(); try {
+    mkdirSync(join(f.dir,'.memory/runtime'),{recursive:true});
+    writeFileSync(join(f.dir,'.memory/runtime/state.sqlite'),'corrupt db');
+    await f.handlers.before_agent_start({prompt:'Работаем'},f.ctx);
+    expect(f.levels.filter(l=>l.message.includes('MEMORY_ERROR')).map(l=>l.level)).toContain('error');
+  } finally { f.clean(); }
+});
+
 // ЗАМЕРЕНО 2026-10-17 (audit/huicad-after-0.6.6): замечание doctor TASKS_NOT_IN_REGISTRY —
 // единственное, что за полтора дня привело к записи в реестр, и запустил его пользователь.
 // Своей операции у модели не было, поэтому она четыре раза импортировала doctor.ts через bun -e.
@@ -645,6 +677,9 @@ function fixture() {
   mkdirSync(join(dir, '.memory'), { recursive: true });
   writeFileSync(join(dir, '.memory/MEMORY.md'), '# Память проекта');
   const handlers: any = {}, tools: any = {}, notices: any[] = [], commands: any = {};
+  // Уровень уведомления запоминается отдельно: сообщения проверяются строками, а уровень —
+  // по этому списку. ПРИЧИНА 2026-10-17: всё шло уровнем error, и совет выглядел как сбой.
+  const levels: { message: string; level: string }[] = [];
   const chain: any = new Proxy(() => chain, { get: () => chain });
   // Уровень размышления сообщает OMP; в старых сборках метода нет, поэтому он подменяем.
   const omp: any = { thinking: 'high' as string | undefined, hasMethod: true };
@@ -653,10 +688,11 @@ function fixture() {
     registerCommand: (n: string, d: any) => commands[n] = d,
     sendMessage: (m: any) => notices.push(m) };
   Object.defineProperty(pi, 'getThinkingLevel', { get: () => omp.hasMethod ? () => omp.thinking : undefined });
-  const ctx: any = { cwd: dir, hasUI: true, ui: { notify: (s: string) => notices.push(s) },
+  const ctx: any = { cwd: dir, hasUI: true,
+    ui: { notify: (s: string, level = 'unset') => { notices.push(s); levels.push({ message: s, level }); } },
     sessionManager: { getSessionId: () => 'session-test' } };
   install(pi);
-  return { dir, handlers, tools, ctx, notices, commands, omp, clean() { handlers.session_shutdown?.({},ctx); rmSync(dir,{recursive:true,force:true}); } };
+  return { dir, handlers, tools, ctx, notices, levels, commands, omp, clean() { handlers.session_shutdown?.({},ctx); rmSync(dir,{recursive:true,force:true}); } };
 }
 test('automatic prompt capture, recall, stop checkpoint, bounded retry', async () => {
   const f = fixture(); try {
