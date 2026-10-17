@@ -223,13 +223,15 @@ test('the block states that the canonical file set is complete and fixed',async(
     await f.handlers.before_agent_start({prompt:'Где память проекта?'},f.ctx);
     const event=await f.handlers.context({messages:[{role:'user',content:'Где память?'}]},f.ctx);
     const block=event?.messages?.find((m:any)=>m.customType==='project-memory-context')?.content as string;
-    expect(block).toContain('complete set, fixed by this plugin');
+    expect(block).toContain('the complete set for this project');
     expect(block).toContain('nothing else is project memory');
     // Генерируемый вид назван отдельно: его искали в наборе и правили руками.
     expect(block).toContain('RECORDS.md is generated from the registry');
-    // Сами файлы по-прежнему перечислены поимённо.
-    expect(block).toContain('.memory/MEMORY.md');
-    expect(block).toContain('.memory/todo.json');
+    // Сами файлы по-прежнему перечислены поимённо, теперь с назначением и размером,
+    // и прямо сказано, что это список, а не содержимое.
+    expect(block).toContain('.memory/MEMORY.md — facts and constraints');
+    expect(block).toContain('.memory/todo.json — task state');
+    expect(block).toContain('This is a list, not their content');
   } finally { f.clean(); }
 });
 
@@ -645,14 +647,21 @@ test('file quote gets a verified hash; forged user quotes still fail', async () 
   } finally {f.clean();}
 });
 
-test('canonical preview is injected with a bounded total context', async () => {
+// ЗАМЕНА ВЫДЕРЖКИ СПИСКОМ 2026-10-17. Прежде здесь ожидалась первая строка MEMORY.md внутри
+// блока: содержимое файлов приходило каждым ходом и стоило 2400 символов из 8000, при том что
+// заголовок велит прочитать файл перед тем, как опереться, и модель их и так читала (51 раз за
+// живую сессию). Блок называет файл и его размер; содержимое — по чтению.
+test('the canonical section names files and sizes without carrying their content', async () => {
   const f=fixture(); const {writeFileSync}=await import('node:fs');
   try {
     await f.handlers.before_agent_start({prompt:'current provider'},f.ctx);
     writeFileSync(join(f.dir,'.memory/MEMORY.md'),'Provider YooKassa\n'+'x'.repeat(20000));
     const result=await f.handlers.context({messages:[]},f.ctx);
-    expect(result.messages[0].content).toContain('Provider YooKassa');
-    expect(result.messages[0].content.length).toBeLessThanOrEqual(8000);
+    const block=result.messages[0].content as string;
+    expect(block).toContain('.memory/MEMORY.md — facts and constraints · 20018 chars');
+    expect(block).not.toContain('Provider YooKassa');
+    expect(block).not.toContain('xxxxxxxxxx');
+    expect(block.length).toBeLessThanOrEqual(8000);
   } finally {f.clean();}
 });
 test('context includes a fitting record after an oversized candidate and reports omissions',async()=>{
@@ -999,7 +1008,7 @@ test('/huimem clamps an out-of-range limit and says so instead of failing quietl
     expect(read(f.dir).recallBudget).toBe(12000);
     expect(String(f.notices.at(-1)?.content ?? '')).toContain('12000');
     await cmd.handler('reset', f.ctx);
-    expect(read(f.dir).recallBudget).toBe(3200);
+    expect(read(f.dir).recallBudget).toBe(LIMITS.recallBudget.default);
     await cmd.handler('нетакой', f.ctx);
     expect(String(f.notices.at(-1)?.content ?? '')).toContain('Unknown subcommand');
   } finally { f.clean(); }
@@ -1057,6 +1066,17 @@ test('/huimem require marks only existing active records, and the model cannot e
 test('configured injection limit actually bounds the injected block', async () => {
   const f = fixture(); try {
     writeFileSync(join(f.dir, '.memory/MEMORY.md'), '# Память проекта' + ' факт проекта.'.repeat(600));
+    // Блок наполняют ЗАПИСИ, а не выдержка документов: с 2026-10-17 канонические файлы
+    // перечисляются списком, и размер MEMORY.md на блок больше не влияет.
+    const seed = new MemoryStore(f.dir);
+    try {
+      for (let i = 0; i < 6; i++) {
+        const text = 'факт проекта номер ' + i + ': ' + 'подробность. '.repeat(30);
+        const episode = seed.capture('seed', 'user', text);
+        seed.commit('seed-' + i, [{ id: 'fact-' + i, kind: 'fact', status: 'active', expectedVersion: 0,
+          text, source: { episode, quote: text } }], 'seeded ' + i);
+      }
+    } finally { seed.close(); }
     await f.handlers.before_agent_start({ prompt: 'факт' }, f.ctx);
     const wide: any = await f.handlers.context({ messages: [] }, f.ctx);
     const wideLen = wide.messages.find((m: any) => m.customType === 'project-memory-context').content.length;
@@ -1082,7 +1102,7 @@ test('a corrupt settings file falls back to defaults without breaking the turn',
     const out: any = await f.handlers.context({ messages: [] }, f.ctx);
     expect(JSON.stringify(out)).toContain('Memory ready');
     await f.commands.huimem.handler('', f.ctx);
-    expect(String(f.notices.at(-1)?.content ?? '')).toContain('3200');
+    expect(String(f.notices.at(-1)?.content ?? '')).toContain(String(LIMITS.recallBudget.default));
   } finally { f.clean(); }
 });
 
@@ -1108,7 +1128,9 @@ test('the block keeps IDs, full sources and templates, with minute checkpoint ti
     expect(text).not.toContain('sourceEpisode=');
     expect(text).toMatch(/^Memory ready\n/);
     expect(text).not.toContain('Recent assistant sources');
-    expect(text).toContain('Формат факта:');
+    // Канонические файлы названы списком с размерами; их содержимое в блок не идёт (2026-10-17).
+    expect(text).toContain('.memory/MEMORY.md — facts and constraints · ');
+    expect(text).not.toContain('Формат факта:');
     const rows = text.split('\n').filter(l => l.startsWith('{"id"')).map(l => JSON.parse(l));
     expect(rows.find(r => r.id === 'task-export').source.episode).toBe(te);
     expect(rows.find(r => r.id === 'port').source.hash).toMatch(/^[0-9a-f]{64}$/);

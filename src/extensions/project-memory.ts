@@ -161,7 +161,7 @@ export default function install(pi: ExtensionAPI) {
       let empty = '';
       try {
         if (s.status().records === 0) empty = 'REGISTRY EMPTY: nothing is saved in this project yet; '
-          + 'the canonical preview below is hand-written documents, not saved memory.\n';
+          + 'the canonical files listed below are hand-written documents, not saved memory.\n';
       } catch (e) { healthFailure(ctx, e); }
       // Отметка о свёрнутой истории. Компакция заменяет ход разговора пересказом, а правила блока
       // прямо говорят, что сводка — не доказательство. Это тот момент, когда сохранять уже поздно,
@@ -204,7 +204,7 @@ export default function install(pi: ExtensionAPI) {
         // каноническими, и пошла за ответом в ИСХОДНИКИ ПЛАГИНА — grep по ~/.omp/plugins, glob по
         // src/**/*.ts, core.ts прочитан три раза, doctor.ts дважды. Блок перечислял файлы, но нигде
         // не говорил, что это полный и фиксированный набор, поэтому перечень читался как пример.
-        preview: `Canonical files — complete set, fixed by this plugin; nothing else is project memory, and .memory/RECORDS.md is generated from the registry rather than part of it. Preview is TRUNCATED; read a file before relying on it:\n${authority.preview}\n`,
+        preview: `Canonical files — the complete set for this project; nothing else is project memory, and .memory/RECORDS.md is generated from the registry rather than part of it. This is a list, not their content: read a file before relying on it.\n${authority.listing}`,
         // Путь origin="episode" для выводов ассистента остаётся: ID нужны модели, роль всегда assistant.
         recent: recentSources.length ? `Recent assistant sources (inferences only; episode IDs): ${recentSources.map(r => r.episode).join(', ')}\n` : '',
         // Без чекпоинтов с задачей строка прежняя. С ними шаг каждой задачи подписан её ID,

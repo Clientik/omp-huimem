@@ -256,62 +256,54 @@ export class MemoryStore {
     return c.kind==='fact' && c.source.path && c.sourcePolicyHash
       ? c.sourcePolicyHash!==authority.policyHash : c.authorityHash!==authority.hash;
   }
-  // ЗАМЕРЕНО 2026-10-15 на настоящем проекте HUICAD: выдержка собиралась встык и резалась
-  // одним срезом в 2400 символов, поэтому последние по порядку файлы исчезали целиком —
-  // три ADR не упоминались вовсе, и модель не знала, что они существуют, а todo.json
-  // обрывался посреди задачи. Бюджет тот же, но каждый канонический файл назван, и место
-  // делится между ними, а не достаётся первым по алфавиту.
-  static preview(items: { path: string; text?: string; nameOnly?: boolean }[], budget = 2400): string {
-    const line = (i: { path: string }) => i.path.replaceAll('\\', '/') + '\n';
-    const names = items.filter(i => i.nameOnly), texts = items.filter(i => !i.nameOnly);
-    // ADR перечисляются именами под одной общей пометкой: прежде каждый нёс свою копию той же
-    // фразы по 86 символов, и на три документа уходило место, которого не хватало им самим.
-    const note = names.length ? '[Documents listed above without text: read on demand; accepted status does not verify their explanations.]' : '';
-    const missing = '[Not shown here; read the file.]';
-    const want = (i: { path: string; text?: string }) => Math.min((i.text ?? '').length, 900);
-    const body = (take: Record<string, number>) =>
-      // Короткий документ показывается целиком: порог в 40 символов относится к доле от
-      // длинного файла, а не к файлу, который и так весь короче порога.
-      [...texts.map(i => line(i) + ((take[i.path] ?? 0) >= Math.min(want(i), 40) && (take[i.path] ?? 0) > 0
-        ? (i.text ?? '').slice(0, take[i.path]) : missing)),
-       ...(names.length ? [names.map(line).join('') + note] : [])].join('\n');
-    const take: Record<string, number> = {};
-    let rest = budget - body(take).length;
-    // Две раздачи: сначала равная доля, затем остаток от коротких файлов — длинным.
-    for (const pass of [0, 1]) {
-      const need = texts.filter(i => (take[i.path] ?? 0) < want(i));
-      if (!need.length || rest <= 0) break;
-      const share = Math.floor(rest / need.length);
-      if (share <= 0) break;
-      for (const item of need) {
-        // Пока доля меньше строки, место занимает пометка об отсутствии — её и возвращаем в общий счёт.
-        const freed = (take[item.path] ?? 0) === 0 && share >= 40 ? missing.length : 0;
-        const add = Math.min(want(item) - (take[item.path] ?? 0), pass === 0 ? share + freed : rest + freed);
-        take[item.path] = (take[item.path] ?? 0) + add; rest -= add - freed;
-      }
-    }
-    let out = body(take);
-    // Страховка от перебора: имена и пометки обязательны, лишнее снимается с самой большой доли.
-    for (let guard = 0; out.length > budget && guard < texts.length; guard++) {
-      const widest = texts.reduce((a, b) => (take[b.path] ?? 0) > (take[a.path] ?? 0) ? b : a);
-      take[widest.path] = Math.max(0, (take[widest.path] ?? 0) - (out.length - budget));
-      out = body(take);
+  // ЗАМЕРЕНО 2026-10-17 на живом HUICAD (audit/huicad-after-0.6.6): выдержка канонических файлов
+  // занимала 2400 из 8000 символов блока, и при 14 записях блок упирался в предел — реестр и
+  // прошлый чекпоинт уже вытеснялись. При этом сами файлы модель всё равно читала: 32 чтения на
+  // первом отрезке, 4 на втором, 15 на третьем, — ведь заголовок прямо велит прочитать файл
+  // перед тем, как на него опереться. Платили за обрезанную голову документа. Теперь — список:
+  // что существует, зачем он и какого размера. Существование файлов сохранено (именно его
+  // потеря в 0.6.5 скрывала три ADR), а освободившееся место уходит записям с источниками.
+  static readonly PURPOSE: Record<string, string> = {
+    '.memory/MEMORY.md': 'facts and constraints',
+    '.memory/PROJECT.md': 'project map',
+    '.memory/todo.json': 'task state',
+    '.memory/architecture.json': 'architecture rules',
+  };
+  static listing(items: { path: string; size?: number; label?: string }[], budget = 1200): string {
+    const show = (i: { path: string; size?: number; label?: string }) => {
+      const path = i.path.replaceAll('\\', '/');
+      const label = i.label ?? MemoryStore.PURPOSE[path];
+      return path + (label ? ' — ' + label : '') + ' · ' + (i.size === undefined ? 'MISSING' : i.size + ' chars') + '\n';
+    };
+    const adr = (i: { path: string }) => i.path.replaceAll('\\', '/').startsWith('.memory/adr/');
+    const note = 'Accepted status in these documents does not verify their explanations.\n';
+    const join = (rows: typeof items, folded: string) => rows.map(show).join('') + folded + note;
+    const whole = join(items, '');
+    if (whole.length <= budget) return whole;
+    // Сначала сворачиваются ADR: их имена нумерованы, и о них достаточно знать, сколько их.
+    const rest = items.filter(i => !adr(i)), adrs = items.filter(adr);
+    const folded = adrs.length ? `${adrs.length} ADR document(s) in .memory/adr — read on demand.\n` : '';
+    let out = join(rest, folded);
+    // Если не влезает и свёрнутым, список укорачивается с конца, а остаток назван числом.
+    for (let keep = rest.length - 1; out.length > budget && keep >= 0; keep--) {
+      out = join(rest.slice(0, keep) as typeof items,
+        `${rest.length - keep} more canonical document(s) not listed here.\n` + folded);
     }
     return out;
   }
-  authority() {
+  authority(documents: string[] = []) {
     const paths = ['.memory/MEMORY.md','.memory/todo.json','.memory/PROJECT.md','.memory/architecture.json',
-      ...new Bun.Glob('.memory/adr/**/*.md').scanSync({cwd:this.root,onlyFiles:true,followSymlinks:false})].sort();
-    const parts: string[] = [];
+      ...new Bun.Glob('.memory/adr/**/*.md').scanSync({cwd:this.root,onlyFiles:true,followSymlinks:false}),
+      ...documents].sort();
+    const parts: string[] = [], sizes: (number | undefined)[] = [];
     for (const path of paths) {
-      try { parts.push(path + '\n' + sourceText(this.root,path)); }
-      catch(e: any) { if(e.code === 'ENOENT') parts.push(path+'\n[MISSING]'); else throw e; }
+      try { const text=sourceText(this.root,path); parts.push(path + '\n' + text); sizes.push(text.length); }
+      catch(e: any) { if(e.code === 'ENOENT') { parts.push(path+'\n[MISSING]'); sizes.push(undefined); } else throw e; }
     }
     const policyHash=hash(parts.filter((_,i)=>['.memory/MEMORY.md','.memory/PROJECT.md','.memory/architecture.json'].includes(paths[i])).join('\n'));
-    return { hash: hash(parts.join('\n')), policyHash, paths, preview: MemoryStore.preview(paths.map((path,i)=>
-      path.replaceAll('\\','/').startsWith('.memory/adr/')
-        ? { path, nameOnly: true }
-        : { path, text: parts[i].slice(path.length+1) })) };
+    return { hash: hash(parts.join('\n')), policyHash, paths,
+      listing: MemoryStore.listing(paths.map((path,i)=>({ path, size: sizes[i],
+        ...(documents.includes(path) ? { label: 'project document, added in settings' } : {}) }))) };
   }
   checkpoint(run: string) { return this.db.query('SELECT * FROM checkpoints WHERE run=?').get(run) as any; }
   latestCheckpoint() { return this.db.query('SELECT * FROM checkpoints ORDER BY time DESC LIMIT 1').get() as any; }

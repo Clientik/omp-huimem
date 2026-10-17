@@ -22,7 +22,7 @@ export type PackInput = {
 };
 export type PackResult = { content: string; registryOffset: number; retrieval: RetrievalResult; truncated: boolean };
 
-const OPTIONAL = ['canonical preview', 'previous checkpoint', 'recent assistant sources', 'registry'];
+const OPTIONAL = ['canonical file list', 'previous checkpoint', 'recent assistant sources', 'registry'];
 
 // Вписать прозу в space символов: целиком, либо по границе строки или слова, либо никак.
 export function clip(part: string, space: number): { text: string; state: 'whole' | 'trimmed' | 'omitted' } {
@@ -98,14 +98,14 @@ export function packContext(i: PackInput): PackResult {
     if(!registry) omitted.push(requiredLabel); else trimmed.push(requiredLabel);
   }
   space -= registry.length;
-  const parts: [string, string][] = [['canonical preview', i.preview], ['previous checkpoint', i.checkpoint], ['recent assistant sources', i.recent]];
+  const parts: [string, string][] = [['canonical file list', i.preview], ['previous checkpoint', i.checkpoint], ['recent assistant sources', i.recent]];
   const placed: Record<string, string> = {};
   for (const [name, text] of parts) {
     const c = clip(text, space);
     placed[name] = c.text; space -= c.text.length;
     if (c.state === 'omitted') omitted.push(name); else if (c.state === 'trimmed') trimmed.push(name);
   }
-  const top = head(placed['canonical preview'], placed['recent assistant sources'], placed['previous checkpoint']);
+  const top = head(placed['canonical file list'], placed['recent assistant sources'], placed['previous checkpoint']);
   const content = top + registry + budgetNotice(i.limit, omitted, trimmed);
   return { content, registryOffset: top.length, retrieval, truncated: omitted.length + trimmed.length > 0 };
 }

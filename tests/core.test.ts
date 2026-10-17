@@ -100,13 +100,13 @@ test('recall distinguishes accepted evidence from an unsupported decision interp
   expect(s.current('retries')?.text).toBe('More than 7 retries would trigger deduplication.');
   expect(s.recall('retries')).not.toContain('would trigger');
 }));
-test('ADR prose stays inspectable but is excluded from automatic preview',()=>withStore((s,dir)=>{
+test('ADR prose stays inspectable but never reaches the block by itself',()=>withStore((s,dir)=>{
   mkdirSync(join(dir,'.memory/adr'));
   const path=join(dir,'.memory/adr/0001-retries.md');
   writeFileSync(path,'Accepted: unsupported explanation');
   const before=s.authority();
-  expect(before.preview).toContain('.memory/adr/0001-retries.md');
-  expect(before.preview).not.toContain('unsupported explanation');
+  expect(before.listing).toContain('.memory/adr/0001-retries.md');
+  expect(before.listing).not.toContain('unsupported explanation');
   writeFileSync(path,'Accepted: different explanation');
   expect(s.authority().hash).not.toBe(before.hash);
   expect(readFileSync(path,'utf8')).toContain('different explanation');
