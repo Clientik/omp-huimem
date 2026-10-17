@@ -96,6 +96,14 @@ export default function install(pi: ExtensionAPI) {
       return { configured: true, ok: false, failures: [String(e)] };
     }
   }
+  // Что об архитектуре сообщается МОДЕЛИ. ЗАМЕРЕНО 2026-10-17 в живом HUICAD: каждый status и
+  // каждый commit возвращали {"configured":false,"ok":false,"failures":["Architecture rules are
+  // not configured"]}, то есть ненастроенная проверка выглядела как провалённая, и модель
+  // разбирала этот отказ на каждом вызове. Ненастроенное сообщается одним полем.
+  function architectureReport(ctx: any) {
+    const a = check(ctx);
+    return a.configured ? a : { configured: false };
+  }
   pi.on('before_agent_start', async (event: any, ctx) => {
     // Пересчитываем на каждом запросе, а не один раз при загрузке: развернув starter,
     // память получаешь со следующего сообщения, без перезапуска omp.
@@ -355,7 +363,7 @@ export default function install(pi: ExtensionAPI) {
       try {
         const s = get(ctx); let data: any;
         switch (p.op) {
-          case 'status': data = { ...s.status(), error: error || null, architecture: check(ctx), checkpoint: s.checkpoint(key()), required: readSettings(ctx.cwd).required }; break;
+          case 'status': data = { ...s.status(), error: error || null, architecture: architectureReport(ctx), checkpoint: s.checkpoint(key()), required: readSettings(ctx.cwd).required }; break;
           case 'recall': {
             if(p.id) {
               data=s.current(p.id);
@@ -409,7 +417,8 @@ export default function install(pi: ExtensionAPI) {
                 throw new Error('SOURCE_ORIGIN_REQUIRED: add source.origin="user" with an exact quote from the current user message, or origin="file" with path and quote');
               return change; // Previously saved callers may still provide explicit verified IDs/hashes.
             });
-            data = { ...s.commit(key(), changes, p.summary ?? '', { task: p.task, branch: gitBranch(ctx.cwd) }), architecture };
+            data = { ...s.commit(key(), changes, p.summary ?? '', { task: p.task, branch: gitBranch(ctx.cwd) }),
+              architecture: architecture.configured ? architecture : { configured: false } };
             if(data.projection.state==='pending' || data.projection.state==='conflict')
               notify(ctx,'Evidence saved; readable registry '+data.projection.state+'. Do not repeat commit: use /huimem sync. '+(data.projection.error ?? ''));
             if (architecture.configured && !architecture.ok) notify(ctx, 'ARCHITECTURE_FAILED: ' + architecture.failures.join('; '));

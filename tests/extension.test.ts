@@ -108,6 +108,26 @@ test('the commit contract is stated in the tool, and the block keeps policy with
   } finally { f.clean(); }
 });
 
+// ЗАМЕРЕНО 2026-10-17 в живом HUICAD: каждый status и каждый commit несли
+// {"configured":false,"ok":false,"failures":["Architecture rules are not configured"]},
+// и ненастроенная проверка выглядела как провалённая на каждом вызове.
+test('an unconfigured architecture check is a state, not a failure in every answer',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Состояние'},f.ctx);
+    const status=(await f.tools.project_memory.execute('id',{op:'status'},null,null,f.ctx)).details;
+    expect(status.architecture).toEqual({configured:false});
+    const saved=(await f.tools.project_memory.execute('id',{op:'commit',changes:[],summary:'Ничего существенного'},null,null,f.ctx)).details;
+    expect(saved.architecture).toEqual({configured:false});
+    // Настроенная и нарушенная — по-прежнему с причинами: это уже находка, а не отсутствие настройки.
+    writeFileSync(join(f.dir,'.memory/architecture.json'),
+      JSON.stringify({configured:true,rules:[{id:'r1',files:['src/*.ts'],forbidden:'TODO'}]}));
+    await f.handlers.before_agent_start({prompt:'Ещё раз'},f.ctx);
+    const after=(await f.tools.project_memory.execute('id',{op:'status'},null,null,f.ctx)).details;
+    expect(after.architecture.configured).toBe(true);
+    expect(after.architecture.failures.length).toBeGreaterThan(0);
+  } finally { f.clean(); }
+});
+
 // ПРИЧИНА 2026-10-17: все уведомления уходили уровнем 'error', и пользователь спросил, что за
 // ошибка «CHECKPOINT_MISSING». Ничего не сломалось: ход завершён, ничего не потеряно, повтор не
 // назначается. Уровни теперь по смыслу, и отказ хранилища отличается от совета.

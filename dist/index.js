@@ -2498,6 +2498,10 @@ function install(pi) {
       return { configured: true, ok: false, failures: [String(e)] };
     }
   }
+  function architectureReport(ctx) {
+    const a = check(ctx);
+    return a.configured ? a : { configured: false };
+  }
   pi.on("before_agent_start", async (event, ctx) => {
     active = memoryOn(ctx);
     if (!active) {
@@ -2772,7 +2776,7 @@ Do not claim memory or work was verified.`;
         let data;
         switch (p.op) {
           case "status":
-            data = { ...s.status(), error: error || null, architecture: check(ctx), checkpoint: s.checkpoint(key()), required: readSettings(ctx.cwd).required };
+            data = { ...s.status(), error: error || null, architecture: architectureReport(ctx), checkpoint: s.checkpoint(key()), required: readSettings(ctx.cwd).required };
             break;
           case "recall": {
             if (p.id) {
@@ -2840,7 +2844,10 @@ Do not claim memory or work was verified.`;
                 throw new Error('SOURCE_ORIGIN_REQUIRED: add source.origin="user" with an exact quote from the current user message, or origin="file" with path and quote');
               return change;
             });
-            data = { ...s.commit(key(), changes, p.summary ?? "", { task: p.task, branch: gitBranch(ctx.cwd) }), architecture };
+            data = {
+              ...s.commit(key(), changes, p.summary ?? "", { task: p.task, branch: gitBranch(ctx.cwd) }),
+              architecture: architecture.configured ? architecture : { configured: false }
+            };
             if (data.projection.state === "pending" || data.projection.state === "conflict")
               notify(ctx, "Evidence saved; readable registry " + data.projection.state + ". Do not repeat commit: use /huimem sync. " + (data.projection.error ?? ""));
             if (architecture.configured && !architecture.ok)
