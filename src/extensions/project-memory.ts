@@ -301,6 +301,7 @@ export default function install(pi: ExtensionAPI) {
     parameters: z.object({
       op: z.enum(['status','recall','episodes','history','evidence','commit']),
       query: z.string().optional(), id: z.string().optional(), path: z.string().optional(), quote: z.string().optional(),
+      role: z.enum(['user','assistant']).optional(),
       summary: z.string().optional(), task: z.string().optional(), changes: z.array(z.object({
         id: z.string(), kind: z.enum(['fact','decision','procedure','navigation','task']),
         text: z.string(), status: z.string(), expectedVersion: z.number().int().min(0),
@@ -333,7 +334,9 @@ export default function install(pi: ExtensionAPI) {
             }
             break;
           }
-          case 'episodes': data = s.episodes(p.query ?? query); break;
+          // id — вернуть сам эпизод целиком; role — искать только в своих или только в
+          // сообщениях пользователя. Без id запрос обязателен лишь по смыслу: пустой даёт обзор.
+          case 'episodes': data = s.episodes(p.query ?? query, { id: p.id, role: p.role }); break;
           case 'history': data = s.history(p.id ?? ''); break;
           case 'evidence': data = s.fileSource(p.path ?? '',p.quote ?? ''); break;
           case 'commit': {

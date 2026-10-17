@@ -348,9 +348,103 @@ export class MemoryStore {
     const row=this.checkpointRows(task)[0];
     return row ? {summary:row.summary,time:row.time,branch:row.branch} : null;
   }
-  episodes(query: string) {
-    const term = query.replace(/[\\%_]/g, x => '\\' + x);
-    return this.db.query("SELECT id,role,substr(text,1,1600) text,time FROM episodes WHERE text LIKE ? ESCAPE '\\' ORDER BY time DESC LIMIT 5").all('%' + term + '%');
+  // ЗАМЕРЕНО 2026-10-17 на живой базе HUICAD (audit/huicad-after-0.6.6): поиск был одной
+  // подстрокой «LIKE %запрос% ORDER BY time DESC LIMIT 5», а возвращал substr(text,1,1600).
+  // Из семи запросов модели шесть дали единственное совпадение — эпизод плана на 37 177
+  // символов, куда планировщик вложил ответы пользователя, со смещениями 4497–5819. То есть
+  // отдавалась голова документа, в которой найденного нет. А эпизод, в итоге процитированный
+  // в реестре, по запросу «hui-vue» стоял восьмым из двенадцати и при выдаче пяти новейших
+  // не мог прийти никогда: исходные решения пользователя — самые старые эпизоды, их вытесняет
+  // свежая переписка. Нужный ID модель достала из сводки компакции, а не из памяти.
+  // Теперь: слова вместо подстроки, оценка с поправкой на длину, окно вокруг совпадения со
+  // своим смещением, порядок по оценке, фильтр по роли, общее число совпадений названо.
+  static readonly EPISODE_CANDIDATES = 500;
+  // Предел просмотра в символах: явный поиск может читать всю стенограмму, но не бесконечно.
+  static readonly EPISODE_SCAN = 20_000_000;
+  static readonly EPISODE_WINDOW = { min: 200, max: 2000, default: 600 } as const;
+  // Где открыть окно: там, где внутрь попадает больше всего разных слов запроса. Первое
+  // совпадение не годится — в сообщении пользователя ответ часто стоит после приветствия,
+  // и окно по первому слову показывало не то место (замерено на эпизоде 10d688cf HUICAD).
+  static focus(lower: string, needles: string[], size: number): number {
+    const spots: number[] = [];
+    for (const n of needles) {
+      for (let i = lower.indexOf(n), seen = 0; i >= 0 && seen < 50; i = lower.indexOf(n, i + n.length), seen++) spots.push(i);
+    }
+    if (!spots.length) return 0;
+    spots.sort((a, b) => a - b);
+    let best = spots[0], bestScore = -1;
+    for (const spot of spots) {
+      const from = Math.max(0, spot - Math.floor(size / 3));
+      let score = 0;
+      for (const n of needles) { const i = lower.indexOf(n, from); if (i >= 0 && i + n.length <= from + size) score++; }
+      if (score > bestScore) { bestScore = score; best = spot; }
+    }
+    return best;
+  }
+  // Окно вокруг совпадения. Границы — по пробелу, чтобы не рвать слово; обрезанные
+  // края помечены, иначе выдержка читается как весь текст.
+  static window(text: string, at: number, size: number): { offset: number; text: string } {
+    if (text.length <= size) return { offset: 0, text };
+    let from = Math.max(0, Math.min(at - Math.floor(size / 3), text.length - size));
+    if (from > 0) { const space = text.indexOf(' ', from); if (space >= 0 && space - from < 40) from = space + 1; }
+    let body = text.slice(from, from + size);
+    const tail = from + size < text.length;
+    if (tail) { const space = body.lastIndexOf(' '); if (space > size - 40) body = body.slice(0, space); }
+    return { offset: from, text: (from > 0 ? '…' : '') + body + (tail ? '…' : '') };
+  }
+  episodes(query: string, options: { role?: string; id?: string; limit?: number; window?: number } = {}) {
+    const w = Math.min(MemoryStore.EPISODE_WINDOW.max, Math.max(MemoryStore.EPISODE_WINDOW.min,
+      options.window ?? MemoryStore.EPISODE_WINDOW.default));
+    // По ID отдаётся сам эпизод: цитату для источника берут из него, и обрезанная выдержка
+    // здесь бесполезна. Предел всё равно есть — эпизод бывает и в 37 тысяч символов.
+    if (options.id) {
+      const row = this.episode(options.id);
+      if (!row) return { query: '', id: options.id, found: false };
+      const limit = Math.min(4000, w * 4);
+      return { id: row.id, role: row.role, time: row.time, length: row.text.length, found: true,
+        truncated: row.text.length > limit, text: row.text.slice(0, limit) };
+    }
+    const q = (query ?? '').trim();
+    const terms = queryTerms(q);
+    const role = options.role === 'user' || options.role === 'assistant' ? options.role : undefined;
+    const limit = Math.min(10, Math.max(1, options.limit ?? 5));
+    // Отбор НЕ в SQL: LIKE в SQLite складывает регистр только для ASCII, поэтому «Три» не
+    // находилось по «три», а «Git-репозитория» — по «репозитории». Сначала берётся опись без
+    // текстов, потом тексты по одному: память ограничена одной записью, а не всей таблицей.
+    const index = this.db.query(`SELECT id,role,time FROM episodes${role ? ' WHERE role=?' : ''}`
+      + ' ORDER BY time DESC, rowid DESC').all(...(role ? [role] : [])) as any[];
+    const one = this.db.query('SELECT text FROM episodes WHERE id=?');
+    const phrase = q.toLocaleLowerCase();
+    const scored: { id: string; role: string; time: string; length: number; score: number; offset: number; text: string }[] = [];
+    let total = 0, scanned = MemoryStore.EPISODE_SCAN, capped = false;
+    for (const row of index) {
+      if (scanned <= 0) { capped = true; break; }
+      const text = (one.get(row.id) as any).text as string;
+      scanned -= text.length;
+      const lower = text.toLocaleLowerCase();
+      const own = words(text);
+      const coverage = terms.filter(t => own.some(x => x.startsWith(t))).length;
+      if (terms.length && !coverage) continue;
+      total++;
+      if (scored.length >= MemoryStore.EPISODE_CANDIDATES) continue;
+      const hits = terms.reduce((n, t) => n + own.filter(x => x.startsWith(t)).length, 0);
+      const whole = phrase.length >= 3 && lower.includes(phrase);
+      const at = whole ? lower.indexOf(phrase) : MemoryStore.focus(lower, terms, w);
+      // Длина наказывается логарифмом: иначе один огромный документ, где встречается всё,
+      // забирает каждый запрос. Совпадение всеми словами всё равно сильнее короткого случайного.
+      const score = coverage * 100 + (whole ? 50 : 0)
+        + Math.min(40, hits) - Math.round(Math.log10(Math.max(10, text.length)) * 10);
+      scored.push({ id: row.id as string, role: row.role as string, time: row.time as string,
+        length: text.length, score, ...MemoryStore.window(text, at, w) });
+    }
+    // Порядок описи — время, затем вставка; при равной оценке он сохраняется, поэтому
+    // одинаковые по счёту эпизоды выдаются от новых к старым.
+    const order = new Map(scored.map((h, i) => [h.id, i]));
+    scored.sort((a, b) => b.score - a.score || order.get(a.id)! - order.get(b.id)!);
+    return { query: q, terms, total, shown: Math.min(limit, scored.length),
+      ...(capped || total > scored.length
+        ? { note: `Ranked the newest ${scored.length} of ${total} matches; narrow the query for older ones.` } : {}),
+      hits: scored.slice(0, limit) };
   }
   private validate(c: Change) {
     if (!c || !/^[a-zA-Z0-9_.:/-]{1,100}$/.test(c.id)) throw new Error('INVALID_ID');

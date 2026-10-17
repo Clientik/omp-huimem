@@ -581,9 +581,116 @@ class MemoryStore {
     const row = this.checkpointRows(task)[0];
     return row ? { summary: row.summary, time: row.time, branch: row.branch } : null;
   }
-  episodes(query) {
-    const term = query.replace(/[\\%_]/g, (x) => "\\" + x);
-    return this.db.query("SELECT id,role,substr(text,1,1600) text,time FROM episodes WHERE text LIKE ? ESCAPE '\\' ORDER BY time DESC LIMIT 5").all("%" + term + "%");
+  static EPISODE_CANDIDATES = 500;
+  static EPISODE_SCAN = 20000000;
+  static EPISODE_WINDOW = { min: 200, max: 2000, default: 600 };
+  static focus(lower, needles, size) {
+    const spots = [];
+    for (const n of needles) {
+      for (let i = lower.indexOf(n), seen = 0;i >= 0 && seen < 50; i = lower.indexOf(n, i + n.length), seen++)
+        spots.push(i);
+    }
+    if (!spots.length)
+      return 0;
+    spots.sort((a, b) => a - b);
+    let best = spots[0], bestScore = -1;
+    for (const spot of spots) {
+      const from = Math.max(0, spot - Math.floor(size / 3));
+      let score = 0;
+      for (const n of needles) {
+        const i = lower.indexOf(n, from);
+        if (i >= 0 && i + n.length <= from + size)
+          score++;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = spot;
+      }
+    }
+    return best;
+  }
+  static window(text, at, size) {
+    if (text.length <= size)
+      return { offset: 0, text };
+    let from = Math.max(0, Math.min(at - Math.floor(size / 3), text.length - size));
+    if (from > 0) {
+      const space = text.indexOf(" ", from);
+      if (space >= 0 && space - from < 40)
+        from = space + 1;
+    }
+    let body = text.slice(from, from + size);
+    const tail = from + size < text.length;
+    if (tail) {
+      const space = body.lastIndexOf(" ");
+      if (space > size - 40)
+        body = body.slice(0, space);
+    }
+    return { offset: from, text: (from > 0 ? "\u2026" : "") + body + (tail ? "\u2026" : "") };
+  }
+  episodes(query, options = {}) {
+    const w = Math.min(MemoryStore.EPISODE_WINDOW.max, Math.max(MemoryStore.EPISODE_WINDOW.min, options.window ?? MemoryStore.EPISODE_WINDOW.default));
+    if (options.id) {
+      const row = this.episode(options.id);
+      if (!row)
+        return { query: "", id: options.id, found: false };
+      const limit2 = Math.min(4000, w * 4);
+      return {
+        id: row.id,
+        role: row.role,
+        time: row.time,
+        length: row.text.length,
+        found: true,
+        truncated: row.text.length > limit2,
+        text: row.text.slice(0, limit2)
+      };
+    }
+    const q = (query ?? "").trim();
+    const terms = queryTerms(q);
+    const role = options.role === "user" || options.role === "assistant" ? options.role : undefined;
+    const limit = Math.min(10, Math.max(1, options.limit ?? 5));
+    const index = this.db.query(`SELECT id,role,time FROM episodes${role ? " WHERE role=?" : ""}` + " ORDER BY time DESC, rowid DESC").all(...role ? [role] : []);
+    const one = this.db.query("SELECT text FROM episodes WHERE id=?");
+    const phrase = q.toLocaleLowerCase();
+    const scored = [];
+    let total = 0, scanned = MemoryStore.EPISODE_SCAN, capped = false;
+    for (const row of index) {
+      if (scanned <= 0) {
+        capped = true;
+        break;
+      }
+      const text = one.get(row.id).text;
+      scanned -= text.length;
+      const lower = text.toLocaleLowerCase();
+      const own = words(text);
+      const coverage = terms.filter((t) => own.some((x) => x.startsWith(t))).length;
+      if (terms.length && !coverage)
+        continue;
+      total++;
+      if (scored.length >= MemoryStore.EPISODE_CANDIDATES)
+        continue;
+      const hits = terms.reduce((n, t) => n + own.filter((x) => x.startsWith(t)).length, 0);
+      const whole = phrase.length >= 3 && lower.includes(phrase);
+      const at = whole ? lower.indexOf(phrase) : MemoryStore.focus(lower, terms, w);
+      const score = coverage * 100 + (whole ? 50 : 0) + Math.min(40, hits) - Math.round(Math.log10(Math.max(10, text.length)) * 10);
+      scored.push({
+        id: row.id,
+        role: row.role,
+        time: row.time,
+        length: text.length,
+        score,
+        ...MemoryStore.window(text, at, w)
+      });
+    }
+    const order = new Map(scored.map((h, i) => [h.id, i]));
+    scored.sort((a, b) => b.score - a.score || order.get(a.id) - order.get(b.id));
+    return {
+      query: q,
+      terms,
+      total,
+      shown: Math.min(limit, scored.length),
+      ...capped || total > scored.length ? { note: `Ranked the newest ${scored.length} of ${total} matches; narrow the query for older ones.` } : {},
+      hits: scored.slice(0, limit)
+    };
   }
   validate(c) {
     if (!c || !/^[a-zA-Z0-9_.:/-]{1,100}$/.test(c.id))
@@ -2629,6 +2736,7 @@ Do not claim memory or work was verified.`;
       id: z.string().optional(),
       path: z.string().optional(),
       quote: z.string().optional(),
+      role: z.enum(["user", "assistant"]).optional(),
       summary: z.string().optional(),
       task: z.string().optional(),
       changes: z.array(z.object({
@@ -2681,7 +2789,7 @@ Do not claim memory or work was verified.`;
             break;
           }
           case "episodes":
-            data = s.episodes(p.query ?? query);
+            data = s.episodes(p.query ?? query, { id: p.id, role: p.role });
             break;
           case "history":
             data = s.history(p.id ?? "");
