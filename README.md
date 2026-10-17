@@ -9,7 +9,7 @@
 
 Keep project knowledge across sessions without running another model. Current facts live in readable files; evidence and revision history live in local SQLite. One OMP extension, no memory server, embeddings service, or background LLM.
 
-> **Preview v0.6.6 · Tested with OMP 18.1.5.** Upstream Pi is not supported. Memory makes project context easier to recover and inspect; it does not eliminate hallucinations.
+> **Preview v0.6.7 · Tested with OMP 18.11.0.** Upstream Pi is not supported. Memory makes project context easier to recover and inspect; it does not eliminate hallucinations.
 
 ## Why use it?
 
@@ -19,26 +19,42 @@ For developers working with an AI agent who want to stop explaining the same pro
 - **Evidence you can inspect.** Records require a checked quote from a message or file. Code supplies message IDs and file hashes.
 - **Corrections with history.** Updates create another version of the same record instead of silently replacing its history.
 - **Visible staleness.** Changed sources or core documents mark previous records `STALE` for review.
-- **Bounded context.** The extension supplies a memory block of up to 8,000 characters. The agent can read full sources when needed.
+- **Bounded context.** The extension supplies a memory block of up to 8,000 characters: the rules, a list of the canonical files, and the records that match the question. The agent reads full sources when it needs them.
 
 ## Install
 
-**New in v0.6.6:** the canonical file list in the memory block is now stated as the complete, fixed
-set, and `RECORDS.md` is named as a generated view rather than part of it — in a live session a model
-spent about twenty minutes discovering that set by reading this plugin's own installed source. A
-compacted history is announced once: the summary is not evidence, durable facts belong in the
-registry, and the original wording stays in the transcript. `/huimem` reports the thinking level OMP
-is running at, and changes nothing about it.
+**New in v0.6.7**, all of it measured on a real project (see [validation](docs/VALIDATION.md)):
 
-**Since v0.6.5:** a plugin upgrade now reaches a conversation that is already running. The
-database records which build wrote it, and after an upgrade the next memory block states once what
-changed in the memory rules, so a resumed session stops following the rules it saw on earlier turns.
-Settings keep keys this version does not know, so switching builds in either direction no longer
-erases them. Every canonical document now gets a share of the preview and is named even when its
-text does not fit — previously the last documents by sort order, including every ADR, disappeared
-from the block entirely. An empty registry is stated in one line instead of looking like a search
-that found nothing. `/huimem` shows the running build and what wrote the database; `/huimem doctor`
-reports a pending upgrade as info.
+- **A subagent's brief is no longer stored as the user's words.** Task briefs written by the model
+  were captured as episodes with role `user` — nine of twenty-one in the measured project — and an
+  episode with role `user` is what an accepted decision may rest on. They are now captured as
+  assistant messages, and a subagent gets a short block without the saving rules
+  (`subagentBlock: short | full | off`): in that session eight researchers received 790 KB of full
+  block in six minutes and made no memory calls at all.
+- **The commit contract is in the tool description.** Before saving its first record the model made
+  34 calls into this plugin's installed source to learn the allowed kinds, statuses,
+  `expectedVersion`, `dependsOn` and staleness rules. Nothing about saving requires reading the
+  source any more.
+- **`project_memory op=doctor`** — the same read-only diagnosis as `/huimem doctor`. It was the only
+  thing that got records written at all, and the model previously reached it by importing
+  `doctor.ts` through `bun -e`.
+- **Episode search finds the original quote.** It ranks matches with a length penalty, shows the
+  part of a long message that actually matched, takes `role=user|assistant`, and returns one
+  episode whole by id. Before, six of seven searches returned only a 37,000-character plan whose
+  matching text was never in the returned excerpt.
+- **The canonical section is a list, not an excerpt** — path, purpose and size — and the freed space
+  goes to records. A project can add its own `.memory` documents to the set with `/huimem include`.
+- **A notice carries the level it deserves.** `CHECKPOINT_MISSING` is advice and says plainly that
+  nothing failed; only storage failures are errors. An unconfigured architecture check is stated
+  once instead of in every answer.
+- **An audit trail that survives a fan-out.** One-shot notices are recorded in an events log that
+  four parallel subagents cannot wipe, and `/huimem context` prints it.
+
+**Since v0.6.5:** a plugin upgrade reaches a conversation that is already running. The database
+records which build wrote it, and after an upgrade the next memory block states once what changed in
+the memory rules, so a resumed session stops following the rules it saw on earlier turns. Settings
+keep keys this version does not know. An empty registry is stated in one line instead of looking
+like a search that found nothing. `/huimem` shows the running build and what wrote the database.
 
 **Since v0.6.4:** `/huimem off` and `/huimem on` switch project memory off and back on, and the
 commit rules now say plainly that durable facts belong in the registry rather than in hand-written
@@ -53,7 +69,7 @@ You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model
 **Legacy ADRs:** `/huimem adr-audit` lists ADRs without a basis section that can be moved into the contract, and writes nothing. `/huimem adr-audit apply` inserts the user's quote from the registry as the basis and keeps every original line under an "Interpretation [?]" heading, after a byte-exact backup to `.memory/adr-backup/`. A document is migrated only when exactly one accepted decision names it by path, its rationale is an exact excerpt of the quote, and the quote is re-checked at migration time against the stored message, which must exist and belong to the user; otherwise it is reported as `UNVERIFIED` and nothing is written. v0.5.0 skipped that last check: if you ran `apply` with it on an edited, merged or restored database, compare each migrated basis with the original message. Linked conversation decisions show STALE afterwards. In a preregistered 20-vs-20 test the migrated documents had no outright misattribution, but a reliability gain over unmigrated ones was not statistically proven.
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.6.6
+omp plugin install github:Clientik/omp-huimem#v0.6.7
 ```
 
 > [!IMPORTANT]
@@ -75,21 +91,21 @@ After `init`, ask the agent to use the `initmem` skill to map the actual code. D
 **Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
 ```sh
-git clone --branch v0.6.6 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.6.7 https://github.com/Clientik/omp-huimem.git
 # Run from your working project, using the cloned repository's absolute path:
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```
 
 On Windows, quote the path. With direct loading, copy `skills/` to the project's `.omp/skills` if desired. Do not also load an older `project-memory.ts` extension.
 
-Native GitHub installation in OMP 18.1.5 is user-scoped; `--scope project` does not apply. Memory data stays in the current project's `.memory`. See the [user guide (Russian)](docs/GUIDE.md) for setup and troubleshooting.
+Native GitHub installation in OMP is user-scoped; `--scope project` does not apply. Memory data stays in the current project's `.memory`. See the [user guide (Russian)](docs/GUIDE.md) for setup and troubleshooting.
 
 **Settings screen:** in the terminal, `/huimem` opens a screen built from OMP's own dialogs.
 Each row shows the current value; Enter changes it or runs the action, Esc closes. From there
 you can switch memory off and on for this project, pause commits, set the recall budget and
 injection limit, pick required records from
-the registry, republish `RECORDS.md`, inspect the last memory block, migrate legacy ADRs and
-reset limits. In a project without memory the same screen offers to enable it. Values are
+the registry, republish `RECORDS.md`, inspect the last memory block and the events log, migrate
+legacy ADRs and reset limits. In a project without memory the same screen offers to enable it. Values are
 stored per project in `.memory/settings.json`.
 
 **Switch (since v0.6.4):** `/huimem off` silences memory in this project — no memory block, no
@@ -113,6 +129,19 @@ notice is never cut mid-ID: a long list becomes a count, and `project_memory sta
 every required ID.
 Other records are ranked by question match, then current `doing`/`blocked` tasks, then the
 remaining accepted decisions; at equal rank a STALE record yields to a fresh one.
+
+**Canonical documents (since v0.6.7):** the set is `MEMORY.md`, `PROJECT.md`, `todo.json`,
+`architecture.json` and `.memory/adr/**`. `/huimem include <path>` adds another document inside
+`.memory` to it, `/huimem exclude` removes it, up to ten. An added document is listed in the block,
+hashed with the set and tracked for staleness. In the measured project a 17 KB `.memory/DESIGN.md`
+was a live memory document outside the set, while the block told the model that nothing else was
+project memory. Adding a document changes the set hash, so records saved without `dependsOn` show
+STALE once; the command says so before and after.
+
+**Subagents (since v0.6.7):** a subagent's prompt is written by the model, so it is recorded as an
+assistant message and can never become the user evidence an accepted decision requires. Its block
+keeps the evidence rules, the file list and the records, and drops the saving rules;
+`subagentBlock` in `.memory/settings.json` chooses `short` (default), `full` or `off`.
 
 **Explainable staleness:** a record can list what it relies on, `dependsOn: [{id}]` or
 `[{path}]`; code pins the current version or file hash. Such a record turns STALE only when one
