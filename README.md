@@ -88,7 +88,7 @@ Installation is user-scoped, so the extension loads in every project you open wi
 
 After `init`, ask the agent to use the `initmem` skill to map the actual code. Define architecture rules for your project (`/huimem arch`); none are configured by default.
 
-**Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
+**Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 and again with 18.11.0 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
 ```sh
 git clone --branch v0.6.7 https://github.com/Clientik/omp-huimem.git
