@@ -2736,7 +2736,7 @@ Do not claim memory or work was verified.`;
 ` + `LIMITS: at most 30 changes per commit; summary is required and at most 2000 characters even when changes=[]; task=<task id> ties the summary (the next step) to that task.
 ` + "READS: recall query=<text> or id=<record> (a task also returns its last checkpoint); episodes query=<text> with optional role=user|assistant, ranked with the match shown in context, or id=<episode> for one message whole; history id=<record>; evidence path=<file> quote=<text>; status; doctor \u2014 read-only diagnosis of records, sources, task drift and settings. No background LLM.",
     parameters: z.object({
-      op: z.enum(["status", "recall", "episodes", "history", "evidence", "commit"]),
+      op: z.enum(["status", "recall", "episodes", "history", "evidence", "doctor", "commit"]),
       query: z.string().optional(),
       id: z.string().optional(),
       path: z.string().optional(),
@@ -2799,6 +2799,15 @@ Do not claim memory or work was verified.`;
           case "history":
             data = s.history(p.id ?? "");
             break;
+          case "doctor": {
+            const full = diagnoseMemory(ctx.cwd);
+            data = {
+              ...full,
+              issues: full.issues.slice(0, 50),
+              ...full.issues.length > 50 ? { omittedIssues: full.issues.length - 50 } : {}
+            };
+            break;
+          }
           case "evidence":
             data = s.fileSource(p.path ?? "", p.quote ?? "");
             break;

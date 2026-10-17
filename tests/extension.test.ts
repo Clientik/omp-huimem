@@ -108,6 +108,34 @@ test('the commit contract is stated in the tool, and the block keeps policy with
   } finally { f.clean(); }
 });
 
+// ЗАМЕРЕНО 2026-10-17 (audit/huicad-after-0.6.6): замечание doctor TASKS_NOT_IN_REGISTRY —
+// единственное, что за полтора дня привело к записи в реестр, и запустил его пользователь.
+// Своей операции у модели не было, поэтому она четыре раза импортировала doctor.ts через bun -e.
+test('op=doctor diagnoses without repairs and writes nothing',async()=>{
+  const f=fixture(); try {
+    writeFileSync(join(f.dir,'.memory/todo.json'),JSON.stringify({tasks:[{id:'only-in-file',status:'todo'}]}));
+    await f.handlers.before_agent_start({prompt:'Проверь память'},f.ctx);
+    // Слепок читается без открытия хранилища: обычный конструктор сам пишет пробу здоровья,
+    // и измерение испортило бы то, что проверяет.
+    const {statSync}=await import('node:fs');
+    const files=['state.sqlite','state.sqlite-wal'].map(n=>join(f.dir,'.memory/runtime',n));
+    const snapshot=()=>files.map(p=>{ try { const s=statSync(p); return p+s.size+s.mtimeMs; } catch { return p+'none'; } }).join('|');
+    const state=snapshot();
+    const out=await f.tools.project_memory.execute('id',{op:'doctor'},null,null,f.ctx);
+    expect(out.isError).not.toBe(true);
+    const report=out.details;
+    expect(report.checked).toContain('database');
+    expect(report.issues.some((i:any)=>i.code==='TASKS_NOT_IN_REGISTRY')).toBe(true);
+    // Замечание называет и починку: именно строка Fix подняла модель на запись.
+    expect(report.issues.find((i:any)=>i.code==='TASKS_NOT_IN_REGISTRY').fix).toContain('saved as task records');
+    expect(snapshot()).toBe(state);
+    // Диагностика доступна и при запрещённых коммитах: это чтение.
+    await f.commands.huimem.handler('pause',f.ctx);
+    expect((await f.tools.project_memory.execute('id',{op:'doctor'},null,null,f.ctx)).isError).not.toBe(true);
+    expect((await f.tools.project_memory.execute('id',{op:'commit',changes:[],summary:'x'},null,null,f.ctx)).isError).toBe(true);
+  } finally { f.clean(); }
+});
+
 // Компакция заменяет историю пересказом, а пересказ правила блока доказательством не считают.
 // Сказать об этом можно только один раз: безусловное требование сохранять уже давало 89 чекпоинтов
 // за 300 секунд в одном запросе (см. commitRules), поэтому принуждения здесь нет.
