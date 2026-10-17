@@ -7,8 +7,8 @@ import { resolve as resolve9, relative as relative4 } from "path";
 // src/memory/core.ts
 import { Database } from "bun:sqlite";
 import { createHash as createHash2, randomUUID as randomUUID2 } from "crypto";
-import { mkdirSync, readFileSync as readFileSync2, realpathSync as realpathSync2, statSync } from "fs";
-import { resolve as resolve2, relative as relative2, isAbsolute as isAbsolute2 } from "path";
+import { mkdirSync, readFileSync as readFileSync3, realpathSync as realpathSync2, statSync } from "fs";
+import { resolve as resolve3, relative as relative2, isAbsolute as isAbsolute2 } from "path";
 
 // src/memory/projection.ts
 import { createHash, randomUUID } from "crypto";
@@ -129,6 +129,61 @@ function syncProjection(db, root) {
   }
 }
 
+// src/memory/settings.ts
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "fs";
+import { resolve as resolve2 } from "path";
+var SETTINGS_PATH = ".memory/settings.json";
+var REQUIRED_MAX = 10;
+var DOCUMENTS_MAX = 10;
+var requiredIds = (v) => Array.isArray(v) ? [...new Set(v.filter((x) => typeof x === "string" && /^[a-zA-Z0-9_.:/-]{1,100}$/.test(x)))].slice(0, REQUIRED_MAX) : [];
+var FIXED = [".memory/MEMORY.md", ".memory/PROJECT.md", ".memory/todo.json", ".memory/architecture.json"];
+var documentPath = (x) => typeof x === "string" && /^\.memory\/[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$/.test(x) && !x.includes("..") && !x.endsWith("/") && !FIXED.includes(x) && !x.startsWith(".memory/adr/") && !x.startsWith(".memory/runtime/") && x !== ".memory/RECORDS.md" && x !== ".memory/settings.json";
+var documentList = (v) => Array.isArray(v) ? [...new Set(v.filter(documentPath))].sort().slice(0, DOCUMENTS_MAX) : [];
+var LIMITS = {
+  recallBudget: { min: 500, max: 12000, default: 4800 },
+  injectionLimit: { min: 3000, max: 16000, default: 8000 }
+};
+var clamp = (v, l) => typeof v === "number" && Number.isFinite(v) ? Math.min(l.max, Math.max(l.min, Math.round(v))) : l.default;
+function readRaw(root) {
+  try {
+    const raw = JSON.parse(readFileSync2(resolve2(root, SETTINGS_PATH), "utf8"));
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  } catch {
+    return {};
+  }
+}
+var KNOWN = ["enabled", "recallBudget", "injectionLimit", "required", "documents"];
+function unknownKeys(root) {
+  return Object.fromEntries(Object.entries(readRaw(root)).filter(([k]) => !KNOWN.includes(k)));
+}
+function readSettings(root) {
+  try {
+    const raw = JSON.parse(readFileSync2(resolve2(root, SETTINGS_PATH), "utf8"));
+    return {
+      enabled: raw?.enabled !== false,
+      recallBudget: clamp(raw?.recallBudget, LIMITS.recallBudget),
+      injectionLimit: clamp(raw?.injectionLimit, LIMITS.injectionLimit),
+      required: requiredIds(raw?.required),
+      documents: documentList(raw?.documents)
+    };
+  } catch {
+    return { enabled: true, recallBudget: LIMITS.recallBudget.default, injectionLimit: LIMITS.injectionLimit.default, required: [], documents: [] };
+  }
+}
+function writeSettings(root, next) {
+  const merged = { ...readSettings(root), ...next };
+  const value = {
+    enabled: merged.enabled !== false,
+    recallBudget: clamp(merged.recallBudget, LIMITS.recallBudget),
+    injectionLimit: clamp(merged.injectionLimit, LIMITS.injectionLimit),
+    required: requiredIds(merged.required),
+    documents: documentList(merged.documents)
+  };
+  writeFileSync2(resolve2(root, SETTINGS_PATH), JSON.stringify({ ...unknownKeys(root), ...value }, null, 2) + `
+`);
+  return value;
+}
+
 // src/memory/version.ts
 var PLUGIN_VERSION = "0.6.6";
 var UPGRADE_NOTES = {
@@ -171,10 +226,10 @@ var termScore = (terms, text) => {
 };
 function gitBranch(root) {
   try {
-    let dir = resolve2(root, ".git");
+    let dir = resolve3(root, ".git");
     if (statSync(dir).isFile())
-      dir = resolve2(root, readFileSync2(dir, "utf8").replace(/^gitdir:\s*/, "").trim());
-    const head = readFileSync2(resolve2(dir, "HEAD"), "utf8").trim();
+      dir = resolve3(root, readFileSync3(dir, "utf8").replace(/^gitdir:\s*/, "").trim());
+    const head = readFileSync3(resolve3(dir, "HEAD"), "utf8").trim();
     return head.startsWith("ref: refs/heads/") ? head.slice("ref: refs/heads/".length) : head.slice(0, 12) || null;
   } catch {
     return null;
@@ -184,7 +239,7 @@ var scrub = (s) => s.replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9._-]
 function safePath(root, path) {
   if (isAbsolute2(path))
     throw new Error("PATH: relative project path required");
-  const base = realpathSync2(root), full = resolve2(base, path), rel = relative2(base, full);
+  const base = realpathSync2(root), full = resolve3(base, path), rel = relative2(base, full);
   if (rel.startsWith("..") || isAbsolute2(rel))
     throw new Error("PATH: outside project");
   const actual = realpathSync2(full), realRel = relative2(base, actual);
@@ -198,7 +253,7 @@ function sourceText(root, path) {
     throw new Error("SOURCE_DERIVED: RECORDS.md is a generated view; use the original episode or file as evidence");
   if (statSync(full).size > 1024 * 1024)
     throw new Error("SOURCE: file exceeds 1 MiB");
-  return readFileSync2(full, "utf8");
+  return readFileSync3(full, "utf8");
 }
 
 class MemoryStore {
@@ -240,11 +295,11 @@ class MemoryStore {
       }
       return;
     }
-    mkdirSync(resolve2(root, ".memory"), { recursive: true });
+    mkdirSync(resolve3(root, ".memory"), { recursive: true });
     safePath(root, ".memory");
-    mkdirSync(resolve2(root, ".memory/runtime"), { recursive: true });
+    mkdirSync(resolve3(root, ".memory/runtime"), { recursive: true });
     safePath(root, ".memory/runtime");
-    const dbPath = resolve2(root, ".memory/runtime/state.sqlite");
+    const dbPath = resolve3(root, ".memory/runtime/state.sqlite");
     try {
       safePath(root, ".memory/runtime/state.sqlite");
     } catch (e) {
@@ -514,7 +569,7 @@ class MemoryStore {
     }
     return out;
   }
-  authority(documents = []) {
+  authority(documents = readSettings(this.root).documents) {
     const paths = [
       ".memory/MEMORY.md",
       ".memory/todo.json",
@@ -1026,55 +1081,6 @@ function architectureCheck(root, policy) {
       failures.push(`${rule.id}: no files matched \u2014 check paths`);
   }
   return { configured: true, ok: !failures.length, failures };
-}
-
-// src/memory/settings.ts
-import { readFileSync as readFileSync3, writeFileSync as writeFileSync2 } from "fs";
-import { resolve as resolve3 } from "path";
-var SETTINGS_PATH = ".memory/settings.json";
-var REQUIRED_MAX = 10;
-var requiredIds = (v) => Array.isArray(v) ? [...new Set(v.filter((x) => typeof x === "string" && /^[a-zA-Z0-9_.:/-]{1,100}$/.test(x)))].slice(0, REQUIRED_MAX) : [];
-var LIMITS = {
-  recallBudget: { min: 500, max: 12000, default: 4800 },
-  injectionLimit: { min: 3000, max: 16000, default: 8000 }
-};
-var clamp = (v, l) => typeof v === "number" && Number.isFinite(v) ? Math.min(l.max, Math.max(l.min, Math.round(v))) : l.default;
-function readRaw(root) {
-  try {
-    const raw = JSON.parse(readFileSync3(resolve3(root, SETTINGS_PATH), "utf8"));
-    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-  } catch {
-    return {};
-  }
-}
-var KNOWN = ["enabled", "recallBudget", "injectionLimit", "required"];
-function unknownKeys(root) {
-  return Object.fromEntries(Object.entries(readRaw(root)).filter(([k]) => !KNOWN.includes(k)));
-}
-function readSettings(root) {
-  try {
-    const raw = JSON.parse(readFileSync3(resolve3(root, SETTINGS_PATH), "utf8"));
-    return {
-      enabled: raw?.enabled !== false,
-      recallBudget: clamp(raw?.recallBudget, LIMITS.recallBudget),
-      injectionLimit: clamp(raw?.injectionLimit, LIMITS.injectionLimit),
-      required: requiredIds(raw?.required)
-    };
-  } catch {
-    return { enabled: true, recallBudget: LIMITS.recallBudget.default, injectionLimit: LIMITS.injectionLimit.default, required: [] };
-  }
-}
-function writeSettings(root, next) {
-  const merged = { ...readSettings(root), ...next };
-  const value = {
-    enabled: merged.enabled !== false,
-    recallBudget: clamp(merged.recallBudget, LIMITS.recallBudget),
-    injectionLimit: clamp(merged.injectionLimit, LIMITS.injectionLimit),
-    required: requiredIds(merged.required)
-  };
-  writeFileSync2(resolve3(root, SETTINGS_PATH), JSON.stringify({ ...unknownKeys(root), ...value }, null, 2) + `
-`);
-  return value;
 }
 
 // src/memory/context-pack.ts
@@ -1877,6 +1883,11 @@ function diagnoseMemory(root) {
   }, ".memory/settings.json");
   if (settings && !settings.enabled)
     add("info", "PROJECT_MEMORY_OFF", ".memory/settings.json", "Memory is switched off in this project; nothing is injected, recorded or saved.", "Run /huimem on to switch it back. Saved records and files are untouched while it is off.");
+  if (settings)
+    for (const path of settings.documents) {
+      if (!existsSync2(resolve7(root, path)))
+        add("warning", "DOCUMENT_MISSING", path, "A document added to the canonical set does not exist.", "Create the file or drop it with /huimem exclude <path>. While it is missing it counts as empty in the set hash.");
+    }
   if (records && settings)
     for (const id of settings.required) {
       const row = records.find((r) => r.id === id);
@@ -1978,6 +1989,8 @@ var HELP = [
   "  /huimem omp          OMP settings that affect memory",
   "  /huimem require <id>    deliver this record every turn, even when unrelated to the question (max " + REQUIRED_MAX + ")",
   "  /huimem unrequire <id>  stop delivering it unconditionally",
+  "  /huimem include <path>  count a .memory document as canonical: listed in the block, hashed, tracked for staleness (max " + DOCUMENTS_MAX + ")",
+  "  /huimem exclude <path>  stop counting it",
   "  /huimem reset        restore the default limits",
   "  /huimem sync         retry publishing .memory/RECORDS.md from saved records",
   "  /huimem context      inspect the latest memory block prepared for OMP",
@@ -2160,6 +2173,32 @@ ${result.path}` + (result.error ? `
         return say("ADR audit failed: " + String(e));
       }
     }
+    if (verb === "include" || verb === "exclude") {
+      const listed = cfg.documents.length ? cfg.documents.join(", ") : "none";
+      if (!value)
+        return say(`Canonical documents added in this project: ${listed}.
+Usage: /huimem ${verb} <path inside .memory>`);
+      if (verb === "exclude") {
+        if (!cfg.documents.includes(value))
+          return say(`${value} is not in the added set. Added: ${listed}.`);
+        const saved2 = writeSettings(ctx.cwd, { documents: cfg.documents.filter((p) => p !== value) });
+        return say(`${value} is no longer canonical: it is not listed in the block and no longer tracked for staleness.
+` + `Added: ${saved2.documents.join(", ") || "none"}. Records saved without dependsOn will show STALE once, because the canonical set changed.`);
+      }
+      if (cfg.documents.includes(value))
+        return say(`${value} is already canonical.`);
+      if (!documentPath(value))
+        return say(`Not an addable path: ${value}
+Use a path inside .memory, for example .memory/DESIGN.md. ` + "MEMORY.md, PROJECT.md, todo.json, architecture.json and .memory/adr/** are always canonical; " + "RECORDS.md is generated, settings.json and runtime/ are not documents.");
+      if (cfg.documents.length >= DOCUMENTS_MAX)
+        return say(`At most ${DOCUMENTS_MAX} added documents. Remove one with /huimem exclude <path> first.`);
+      if (!existsSync3(resolve8(ctx.cwd, value)))
+        return say(`No such file: ${value}. Create the document first; the set names real files.`);
+      const saved = writeSettings(ctx.cwd, { documents: [...cfg.documents, value] });
+      return say(`${value} is canonical from the next message: listed in the memory block, hashed with the set and tracked for staleness.
+` + `Added: ${saved.documents.join(", ")}. File: ${SETTINGS_PATH}
+` + "Records saved without dependsOn will show STALE once: the canonical set changed, which is exactly what STALE reports. " + "Recheck them or save corrected versions; nothing is deleted.");
+    }
     if (verb === "require" || verb === "unrequire") {
       if (!value)
         return say(`Required records: ${cfg.required.length ? cfg.required.join(", ") : "none"}.
@@ -2231,6 +2270,7 @@ Usage: /huimem ${verb} <id>`);
       `Recall budget:      ${cfg.recallBudget} characters`,
       `Injection limit:    ${cfg.injectionLimit} characters`,
       `Required records:   ${cfg.required.length ? cfg.required.join(", ") : "none"}`,
+      `Added documents:    ${cfg.documents.length ? cfg.documents.join(", ") : "none (the plugin set only)"}`,
       `Settings file:      ${settingsFileExists ? SETTINGS_PATH : "none, defaults apply"}`,
       err ? `Health:             ${err}` : "Health:             no errors",
       "",

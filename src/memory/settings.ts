@@ -9,10 +9,24 @@ export const SETTINGS_PATH = '.memory/settings.json';
 // пользователь командой /huimem require; правка файла инструментами модели заблокирована.
 // enabled — выключатель памяти для этого проекта. Он принадлежит проекту и переживает перезапуск,
 // в отличие от pause: пауза запрещает только commit и живёт в одном процессе OMP.
-export type Settings = { enabled: boolean; recallBudget: number; injectionLimit: number; required: string[] };
+// documents — документы памяти, которые проект добавил к набору плагина. ЗАМЕРЕНО 2026-10-17
+// на живом HUICAD: в проекте лежал .memory/DESIGN.md на 17 КБ, модель прочитала его 9 раз и
+// сохранила из него запись, а блок при этом утверждал «nothing else is project memory» —
+// неправду. Файла не было ни в перечне, ни в хеше канонического набора.
+export type Settings = { enabled: boolean; recallBudget: number; injectionLimit: number; required: string[]; documents: string[] };
 export const REQUIRED_MAX = 10;
+export const DOCUMENTS_MAX = 10;
 const requiredIds = (v: unknown): string[] => Array.isArray(v)
   ? [...new Set(v.filter((x): x is string => typeof x === 'string' && /^[a-zA-Z0-9_.:/-]{1,100}$/.test(x)))].slice(0, REQUIRED_MAX) : [];
+// Только внутри .memory и только то, что не входит в набор иначе: ADR подбираются глоблм,
+// RECORDS.md генерируется, settings.json и runtime — не документы памяти.
+const FIXED = ['.memory/MEMORY.md', '.memory/PROJECT.md', '.memory/todo.json', '.memory/architecture.json'];
+export const documentPath = (x: unknown): x is string => typeof x === 'string'
+  && /^\.memory\/[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$/.test(x) && !x.includes('..') && !x.endsWith('/')
+  && !FIXED.includes(x) && !x.startsWith('.memory/adr/') && !x.startsWith('.memory/runtime/')
+  && x !== '.memory/RECORDS.md' && x !== '.memory/settings.json';
+const documentList = (v: unknown): string[] => Array.isArray(v)
+  ? [...new Set(v.filter(documentPath))].sort().slice(0, DOCUMENTS_MAX) : [];
 
 // Пределы не косметические. recall в core.ts сам обрезает бюджет по 12000, а слишком
 // маленькая вставка делает память бесполезной, слишком большая — съедает окно модели.
@@ -40,7 +54,7 @@ function readRaw(root: string): Record<string, unknown> {
     return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
   } catch { return {}; }
 }
-const KNOWN = ['enabled', 'recallBudget', 'injectionLimit', 'required'];
+const KNOWN = ['enabled', 'recallBudget', 'injectionLimit', 'required', 'documents'];
 export function unknownKeys(root: string): Record<string, unknown> {
   return Object.fromEntries(Object.entries(readRaw(root)).filter(([k]) => !KNOWN.includes(k)));
 }
@@ -54,11 +68,12 @@ export function readSettings(root: string): Settings {
       recallBudget: clamp(raw?.recallBudget, LIMITS.recallBudget),
       injectionLimit: clamp(raw?.injectionLimit, LIMITS.injectionLimit),
       required: requiredIds(raw?.required),
+      documents: documentList(raw?.documents),
     };
   } catch {
     // Повреждённый или отсутствующий файл не должен ронять сессию: работаем на значениях
     // по умолчанию. Молчаливой подмены нет — /huimem показывает, что читается сейчас.
-    return { enabled: true, recallBudget: LIMITS.recallBudget.default, injectionLimit: LIMITS.injectionLimit.default, required: [] };
+    return { enabled: true, recallBudget: LIMITS.recallBudget.default, injectionLimit: LIMITS.injectionLimit.default, required: [], documents: [] };
   }
 }
 
@@ -69,6 +84,7 @@ export function writeSettings(root: string, next: Partial<Settings>): Settings {
     recallBudget: clamp(merged.recallBudget, LIMITS.recallBudget),
     injectionLimit: clamp(merged.injectionLimit, LIMITS.injectionLimit),
     required: requiredIds(merged.required),
+    documents: documentList(merged.documents),
   };
   // Известные поля перезаписываются проверенными значениями, чужие остаются нетронутыми.
   writeFileSync(resolve(root, SETTINGS_PATH), JSON.stringify({ ...unknownKeys(root), ...value }, null, 2) + '\n');

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { resolve, relative, isAbsolute } from 'node:path';
 import { projectionStatus, stageProjection, syncProjection } from './projection';
+import { readSettings } from './settings';
 import { PLUGIN_VERSION } from './version';
 
 export type Source = { episode?: string; path?: string; hash?: string; quote: string };
@@ -291,7 +292,10 @@ export class MemoryStore {
     }
     return out;
   }
-  authority(documents: string[] = []) {
+  // Список добавленных документов берётся из настроек проекта здесь, а не у вызывающего:
+  // commit и проверка устаревания считают хеш набора внутри ядра, и расхождение сделало бы
+  // каждую запись мгновенно STALE.
+  authority(documents: string[] = readSettings(this.root).documents) {
     const paths = ['.memory/MEMORY.md','.memory/todo.json','.memory/PROJECT.md','.memory/architecture.json',
       ...new Bun.Glob('.memory/adr/**/*.md').scanSync({cwd:this.root,onlyFiles:true,followSymlinks:false}),
       ...documents].sort();

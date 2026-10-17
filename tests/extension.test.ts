@@ -108,6 +108,52 @@ test('the commit contract is stated in the tool, and the block keeps policy with
   } finally { f.clean(); }
 });
 
+// ЗАМЕРЕНО 2026-10-17 в живом HUICAD: .memory/DESIGN.md на 17 КБ был документом памяти —
+// 9 чтений за сессию, источник сохранённой записи, — но в канонический набор не входил, и блок
+// при этом утверждал «nothing else is project memory».
+test('a project document can join the canonical set, and only the user can add it',async()=>{
+  const f=fixture(); try {
+    writeFileSync(join(f.dir,'.memory/DESIGN.md'),'Палитра и соответствие элементов.');
+    const block=async()=>{
+      await f.handlers.before_agent_start({prompt:'Что в памяти?'},f.ctx);
+      const event=await f.handlers.context({messages:[]},f.ctx);
+      return event?.messages?.find((m:any)=>m.customType==='project-memory-context')?.content as string;
+    };
+    expect(await block()).not.toContain('.memory/DESIGN.md');
+    // Запись, сохранённая до расширения набора.
+    const tool=f.tools.project_memory;
+    await f.handlers.before_agent_start({prompt:'Палитра согласована'},f.ctx);
+    await tool.execute('id',{op:'commit',summary:'сохранил',changes:[{id:'palette',kind:'fact',status:'active',
+      expectedVersion:0,text:'Палитра согласована',source:{origin:'user',quote:'Палитра согласована'}}]},null,null,f.ctx);
+    expect((await tool.execute('id',{op:'recall',id:'palette'},null,null,f.ctx)).details.freshness).not.toContain('STALE');
+
+    await f.commands.huimem.handler('include .memory/DESIGN.md',f.ctx);
+    const after=await block();
+    expect(after).toContain('.memory/DESIGN.md — project document, added in settings · 33 chars');
+    // Набор изменился — и это ровно то, о чём сообщает STALE; предупреждение сказано заранее.
+    expect(String(f.notices.at(-1)?.content)).toContain('will show STALE once');
+    expect((await tool.execute('id',{op:'recall',id:'palette'},null,null,f.ctx)).details.freshness).toContain('STALE');
+    // Теперь правка документа тоже делает записи STALE: он часть набора.
+    const hashed=new MemoryStore(f.dir); let before:string;
+    try { before=hashed.authority().hash; } finally { hashed.close(); }
+    writeFileSync(join(f.dir,'.memory/DESIGN.md'),'Палитра изменилась.');
+    const again=new MemoryStore(f.dir);
+    try { expect(again.authority().hash).not.toBe(before); } finally { again.close(); }
+
+    // Чужие и выдуманные пути не принимаются, а настройки закрыты от файловых инструментов модели.
+    await f.commands.huimem.handler('include ../secrets.md',f.ctx);
+    expect(String(f.notices.at(-1)?.content)).toContain('Not an addable path');
+    await f.commands.huimem.handler('include .memory/RECORDS.md',f.ctx);
+    expect(String(f.notices.at(-1)?.content)).toContain('Not an addable path');
+    await f.commands.huimem.handler('include .memory/NOPE.md',f.ctx);
+    expect(String(f.notices.at(-1)?.content)).toContain('No such file');
+    expect((await f.handlers.tool_call({toolName:'write',input:{path:'.memory/settings.json'}},f.ctx)).block).toBe(true);
+
+    await f.commands.huimem.handler('exclude .memory/DESIGN.md',f.ctx);
+    expect(await block()).not.toContain('.memory/DESIGN.md');
+  } finally { f.clean(); }
+});
+
 // ЗАМЕРЕНО 2026-10-17 в живом HUICAD: каждый status и каждый commit несли
 // {"configured":false,"ok":false,"failures":["Architecture rules are not configured"]},
 // и ненастроенная проверка выглядела как провалённая на каждом вызове.

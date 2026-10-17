@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { LIMITS, REQUIRED_MAX, readSettings, writeSettings, SETTINGS_PATH } from '../memory/settings';
+import { LIMITS, REQUIRED_MAX, DOCUMENTS_MAX, documentPath, readSettings, writeSettings, SETTINGS_PATH } from '../memory/settings';
 import { apply, audit } from '../memory/adr-audit';
 import { initProject } from '../memory/starter';
 import { diagnoseMemory, formatDoctor } from '../memory/doctor';
@@ -44,6 +44,8 @@ const HELP = [
   '  /huimem omp          OMP settings that affect memory',
   '  /huimem require <id>    deliver this record every turn, even when unrelated to the question (max ' + REQUIRED_MAX + ')',
   '  /huimem unrequire <id>  stop delivering it unconditionally',
+  '  /huimem include <path>  count a .memory document as canonical: listed in the block, hashed, tracked for staleness (max ' + DOCUMENTS_MAX + ')',
+  '  /huimem exclude <path>  stop counting it',
   '  /huimem reset        restore the default limits',
   '  /huimem sync         retry publishing .memory/RECORDS.md from saved records',
   '  /huimem context      inspect the latest memory block prepared for OMP',
@@ -225,6 +227,33 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       } catch (e) { return say('ADR audit failed: ' + String(e)); }
     }
 
+    // Канонический набор задаёт пользователь, а не модель: файл настроек закрыт от её
+    // файловых инструментов. ЗАМЕРЕНО 2026-10-17 в HUICAD: .memory/DESIGN.md на 17 КБ был
+    // живым документом памяти — 9 чтений, источник сохранённой записи, — но в наборе его не
+    // было, и блок утверждал, что кроме своего списка ничего памятью не является.
+    if (verb === 'include' || verb === 'exclude') {
+      const listed = cfg.documents.length ? cfg.documents.join(', ') : 'none';
+      if (!value) return say(`Canonical documents added in this project: ${listed}.\nUsage: /huimem ${verb} <path inside .memory>`);
+      if (verb === 'exclude') {
+        if (!cfg.documents.includes(value)) return say(`${value} is not in the added set. Added: ${listed}.`);
+        const saved = writeSettings(ctx.cwd, { documents: cfg.documents.filter(p => p !== value) });
+        return say(`${value} is no longer canonical: it is not listed in the block and no longer tracked for staleness.\n`
+          + `Added: ${saved.documents.join(', ') || 'none'}. Records saved without dependsOn will show STALE once, because the canonical set changed.`);
+      }
+      if (cfg.documents.includes(value)) return say(`${value} is already canonical.`);
+      if (!documentPath(value)) return say(
+        `Not an addable path: ${value}\nUse a path inside .memory, for example .memory/DESIGN.md. `
+        + 'MEMORY.md, PROJECT.md, todo.json, architecture.json and .memory/adr/** are always canonical; '
+        + 'RECORDS.md is generated, settings.json and runtime/ are not documents.');
+      if (cfg.documents.length >= DOCUMENTS_MAX) return say(`At most ${DOCUMENTS_MAX} added documents. Remove one with /huimem exclude <path> first.`);
+      if (!existsSync(resolve(ctx.cwd, value))) return say(`No such file: ${value}. Create the document first; the set names real files.`);
+      const saved = writeSettings(ctx.cwd, { documents: [...cfg.documents, value] });
+      return say(`${value} is canonical from the next message: listed in the memory block, hashed with the set and tracked for staleness.\n`
+        + `Added: ${saved.documents.join(', ')}. File: ${SETTINGS_PATH}\n`
+        + 'Records saved without dependsOn will show STALE once: the canonical set changed, which is exactly what STALE reports. '
+        + 'Recheck them or save corrected versions; nothing is deleted.');
+    }
+
     // Обязательные записи задаёт только пользователь: модель не может объявить удобное ей
     // правило необязательным, а файл настроек закрыт от её файловых инструментов.
     if (verb === 'require' || verb === 'unrequire') {
@@ -283,6 +312,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
         `Recall budget:      ${cfg.recallBudget} characters`,
         `Injection limit:    ${cfg.injectionLimit} characters`,
         `Required records:   ${cfg.required.length ? cfg.required.join(', ') : 'none'}`,
+        `Added documents:    ${cfg.documents.length ? cfg.documents.join(', ') : 'none (the plugin set only)'}`,
         `Settings file:      ${settingsFileExists ? SETTINGS_PATH : 'none, defaults apply'}`,
         err ? `Health:             ${err}` : 'Health:             no errors',
         '',
