@@ -28,6 +28,9 @@ export type CommandDeps = {
   // ЗАМЕРЕНО 2026-10-14 в HUICAD — проектный autoThinkingMaxEffort: high не перекрыл глобальный
   // max, и расхождение пришлось искать по файлам сессий. Метода может не быть в старом OMP.
   thinkingLevel: () => string | undefined;
+  // Эта сессия — подагент. Показывается в состоянии, чтобы признак можно было проверить,
+  // а не принимать на веру: метода «я подагент» в API расширений нет.
+  subagent: (ctx: any) => boolean;
 };
 
 const HELP = [
@@ -320,6 +323,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
         `Injection limit:    ${cfg.injectionLimit} characters`,
         `Required records:   ${cfg.required.length ? cfg.required.join(', ') : 'none'}`,
         `Added documents:    ${cfg.documents.length ? cfg.documents.join(', ') : 'none (the plugin set only)'}`,
+        `Subagent block:     ${cfg.subagentBlock}${deps.subagent(ctx) ? ' (this session is a subagent)' : ''}`,
         `Settings file:      ${settingsFileExists ? SETTINGS_PATH : 'none, defaults apply'}`,
         err ? `Health:             ${err}` : 'Health:             no errors',
         '',

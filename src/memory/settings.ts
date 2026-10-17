@@ -13,7 +13,15 @@ export const SETTINGS_PATH = '.memory/settings.json';
 // на живом HUICAD: в проекте лежал .memory/DESIGN.md на 17 КБ, модель прочитала его 9 раз и
 // сохранила из него запись, а блок при этом утверждал «nothing else is project memory» —
 // неправду. Файла не было ни в перечне, ни в хеше канонического набора.
-export type Settings = { enabled: boolean; recallBudget: number; injectionLimit: number; required: string[]; documents: string[] };
+// subagentBlock — сколько памяти получает подагент. ЗАМЕРЕНО 2026-10-17 на живом HUICAD:
+// четыре исследователя получили 98 вставок полного блока по 7,9 КБ за 385 секунд и не сделали
+// ни одного вызова project_memory за 264 вызова инструментов. Правила сохранения им не нужны:
+// они возвращают находки родителю, а сохраняет родитель. 'short' — состояние, правила
+// доказательств, список файлов и записи; 'off' — ничего; 'full' — как у главного агента.
+export type SubagentBlock = 'short' | 'full' | 'off';
+export type Settings = { enabled: boolean; recallBudget: number; injectionLimit: number;
+  required: string[]; documents: string[]; subagentBlock: SubagentBlock };
+const subagentBlock = (v: unknown): SubagentBlock => v === 'full' || v === 'off' ? v : 'short';
 export const REQUIRED_MAX = 10;
 export const DOCUMENTS_MAX = 10;
 const requiredIds = (v: unknown): string[] => Array.isArray(v)
@@ -54,7 +62,7 @@ function readRaw(root: string): Record<string, unknown> {
     return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
   } catch { return {}; }
 }
-const KNOWN = ['enabled', 'recallBudget', 'injectionLimit', 'required', 'documents'];
+const KNOWN = ['enabled', 'recallBudget', 'injectionLimit', 'required', 'documents', 'subagentBlock'];
 export function unknownKeys(root: string): Record<string, unknown> {
   return Object.fromEntries(Object.entries(readRaw(root)).filter(([k]) => !KNOWN.includes(k)));
 }
@@ -69,11 +77,12 @@ export function readSettings(root: string): Settings {
       injectionLimit: clamp(raw?.injectionLimit, LIMITS.injectionLimit),
       required: requiredIds(raw?.required),
       documents: documentList(raw?.documents),
+      subagentBlock: subagentBlock(raw?.subagentBlock),
     };
   } catch {
     // Повреждённый или отсутствующий файл не должен ронять сессию: работаем на значениях
     // по умолчанию. Молчаливой подмены нет — /huimem показывает, что читается сейчас.
-    return { enabled: true, recallBudget: LIMITS.recallBudget.default, injectionLimit: LIMITS.injectionLimit.default, required: [], documents: [] };
+    return { enabled: true, recallBudget: LIMITS.recallBudget.default, injectionLimit: LIMITS.injectionLimit.default, required: [], documents: [], subagentBlock: 'short' };
   }
 }
 
@@ -85,6 +94,7 @@ export function writeSettings(root: string, next: Partial<Settings>): Settings {
     injectionLimit: clamp(merged.injectionLimit, LIMITS.injectionLimit),
     required: requiredIds(merged.required),
     documents: documentList(merged.documents),
+    subagentBlock: subagentBlock(merged.subagentBlock),
   };
   // Известные поля перезаписываются проверенными значениями, чужие остаются нетронутыми.
   writeFileSync(resolve(root, SETTINGS_PATH), JSON.stringify({ ...unknownKeys(root), ...value }, null, 2) + '\n');

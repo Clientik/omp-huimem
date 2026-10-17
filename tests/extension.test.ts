@@ -108,6 +108,54 @@ test('the commit contract is stated in the tool, and the block keeps policy with
   } finally { f.clean(); }
 });
 
+// ЗАМЕРЕНО 2026-10-17 на живом HUICAD. Восемь исследователей получили полный блок на каждом
+// ходу — 98 вставок по 7,9 КБ за 385 секунд — и не вызвали project_memory ни разу за 264 вызова
+// инструментов. И главное: их задания, написанные моделью, легли в эпизоды КАК СООБЩЕНИЯ
+// ПОЛЬЗОВАТЕЛЯ — 9 из 21, все с началом «Complete assignment thoroughly: # Target». Такой эпизод
+// мог стать основанием принятого решения, то есть выдать машинное задание за слово пользователя.
+test('a subagent gets a short block and its brief never becomes user evidence',async()=>{
+  const f=fixture(); try {
+    const parent='2026-10-17T10-00-00-000Z_01a13b3a-1e79-731d-b543-a86be2d5353b';
+    const sub={...f.ctx, sessionManager:{ getSessionId:()=>'sub', getSessionFile:()=>`C:/s/--D--P--/${parent}/Research.jsonl` }};
+    const main={...f.ctx, sessionManager:{ getSessionId:()=>'main', getSessionFile:()=>`C:/s/--D--P--/${parent}.jsonl` }};
+    const block=async(c:any,prompt:string)=>{
+      await f.handlers.before_agent_start({prompt},c);
+      const e=await f.handlers.context({messages:[]},c);
+      return e?.messages?.find((m:any)=>m.customType==='project-memory-context')?.content as string ?? '';
+    };
+    const full=await block(main,'Разберись с задачей');
+    const brief='Complete assignment thoroughly:\n# Target\nИсследуй OCCT.';
+    const shortBlock=await block(sub,brief);
+    // Правила доказательств остаются, правила сохранения — нет.
+    expect(shortBlock).toContain('SOURCE ORDER');
+    expect(shortBlock).toContain('CLAIM SCOPE');
+    expect(shortBlock).toContain('SUBAGENT: you report findings');
+    expect(shortBlock).not.toContain('commit is AVAILABLE');
+    expect(shortBlock).not.toContain('Previous checkpoint');
+    expect(shortBlock.length).toBeLessThan(full.length);
+
+    const s=new MemoryStore(f.dir);
+    try {
+      const brief_=s.db.query("SELECT role FROM episodes WHERE text LIKE 'Complete assignment%'").get() as any;
+      expect(brief_.role).toBe('assistant');
+      expect((s.db.query("SELECT role FROM episodes WHERE text='Разберись с задачей'").get() as any).role).toBe('user');
+      expect(s.events(10).some((e:any)=>e.kind==='subagent-block' && e.detail==='short')).toBe(true);
+    } finally { s.close(); }
+    // origin="user" у подагента не к чему привязать: машинное задание не выдаётся за слово пользователя.
+    const denied=await f.tools.project_memory.execute('id',{op:'commit',summary:'из подагента',changes:[{id:'x',kind:'decision',
+      status:'accepted',expectedVersion:0,text:'Решение',rationale:'Исследуй OCCT',source:{origin:'user',quote:'Исследуй OCCT'}}]},null,null,sub);
+    expect(denied.isError).toBe(true);
+    expect(JSON.stringify(denied)).toContain('USER_SOURCE_REQUIRED');
+
+    // Выключатель: подагенту можно не давать блок вовсе.
+    writeFileSync(join(f.dir,'.memory/settings.json'),JSON.stringify({subagentBlock:'off'}));
+    expect(await block(sub,brief)).toBe('');
+    // А главный агент получает всё тот же полный блок.
+    writeFileSync(join(f.dir,'.memory/settings.json'),JSON.stringify({subagentBlock:'full'}));
+    expect(await block(sub,brief)).toContain('commit is AVAILABLE');
+  } finally { f.clean(); }
+});
+
 // ЗАМЕРЕНО 2026-10-17: четыре подагента за 385 секунд стёрли журнал вставок целиком, и
 // проверить на живой сессии, дошли ли однократные уведомления 0.6.6, оказалось нечем.
 test('one-shot notices leave a durable trace',async()=>{
