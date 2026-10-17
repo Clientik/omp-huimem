@@ -82,8 +82,11 @@ test('stale records remain selectable and final clipping is separate from retrie
 }));
 
 test('direct ID diagnostics report missing records and bound receipt retention',()=>fixture(s=>{
-  for(let i=0;i<105;i++) s.recordIdRetrieval('run'+i,'missing',null);
-  expect((s.db.query('SELECT COUNT(*) n FROM retrieval_receipts').get() as any).n).toBe(100);
+  // С 2026-10-17 место делится по агентам (ключ до двоеточия), а общий предел — 200 строк.
+  for(let i=0;i<105;i++) s.recordIdRetrieval('agent-a:'+i,'missing',null);
+  expect((s.db.query('SELECT COUNT(*) n FROM retrieval_receipts').get() as any).n).toBe(10);
+  for(let i=0;i<40;i++) s.recordIdRetrieval('agent-b:'+i,'missing',null);
+  expect((s.db.query("SELECT COUNT(*) n FROM retrieval_receipts WHERE run LIKE 'agent-a:%'").get() as any).n).toBe(10);
   expect(s.lastRetrieval()).toMatchObject({channel:'tool-id',counts:{missing:1},candidates:[]});
   save(s,'a','original');
   s.recordIdRetrieval('last','a',s.current('a'));

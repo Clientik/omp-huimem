@@ -79,6 +79,10 @@ export default function install(pi: ExtensionAPI) {
     return store;
   }
   function healthFailure(ctx: any, e: unknown) { error = 'MEMORY_ERROR: ' + String(e); notify(ctx,error,'error'); }
+  // Запись события никогда не мешает работе: журнал — диагностика, а не часть хода.
+  function trace(s: any, ctx: any, kind: string, detail = '') {
+    try { s.recordEvent(key(), kind, detail); } catch (e) { notify(ctx, 'EVENT_TRACE_ERROR: ' + String(e)); }
+  }
   function key() { return `${run}:${generation}`; }
   function policyText(ctx: any) {
     try { return readFileSync(resolve(ctx.cwd,'.memory/architecture.json'),'utf8'); }
@@ -221,8 +225,11 @@ export default function install(pi: ExtensionAPI) {
       // бюджетом её могло вытеснить, и тогда переход должен остаться незавершённым.
       if (upgrade && content.includes('PLUGIN_UPGRADED')) {
         try { s.clearUpgrade(); } catch (e) { notify(ctx, 'UPGRADE_NOTICE_ERROR: ' + String(e)); }
+        // Однократное уведомление записывается в журнал событий: по журналу вставок этого было
+        // не увидеть — четыре подагента стирали его за шесть минут (audit/huicad-after-0.6.6).
+        trace(s, ctx, 'upgrade-delivered', upgrade.slice(0, 120));
       }
-      if (compacted && content.includes('HISTORY_COMPACTED')) compacted = false;
+      if (compacted && content.includes('HISTORY_COMPACTED')) { compacted = false; trace(s, ctx, 'history-compacted'); }
       const registryOffset = packed.registryOffset;
       try { s.recordContext(key(),content,registryOffset,packed.truncated); }
       catch(e) { notify(ctx,'CONTEXT_TRACE_ERROR: '+String(e)); }
@@ -296,6 +303,7 @@ export default function install(pi: ExtensionAPI) {
       // ПРИЧИНА 2026-10-17: текст начинался со «CHECKPOINT_MISSING: use ... before completing»
       // и выводился уровнем error, поэтому читался как сбой — пользователь спросил, что это за
       // ошибка. Ничего не сломалось: ход завершён, ничего не потеряно, повтор не назначается.
+      trace(s, ctx, missing ? 'checkpoint-missing' : 'architecture-failed', missing ? '' : arch.failures.join('; '));
       notify(ctx, missing
         ? 'CHECKPOINT_MISSING: this turn changed something and nothing was saved to the registry. '
           + 'Nothing failed and nothing is lost; no automatic continuation is scheduled. '

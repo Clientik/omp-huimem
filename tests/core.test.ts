@@ -80,11 +80,31 @@ test('context receipts track complete registry rows after final truncation, not 
   expect(JSON.stringify(receipt)).not.toContain('fake');
 }));
 
-test('context receipts deduplicate consecutive identical blocks and retain only the latest 100',()=>withStore(s=>{
-  for(let i=0;i<105;i++) s.recordContext('run:'+i,'block '+i,0,false);
-  s.recordContext('run:104','block 104',0,false);
-  expect((s.db.query('SELECT COUNT(*) n FROM context_receipts').get() as any).n).toBe(100);
-  expect(s.lastContext().run).toBe('run:104');
+// ЗАМЕРЕНО 2026-10-17 на живом HUICAD: четыре подагента за 385 секунд сделали 100 вставок
+// блока и вытеснили из журнала всю историю главного агента. Место делится по агентам.
+test('context receipts deduplicate identical blocks and leave room for every agent',()=>withStore(s=>{
+  for(let i=0;i<105;i++) s.recordContext('main:'+i,'block '+i,0,false);
+  s.recordContext('main:104','block 104',0,false);
+  expect((s.db.query('SELECT COUNT(*) n FROM context_receipts').get() as any).n).toBe(25);
+  expect(s.lastContext().run).toBe('main:104');
+  // Веер подагентов не стирает след главного: у каждого своя доля.
+  for(const agent of ['sub-a','sub-b','sub-c','sub-d'])
+    for(let i=0;i<60;i++) s.recordContext(agent+':'+i,'block '+agent+i,0,false);
+  const left=(run:string)=>(s.db.query("SELECT COUNT(*) n FROM context_receipts WHERE run LIKE ?").get(run+':%') as any).n;
+  expect(left('main')).toBe(25);
+  for(const agent of ['sub-a','sub-b','sub-c','sub-d']) expect(left(agent)).toBe(25);
+  expect((s.db.query('SELECT COUNT(*) n FROM context_receipts').get() as any).n).toBeLessThanOrEqual(400);
+}));
+// Журнал событий переживает то, что стирает журнал вставок: только по нему и можно проверить,
+// дошло ли однократное уведомление до модели.
+test('events survive a fan-out that wipes the context log',()=>withStore(s=>{
+  s.recordEvent('main:1','upgrade-delivered','0.6.6 -> 0.6.7');
+  for(const agent of ['sub-a','sub-b','sub-c','sub-d'])
+    for(let i=0;i<60;i++) s.recordContext(agent+':'+i,'block '+agent+i,0,false);
+  const events=s.events(50);
+  expect(events[0]).toMatchObject({kind:'upgrade-delivered',detail:'0.6.6 -> 0.6.7'});
+  for(let i=0;i<520;i++) s.recordEvent('main:'+i,'checkpoint-missing');
+  expect((s.db.query('SELECT COUNT(*) n FROM events').get() as any).n).toBe(500);
 }));
 test('recall distinguishes accepted evidence from an unsupported decision interpretation', () => withStore(s => {
   const quote = 'Use 7 retries. Gateway window is 19 minutes.';

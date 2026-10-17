@@ -59,7 +59,7 @@ export class MemoryStore {
       this.db=new Database(path,{readonly:true,strict:true});
       try {
         const tables=(this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as any[]).map(row=>row.name as string);
-        const known=new Set(['meta','episodes','versions','checkpoints','health','projection','context_receipts','retrieval_receipts','checkpoint_scope','checkpoint_archive']);
+        const known=new Set(['meta','episodes','versions','checkpoints','health','projection','context_receipts','retrieval_receipts','checkpoint_scope','checkpoint_archive','events']);
         const foreign=tables.filter(name=>!known.has(name));
         if(foreign.length) throw new Error(`FOREIGN_SCHEMA: unexpected table(s): ${foreign.join(', ')}`);
         const meta=tables.includes('meta');
@@ -86,7 +86,7 @@ export class MemoryStore {
     this.db = new Database(dbPath, { create: true, strict: true });
     try {
       const existing=(this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as any[]).map(row=>row.name as string);
-      const known=new Set(['meta','episodes','versions','checkpoints','health','projection','context_receipts','retrieval_receipts','checkpoint_scope','checkpoint_archive']);
+      const known=new Set(['meta','episodes','versions','checkpoints','health','projection','context_receipts','retrieval_receipts','checkpoint_scope','checkpoint_archive','events']);
       const foreign=existing.filter(name=>!known.has(name));
       if(foreign.length) throw new Error(`FOREIGN_SCHEMA: unexpected table(s): ${foreign.join(', ')}`);
       if(existing.length) {
@@ -117,6 +117,9 @@ export class MemoryStore {
         // Keep a task's last summary when another commit replaces the same run marker.
         // Existing checkpoints remain readable; archive lazily on the first replacement.
         this.db.exec('CREATE TABLE IF NOT EXISTS checkpoint_archive(run TEXT, task TEXT, summary TEXT, time TEXT, branch TEXT, PRIMARY KEY(run,task))');
+        // Журнал событий: что было сказано модели и когда. Схема остаётся 2 — это не
+        // миграция данных; прежние сборки таблицу не читают (как было с checkpoint_scope).
+        this.db.exec('CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY, run TEXT NOT NULL, kind TEXT NOT NULL, detail TEXT, time TEXT NOT NULL)');
         if(version?.value==='1') stageProjection(this.db);
         this.db.query("INSERT OR REPLACE INTO meta VALUES ('schema','2')").run();
         // Метка версии плагина. Схема остаётся 2: это не миграция данных, а след того, кто
@@ -137,6 +140,30 @@ export class MemoryStore {
   }
   close() { if (!this.closed) { this.db.close(); this.closed = true; } }
   sync() { return syncProjection(this.db,this.root); }
+  // ЗАМЕРЕНО 2026-10-17 на живом HUICAD: четыре подагента за 385 секунд сделали 100 вставок
+  // блока и стёрли весь журнал вставок, который хранит последние 100 строк. Из-за этого
+  // проверить на живой сессии, сработали ли однократные уведомления 0.6.6, оказалось нечем.
+  // События — отдельная таблица: их мало, они переживают веер подагентов, и именно по ним
+  // видно, что было сказано модели и когда.
+  static readonly EVENTS_KEPT = 500;
+  recordEvent(run: string, kind: string, detail = '') {
+    this.db.transaction(() => {
+      this.db.query('INSERT INTO events(run,kind,detail,time) VALUES(?,?,?,?)')
+        .run(run, kind, detail.slice(0, 500), new Date().toISOString());
+      this.db.exec(`DELETE FROM events WHERE seq NOT IN (SELECT seq FROM events ORDER BY seq DESC LIMIT ${MemoryStore.EVENTS_KEPT})`);
+    }).immediate();
+  }
+  events(limit = 20) {
+    return this.db.query(`SELECT run,kind,detail,time FROM events ORDER BY seq DESC LIMIT ${Math.min(200, Math.max(1, limit))}`).all() as any[];
+  }
+  // Место в журналах делится между агентами: иначе веер подагентов вытесняет историю главного.
+  private trim(table: string, perRun: number, total: number) {
+    this.db.exec(`DELETE FROM ${table} WHERE seq NOT IN (
+      SELECT seq FROM (SELECT seq, ROW_NUMBER() OVER (
+        PARTITION BY CASE WHEN instr(run,':')>0 THEN substr(run,1,instr(run,':')-1) ELSE run END
+        ORDER BY seq DESC) rn FROM ${table}) WHERE rn<=${perRun})
+      OR seq NOT IN (SELECT seq FROM ${table} ORDER BY seq DESC LIMIT ${total})`);
+  }
   recordContext(run:string,content:string,registryOffset:number,truncated:boolean) {
     const records:{id:string;version:number}[]=[];
     for(const line of content.slice(registryOffset).split('\n')) {
@@ -152,7 +179,7 @@ export class MemoryStore {
       if(last?.run===run && last?.hash===digest) return;
       this.db.query('INSERT INTO context_receipts(run,hash,characters,truncated,records,time) VALUES(?,?,?,?,?,?)')
         .run(run,digest,content.length,Number(truncated),JSON.stringify(records),new Date().toISOString());
-      this.db.exec('DELETE FROM context_receipts WHERE seq NOT IN (SELECT seq FROM context_receipts ORDER BY seq DESC LIMIT 100)');
+      this.trim('context_receipts',25,400);
     }).immediate();
   }
   lastContext() {
@@ -174,7 +201,7 @@ export class MemoryStore {
       ...(checkpoints===undefined ? {} : {checkpoints})};
     this.db.transaction(()=>{
       this.db.query('INSERT INTO retrieval_receipts(run,channel,data,time) VALUES(?,?,?,?)').run(run,channel,JSON.stringify(data),new Date().toISOString());
-      this.db.exec('DELETE FROM retrieval_receipts WHERE seq NOT IN (SELECT seq FROM retrieval_receipts ORDER BY seq DESC LIMIT 100)');
+      this.trim('retrieval_receipts',10,200);
     }).immediate();
   }
   lastRetrieval() {

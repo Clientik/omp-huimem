@@ -124,9 +124,16 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       try {
         const store=deps.store(ctx);
         const receipt=store.lastContext(), retrieval=store.lastRetrieval();
+        // События переживают веер подагентов, журнал вставок — нет: четыре исследователя
+        // стирали его за шесть минут (audit/huicad-after-0.6.6), и проверить однократные
+        // уведомления было нечем.
+        const events=store.events(20) as any[];
         return say((receipt ? 'Last prepared memory block (not proof the model used it):\n'+JSON.stringify(receipt,null,2)
           : 'No memory block has been prepared for this project yet.')+
-          '\nLatest retrieval (may be a different run; JS character counts, not tokens):\n'+JSON.stringify(retrieval,null,2));
+          '\nLatest retrieval (may be a different run; JS character counts, not tokens):\n'+JSON.stringify(retrieval,null,2)+
+          '\nRecent memory events (newest first):\n'+(events.length
+            ? events.map(e=>`  ${e.time.slice(0,19).replace('T',' ')}  ${e.kind}${e.detail ? ' — '+e.detail : ''}`).join('\n')
+            : '  none recorded yet'));
       } catch(e) { return say('Context trace unavailable: '+String(e)); }
     }
     if (verb === 'sync') {

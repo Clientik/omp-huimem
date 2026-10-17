@@ -108,6 +108,34 @@ test('the commit contract is stated in the tool, and the block keeps policy with
   } finally { f.clean(); }
 });
 
+// ЗАМЕРЕНО 2026-10-17: четыре подагента за 385 секунд стёрли журнал вставок целиком, и
+// проверить на живой сессии, дошли ли однократные уведомления 0.6.6, оказалось нечем.
+test('one-shot notices leave a durable trace',async()=>{
+  const f=fixture(); try {
+    const old=new MemoryStore(f.dir);
+    try { old.db.query("INSERT OR REPLACE INTO meta VALUES ('plugin','0.6.5')").run(); } finally { old.close(); }
+    const block=async()=>{
+      await f.handlers.before_agent_start({prompt:'Продолжаем'},f.ctx);
+      const e=await f.handlers.context({messages:[]},f.ctx);
+      return e?.messages?.find((m:any)=>m.customType==='project-memory-context')?.content as string;
+    };
+    expect(await block()).toContain('PLUGIN_UPGRADED');
+    await f.handlers.session_before_compact({},f.ctx);
+    expect(await block()).toContain('HISTORY_COMPACTED');
+    await f.handlers.tool_result({toolName:'write',isError:false},f.ctx);
+    await f.handlers.session_stop({},f.ctx);
+    const s=new MemoryStore(f.dir); let kinds:string[];
+    try { kinds=s.events(20).map((e:any)=>e.kind); } finally { s.close(); }
+    expect(kinds).toContain('upgrade-delivered');
+    expect(kinds).toContain('history-compacted');
+    expect(kinds).toContain('checkpoint-missing');
+    // Те же события видно и пользователю, без чтения базы.
+    await f.commands.huimem.handler('context',f.ctx);
+    expect(String(f.notices.at(-1)?.content)).toContain('Recent memory events');
+    expect(String(f.notices.at(-1)?.content)).toContain('upgrade-delivered');
+  } finally { f.clean(); }
+});
+
 // ЗАМЕРЕНО 2026-10-17 в живом HUICAD: .memory/DESIGN.md на 17 КБ был документом памяти —
 // 9 чтений за сессию, источник сохранённой записи, — но в канонический набор не входил, и блок
 // при этом утверждал «nothing else is project memory».
@@ -367,7 +395,7 @@ test('/huimem doctor and its menu item report an existing database without chang
     s.close();
     writeFileSync(join(f.dir,'.memory/RECORDS.md'),'Human correction');
     const dump=()=>{const db=new MemoryStore(f.dir,{readOnly:true}); try {
-      return ['versions','episodes','checkpoints','health','projection','context_receipts','retrieval_receipts','meta']
+      return ['versions','episodes','checkpoints','health','projection','context_receipts','retrieval_receipts','events','meta']
         .map(t=>JSON.stringify(db.db.query(`SELECT * FROM ${t}`).all())).join('\n');
     } finally {db.close();}};
     const before=dump();

@@ -267,7 +267,7 @@ class MemoryStore {
       this.db = new Database(path, { readonly: true, strict: true });
       try {
         const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().map((row) => row.name);
-        const known = new Set(["meta", "episodes", "versions", "checkpoints", "health", "projection", "context_receipts", "retrieval_receipts", "checkpoint_scope", "checkpoint_archive"]);
+        const known = new Set(["meta", "episodes", "versions", "checkpoints", "health", "projection", "context_receipts", "retrieval_receipts", "checkpoint_scope", "checkpoint_archive", "events"]);
         const foreign = tables.filter((name) => !known.has(name));
         if (foreign.length)
           throw new Error(`FOREIGN_SCHEMA: unexpected table(s): ${foreign.join(", ")}`);
@@ -309,7 +309,7 @@ class MemoryStore {
     this.db = new Database(dbPath, { create: true, strict: true });
     try {
       const existing = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().map((row) => row.name);
-      const known = new Set(["meta", "episodes", "versions", "checkpoints", "health", "projection", "context_receipts", "retrieval_receipts", "checkpoint_scope", "checkpoint_archive"]);
+      const known = new Set(["meta", "episodes", "versions", "checkpoints", "health", "projection", "context_receipts", "retrieval_receipts", "checkpoint_scope", "checkpoint_archive", "events"]);
       const foreign = existing.filter((name) => !known.has(name));
       if (foreign.length)
         throw new Error(`FOREIGN_SCHEMA: unexpected table(s): ${foreign.join(", ")}`);
@@ -343,6 +343,7 @@ class MemoryStore {
         this.db.exec("CREATE TABLE IF NOT EXISTS retrieval_receipts(seq INTEGER PRIMARY KEY, run TEXT NOT NULL, channel TEXT NOT NULL, data TEXT NOT NULL, time TEXT NOT NULL)");
         this.db.exec("CREATE TABLE IF NOT EXISTS checkpoint_scope(run TEXT PRIMARY KEY, task TEXT, branch TEXT)");
         this.db.exec("CREATE TABLE IF NOT EXISTS checkpoint_archive(run TEXT, task TEXT, summary TEXT, time TEXT, branch TEXT, PRIMARY KEY(run,task))");
+        this.db.exec("CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY, run TEXT NOT NULL, kind TEXT NOT NULL, detail TEXT, time TEXT NOT NULL)");
         if (version?.value === "1")
           stageProjection(this.db);
         this.db.query("INSERT OR REPLACE INTO meta VALUES ('schema','2')").run();
@@ -372,6 +373,23 @@ class MemoryStore {
   sync() {
     return syncProjection(this.db, this.root);
   }
+  static EVENTS_KEPT = 500;
+  recordEvent(run, kind, detail = "") {
+    this.db.transaction(() => {
+      this.db.query("INSERT INTO events(run,kind,detail,time) VALUES(?,?,?,?)").run(run, kind, detail.slice(0, 500), new Date().toISOString());
+      this.db.exec(`DELETE FROM events WHERE seq NOT IN (SELECT seq FROM events ORDER BY seq DESC LIMIT ${MemoryStore.EVENTS_KEPT})`);
+    }).immediate();
+  }
+  events(limit = 20) {
+    return this.db.query(`SELECT run,kind,detail,time FROM events ORDER BY seq DESC LIMIT ${Math.min(200, Math.max(1, limit))}`).all();
+  }
+  trim(table, perRun, total) {
+    this.db.exec(`DELETE FROM ${table} WHERE seq NOT IN (
+      SELECT seq FROM (SELECT seq, ROW_NUMBER() OVER (
+        PARTITION BY CASE WHEN instr(run,':')>0 THEN substr(run,1,instr(run,':')-1) ELSE run END
+        ORDER BY seq DESC) rn FROM ${table}) WHERE rn<=${perRun})
+      OR seq NOT IN (SELECT seq FROM ${table} ORDER BY seq DESC LIMIT ${total})`);
+  }
   recordContext(run, content, registryOffset, truncated) {
     const records = [];
     for (const line of content.slice(registryOffset).split(`
@@ -388,7 +406,7 @@ class MemoryStore {
       if (last?.run === run && last?.hash === digest)
         return;
       this.db.query("INSERT INTO context_receipts(run,hash,characters,truncated,records,time) VALUES(?,?,?,?,?,?)").run(run, digest, content.length, Number(truncated), JSON.stringify(records), new Date().toISOString());
-      this.db.exec("DELETE FROM context_receipts WHERE seq NOT IN (SELECT seq FROM context_receipts ORDER BY seq DESC LIMIT 100)");
+      this.trim("context_receipts", 25, 400);
     }).immediate();
   }
   lastContext() {
@@ -423,7 +441,7 @@ class MemoryStore {
     };
     this.db.transaction(() => {
       this.db.query("INSERT INTO retrieval_receipts(run,channel,data,time) VALUES(?,?,?,?)").run(run, channel, JSON.stringify(data), new Date().toISOString());
-      this.db.exec("DELETE FROM retrieval_receipts WHERE seq NOT IN (SELECT seq FROM retrieval_receipts ORDER BY seq DESC LIMIT 100)");
+      this.trim("retrieval_receipts", 10, 200);
     }).immediate();
   }
   lastRetrieval() {
@@ -2063,10 +2081,14 @@ Start omp in the project root and run /huimem init. Memory turns on with your ne
       try {
         const store = deps.store(ctx);
         const receipt = store.lastContext(), retrieval = store.lastRetrieval();
+        const events = store.events(20);
         return say((receipt ? `Last prepared memory block (not proof the model used it):
 ` + JSON.stringify(receipt, null, 2) : "No memory block has been prepared for this project yet.") + `
 Latest retrieval (may be a different run; JS character counts, not tokens):
-` + JSON.stringify(retrieval, null, 2));
+` + JSON.stringify(retrieval, null, 2) + `
+Recent memory events (newest first):
+` + (events.length ? events.map((e) => `  ${e.time.slice(0, 19).replace("T", " ")}  ${e.kind}${e.detail ? " \u2014 " + e.detail : ""}`).join(`
+`) : "  none recorded yet"));
       } catch (e) {
         return say("Context trace unavailable: " + String(e));
       }
@@ -2519,6 +2541,13 @@ function install(pi) {
     error = "MEMORY_ERROR: " + String(e);
     notify(ctx, error, "error");
   }
+  function trace(s, ctx, kind, detail = "") {
+    try {
+      s.recordEvent(key(), kind, detail);
+    } catch (e) {
+      notify(ctx, "EVENT_TRACE_ERROR: " + String(e));
+    }
+  }
   function key() {
     return `${run}:${generation}`;
   }
@@ -2659,9 +2688,12 @@ ${authority.listing}`,
         } catch (e) {
           notify(ctx, "UPGRADE_NOTICE_ERROR: " + String(e));
         }
+        trace(s, ctx, "upgrade-delivered", upgrade.slice(0, 120));
       }
-      if (compacted && content.includes("HISTORY_COMPACTED"))
+      if (compacted && content.includes("HISTORY_COMPACTED")) {
         compacted = false;
+        trace(s, ctx, "history-compacted");
+      }
       const registryOffset = packed.registryOffset;
       try {
         s.recordContext(key(), content, registryOffset, packed.truncated);
@@ -2746,6 +2778,7 @@ Do not claim memory or work was verified.`;
         }
         return;
       }
+      trace(s, ctx, missing ? "checkpoint-missing" : "architecture-failed", missing ? "" : arch.failures.join("; "));
       notify(ctx, missing ? "CHECKPOINT_MISSING: this turn changed something and nothing was saved to the registry. " + "Nothing failed and nothing is lost; no automatic continuation is scheduled. " + "Use project_memory commit if anything durable changed." : "ARCHITECTURE_FAILED: " + arch.failures.join("; ") + " No automatic continuation is scheduled.");
     } catch (e) {
       healthFailure(ctx, e);
