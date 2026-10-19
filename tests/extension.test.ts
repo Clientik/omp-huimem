@@ -141,6 +141,15 @@ test('a subagent gets a short block and its brief never becomes user evidence',a
       expect((s.db.query("SELECT role FROM episodes WHERE text='Разберись с задачей'").get() as any).role).toBe('user');
       expect(s.events(10).some((e:any)=>e.kind==='subagent-block' && e.detail==='short')).toBe(true);
     } finally { s.close(); }
+    // Запись о подагенте одна на запрос, а не на каждую вставку блока: в живом журнале 157
+    // одинаковых строк из 169 событий вытесняли всё остальное (audit/huicad-after-0.6.7).
+    // Блок вставляется перед каждым обращением к модели, то есть много раз за один запрос.
+    await f.handlers.context({messages:[]},sub);
+    await f.handlers.context({messages:[]},sub);
+    const after=new MemoryStore(f.dir);
+    try {
+      expect(after.events(50).filter((e:any)=>e.kind==='subagent-block').length).toBe(1);
+    } finally { after.close(); }
     // origin="user" у подагента не к чему привязать: машинное задание не выдаётся за слово пользователя.
     const denied=await f.tools.project_memory.execute('id',{op:'commit',summary:'из подагента',changes:[{id:'x',kind:'decision',
       status:'accepted',expectedVersion:0,text:'Решение',rationale:'Исследуй OCCT',source:{origin:'user',quote:'Исследуй OCCT'}}]},null,null,sub);

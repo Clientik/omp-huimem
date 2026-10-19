@@ -106,6 +106,17 @@ export default function install(pi: ExtensionAPI) {
   function trace(s: any, ctx: any, kind: string, detail = '') {
     try { s.recordEvent(key(), kind, detail); } catch (e) { notify(ctx, 'EVENT_TRACE_ERROR: ' + String(e)); }
   }
+  // ЗАМЕРЕНО 2026-10-19 на живом HUICAD (audit/huicad-after-0.6.7): из 169 событий 157 — одна и
+  // та же строка subagent-block, по одной на КАЖДЫЙ ход пяти подагентов за одиннадцать минут.
+  // Журнал на 500 записей такой строкой вытесняется, а отвечает она на вопрос «опознан ли
+  // подагент», который достаточно задать один раз на подагента.
+  const noted = new Set<string>();
+  function traceOnce(s: any, ctx: any, kind: string, detail = '') {
+    const seen = `${kind}:${detail}:${run || 'unscoped'}`;
+    if (noted.has(seen)) return;
+    noted.add(seen);
+    trace(s, ctx, kind, detail);
+  }
   function key() { return `${run}:${generation}`; }
   function policyText(ctx: any) {
     try { return readFileSync(resolve(ctx.cwd,'.memory/architecture.json'),'utf8'); }
@@ -172,7 +183,7 @@ export default function install(pi: ExtensionAPI) {
       const cfg = readSettings(ctx.cwd);
       // Подагент с выключенным блоком не получает ничего: он возвращает находки родителю.
       if (subagent && cfg.subagentBlock === 'off') {
-        trace(s, ctx, 'subagent-block', 'off');
+        traceOnce(s, ctx, 'subagent-block', 'off');
         return { messages: event.messages.filter((m: any) => !(m.role === 'custom' && m.customType === 'project-memory-context')) };
       }
       const checkpoints = s.checkpointView(query);
@@ -247,7 +258,7 @@ export default function install(pi: ExtensionAPI) {
       // чужой чекпоинт и список своих же недавних выводов ему не нужны. Правила доказательств
       // остаются — исследователь делает утверждения, и они должны опираться на источник.
       const short = subagent && cfg.subagentBlock === 'short';
-      if (short) trace(s, ctx, 'subagent-block', 'short');
+      if (short) traceOnce(s, ctx, 'subagent-block', 'short');
       const packed = packContext({ limit: cfg.injectionLimit, recallBudget: cfg.recallBudget,
         status, sourceOrder, claimScope,
         commitRules: short

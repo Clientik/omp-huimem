@@ -2770,6 +2770,14 @@ function install(pi) {
       notify(ctx, "EVENT_TRACE_ERROR: " + String(e));
     }
   }
+  const noted = new Set;
+  function traceOnce(s, ctx, kind, detail = "") {
+    const seen = `${kind}:${detail}:${run || "unscoped"}`;
+    if (noted.has(seen))
+      return;
+    noted.add(seen);
+    trace(s, ctx, kind, detail);
+  }
   function key() {
     return `${run}:${generation}`;
   }
@@ -2859,7 +2867,7 @@ function install(pi) {
       const s = get(ctx);
       const cfg = readSettings(ctx.cwd);
       if (subagent && cfg.subagentBlock === "off") {
-        trace(s, ctx, "subagent-block", "off");
+        traceOnce(s, ctx, "subagent-block", "off");
         return { messages: event.messages.filter((m) => !(m.role === "custom" && m.customType === "project-memory-context")) };
       }
       const checkpoints = s.checkpointView(query);
@@ -2893,7 +2901,7 @@ ${upgrade}${empty}${compactNotice}`;
 `;
       const short = subagent && cfg.subagentBlock === "short";
       if (short)
-        trace(s, ctx, "subagent-block", "short");
+        traceOnce(s, ctx, "subagent-block", "short");
       const packed = packContext({
         limit: cfg.injectionLimit,
         recallBudget: cfg.recallBudget,
