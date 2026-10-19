@@ -9,7 +9,7 @@
 
 Keep project knowledge across sessions without running another model. Current facts live in readable files; evidence and revision history live in local SQLite. One OMP extension, no memory server, embeddings service, or background LLM.
 
-> **Preview v0.6.7 · Tested with OMP 18.11.0.** Upstream Pi is not supported. Memory makes project context easier to recover and inspect; it does not eliminate hallucinations.
+> **Preview v0.6.8 · Tested with OMP 18.11.0.** Upstream Pi is not supported. Memory makes project context easier to recover and inspect; it does not eliminate hallucinations.
 
 ## Why use it?
 
@@ -23,32 +23,48 @@ For developers working with an AI agent who want to stop explaining the same pro
 
 ## Install
 
-**New in v0.6.7**, all of it measured on a real project (see [validation](docs/VALIDATION.md)):
+**New in v0.6.8**, all of it measured on the same real project (see [validation](docs/VALIDATION.md)):
 
-- **A subagent's brief is no longer stored as the user's words.** Task briefs written by the model
-  were captured as episodes with role `user` — nine of twenty-one in the measured project — and an
-  episode with role `user` is what an accepted decision may rest on. They are now captured as
-  assistant messages, and a subagent gets a short block without the saving rules
-  (`subagentBlock: short | full | off`): in that session eight researchers received 790 KB of full
-  block in six minutes and made no memory calls at all.
-- **The commit contract is in the tool description.** Before saving its first record the model made
-  34 calls into this plugin's installed source to learn the allowed kinds, statuses,
-  `expectedVersion`, `dependsOn` and staleness rules. Nothing about saving requires reading the
-  source any more.
-- **`project_memory op=doctor`** — the same read-only diagnosis as `/huimem doctor`. It was the only
-  thing that got records written at all, and the model previously reached it by importing
-  `doctor.ts` through `bun -e`.
-- **Episode search finds the original quote.** It ranks matches with a length penalty, shows the
-  part of a long message that actually matched, takes `role=user|assistant`, and returns one
-  episode whole by id. Before, six of seven searches returned only a 37,000-character plan whose
-  matching text was never in the returned excerpt.
-- **The canonical section is a list, not an excerpt** — path, purpose and size — and the freed space
-  goes to records. A project can add its own `.memory` documents to the set with `/huimem include`.
-- **A notice carries the level it deserves.** `CHECKPOINT_MISSING` is advice and says plainly that
-  nothing failed; only storage failures are errors. An unconfigured architecture check is stated
-  once instead of in every answer.
-- **An audit trail that survives a fan-out.** One-shot notices are recorded in an events log that
-  four parallel subagents cannot wipe, and `/huimem context` prints it.
+- **Check a saved quote without writing SQL.** `op=evidence` knew only files, so to verify the
+  registry's quotes against the stored messages the model opened `state.sqlite` itself 17 times
+  with its own SQL: the central check of the whole evidence model happened outside the plugin and
+  left nothing in the receipts. Now `evidence id=<record>` re-checks one record against its
+  source, `evidence id=<episode> quote=<text>` says whether that message really contains the
+  quote, and `evidence` with neither re-checks every record and names the unconfirmed ones. Every
+  check is written to the journal.
+- **The block names the records it had to leave out.** With 20 records saved, 7 reached the block
+  and 13 were dropped by budget on every one of 43 turns, while the line only said that some were
+  dropped — and the only full list of IDs was the generated `RECORDS.md`. The notice now names
+  them with their status, and `recall id=` takes up to ten IDs separated by commas, which is what
+  `expectedVersion` needs.
+- **A proposed decision is a proposal.** "Proposed facts require checking" is something a decision
+  cannot satisfy: only the user accepts it. In the measured session two proposed decisions carried
+  a 45 KB architecture document whose nine determining questions were asked only at the end.
+- **A question you are waiting on the user for is a record**: `kind=question`, `open | answered |
+  dropped`. Those nine questions existed nowhere in memory — they survived as prose in a checkpoint
+  summary and in the documents, which the rules say not to trust. An open question stays in the
+  block until it is saved as answered with links to the records the answer produced; doctor reports
+  what is open and warns when an answer changed nothing.
+- **A numbered answer carries the question it answers.** `source.answers=<ID of your message>`:
+  "2. It is the repository" proves nothing on its own, and the model had been restoring the link by
+  hand in `MEMORY.md` and an ADR, marked as an inference.
+- **A checkpoint keeps its next step.** It reached the model cut to 218 characters of 780, losing
+  the part that says what to do next. Checkpoints now have a floor in the block and each line is
+  clipped from both ends with the gap named in place.
+- **Less noise, fewer duplicates.** A turn OMP delivers twice is one episode, not two IDs for the
+  same words; the subagent line is logged once per request instead of once per model call, where
+  it had filled 157 of 169 journal entries.
+
+**Since v0.6.7:** a subagent's brief is captured as an assistant message rather than the user's
+words (nine of twenty-one episodes in the measured project were briefs), and a subagent gets a
+short block without the saving rules (`subagentBlock: short | full | off`). The commit contract
+lives in the tool description, after the model made 34 calls into the installed plugin source to
+learn it. `project_memory op=doctor` gives the model the same read-only diagnosis as
+`/huimem doctor`. Episode search ranks matches, shows the part of a long message that matched,
+takes `role=user|assistant` and returns one episode whole by id. The canonical section is a list of
+files rather than their text, and a project adds its own documents with `/huimem include`.
+`CHECKPOINT_MISSING` is advice, not an error, and one-shot notices go to an events log that a
+fan-out of subagents cannot wipe (`/huimem context` prints it).
 
 **Since v0.6.5:** a plugin upgrade reaches a conversation that is already running. The database
 records which build wrote it, and after an upgrade the next memory block states once what changed in
@@ -69,7 +85,7 @@ You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model
 **Legacy ADRs:** `/huimem adr-audit` lists ADRs without a basis section that can be moved into the contract, and writes nothing. `/huimem adr-audit apply` inserts the user's quote from the registry as the basis and keeps every original line under an "Interpretation [?]" heading, after a byte-exact backup to `.memory/adr-backup/`. A document is migrated only when exactly one accepted decision names it by path, its rationale is an exact excerpt of the quote, and the quote is re-checked at migration time against the stored message, which must exist and belong to the user; otherwise it is reported as `UNVERIFIED` and nothing is written. v0.5.0 skipped that last check: if you ran `apply` with it on an edited, merged or restored database, compare each migrated basis with the original message. Linked conversation decisions show STALE afterwards. In a preregistered 20-vs-20 test the migrated documents had no outright misattribution, but a reliability gain over unmigrated ones was not statistically proven.
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.6.7
+omp plugin install github:Clientik/omp-huimem#v0.6.8
 ```
 
 > [!IMPORTANT]
@@ -91,7 +107,7 @@ After `init`, ask the agent to use the `initmem` skill to map the actual code. D
 **Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 and again with 18.11.0 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
 ```sh
-git clone --branch v0.6.7 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.6.8 https://github.com/Clientik/omp-huimem.git
 # Run from your working project, using the cloned repository's absolute path:
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```
@@ -137,6 +153,22 @@ hashed with the set and tracked for staleness. In the measured project a 17 KB `
 was a live memory document outside the set, while the block told the model that nothing else was
 project memory. Adding a document changes the set hash, so records saved without `dependsOn` show
 STALE once; the command says so before and after.
+
+**Open questions (since v0.6.8):** a question you are waiting on the user for is a record with
+`kind=question` and `status=open`, its text the question as you asked it and its source your own
+message. An open question is pinned into the block beside the current work, so what blocks
+progress travels with the memory instead of the conversation. Saving it again as `answered`, with
+`links` to the records the answer produced, unpins it; `dropped` closes it without an answer.
+`project_memory op=doctor` lists what is open and warns about an answered question that links to
+no record. When the user answers by number, `source.answers=<ID of your message with the
+question>` keeps the pair together: a quote like "2. It is the repository" proves nothing alone.
+
+**Evidence checks (since v0.6.8):** `op=evidence` re-checks what is already saved. With
+`id=<record>` it compares that record with its own source — quote present, file unchanged, role
+still admissible for an accepted decision. With `id=<episode> quote=<text>` it answers whether
+that message contains the quote, and shows the part of it that matched. With neither it checks
+every record and lists the unconfirmed ones. Each check is a receipt in the journal, which a
+script over the SQLite file is not.
 
 **Subagents (since v0.6.7):** a subagent's prompt is written by the model, so it is recorded as an
 assistant message and can never become the user evidence an accepted decision requires. Its block

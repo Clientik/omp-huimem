@@ -6,7 +6,7 @@
 // прошлом ходу, и компакция могла перенести их в свою сводку. Без явной сводки изменений
 // модель продолжает работать по старым правилам, не зная, что они другие.
 // Соответствие package.json проверяет scripts/check-package.ts.
-export const PLUGIN_VERSION = '0.6.7';
+export const PLUGIN_VERSION = '0.6.8';
 
 // Одна строка на версию: только то, что меняет ПОВЕДЕНИЕ модели, уже видевшей прежний блок.
 // Не журнал изменений для человека — его место в README. Длина важна: строка попадает в блок.
@@ -15,6 +15,7 @@ export const UPGRADE_NOTES: Record<string, string> = {
   '0.6.5': 'an empty registry is now stated in this block instead of looking like a failed search',
   '0.6.6': 'the canonical file list above is the complete, fixed set and needs no discovery in the plugin source; a freshly compacted history is announced once, and its summary is not evidence',
   '0.6.7': 'the commit contract (kinds, statuses, source forms, versions, limits) is in the project_memory tool description — do not read the plugin source for it; project_memory now has op=doctor, a read-only diagnosis; op=episodes ranks matches, shows the matching part of a long message, takes role=user|assistant and id=<episode> for one message whole; the canonical section is a list of files with sizes instead of their text, so read a file before relying on it; a project may add its own .memory documents to the canonical set',
+  '0.6.8': 'check a saved quote against its message with project_memory op=evidence (id=<record>, id=<episode> with quote, or nothing at all for every record) instead of your own SQL over the memory database, and run op=doctor instead of importing doctor.ts; the block now names the records it had to omit, and recall id= takes several IDs separated by commas; a proposed decision is your proposal and only the user accepts it, so ask before building work an answer would redo; a question you are waiting on the user for is a record — kind=question, status=open — and stays in the block until it is answered or dropped; when the user answers by number, add source.answers=<ID of your message with the question>',
 };
 
 // Сравнение версий по числовым частям: 0.6.10 новее 0.6.9, строковое сравнение этого не даёт.
