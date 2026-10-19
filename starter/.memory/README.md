@@ -13,6 +13,9 @@ maintained facts and architecture in MEMORY.md and ADRs. /huimem shows publicati
 status; /huimem sync retries pending publication without repeating a commit.
 Use exact source quotes. Changed authority files mark old registry records STALE;
 verify the source before creating a new version with the same ID.
+Diagnose the memory with project_memory op=doctor, or /huimem doctor; check a saved
+quote against its message with project_memory op=evidence. Neither needs a script
+over the SQLite database, and a script leaves no trace of what was checked.
 
 Neither mnemopi nor a background LLM is needed. memory.backend is off in the starter config; merge
 this setting with existing OMP settings and retain your own provider configuration.

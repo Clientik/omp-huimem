@@ -1787,6 +1787,9 @@ maintained facts and architecture in MEMORY.md and ADRs. /huimem shows publicati
 status; /huimem sync retries pending publication without repeating a commit.
 Use exact source quotes. Changed authority files mark old registry records STALE;
 verify the source before creating a new version with the same ID.
+Diagnose the memory with project_memory op=doctor, or /huimem doctor; check a saved
+quote against its message with project_memory op=evidence. Neither needs a script
+over the SQLite database, and a script leaves no trace of what was checked.
 
 Neither mnemopi nor a background LLM is needed. memory.backend is off in the starter config; merge
 this setting with existing OMP settings and retain your own provider configuration.
@@ -2187,7 +2190,7 @@ function diagnoseMemory(root) {
 function formatDoctor(report) {
   const issues = report.issues.slice(0, 50);
   return [
-    "huimem doctor \u2014 diagnostic only; no repairs applied.",
+    "huimem doctor \u2014 diagnostic only; no repairs applied. The model runs the same report with project_memory op=doctor; importing doctor.ts through bun -e is never needed.",
     report.issues.length ? `${report.issues.length} finding(s).` : "No findings in the completed checks; this is not a guarantee of semantic correctness.",
     `Checked: ${report.checked.join(", ") || "none"}.`,
     ...report.partial.length ? ["Partial: " + report.partial.join(", ") + "."] : [],

@@ -2,7 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MemoryStore } from '../src/memory/core';
-import { diagnoseMemory } from '../src/memory/doctor';
+import { diagnoseMemory, formatDoctor } from '../src/memory/doctor';
 
 // ЗАМЕРЕНО 2026-10-19 на живом HUICAD (audit/huicad-after-0.6.7): девять вопросов, от которых
 // зависело содержание 45 КБ архитектурного документа, нигде в памяти не существовали. Они выжили
@@ -100,5 +100,9 @@ describe('open questions', () => {
     const lost = report.issues.find(i => i.code === 'ANSWER_WITHOUT_RECORD')!;
     expect(lost.severity).toBe('warning');
     expect(lost.message).toContain('clone-path');
+    // ЗАМЕРЕНО 2026-10-19: op=doctor вышел в 0.6.7 и не был вызван ни разу — вместо него пять
+    // запусков `bun -e` с импортом doctor.ts, способ, записанный в MEMORY.md как факт.
+    expect(formatDoctor(report)).toContain('project_memory op=doctor');
+    expect(formatDoctor(report)).toContain('bun -e is never needed');
   }));
 });

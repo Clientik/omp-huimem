@@ -210,7 +210,11 @@ export function diagnoseMemory(root:string):DoctorReport {
 export function formatDoctor(report:DoctorReport):string {
   const issues=report.issues.slice(0,50);
   return [
-    'huimem doctor — diagnostic only; no repairs applied.',
+    // ЗАМЕРЕНО 2026-10-19 на живом HUICAD (audit/huicad-after-0.6.7): op=doctor вышел в 0.6.7 и
+    // не был вызван ни разу — за день пять запусков через `bun -e` с импортом doctor.ts, потому
+    // что этот способ модель 15 октября записала в MEMORY.md как факт. Рукописная память держится
+    // дольше однократной сводки, поэтому операция называется там, где человек и модель видят отчёт.
+    'huimem doctor — diagnostic only; no repairs applied. The model runs the same report with project_memory op=doctor; importing doctor.ts through bun -e is never needed.',
     report.issues.length ? `${report.issues.length} finding(s).` : 'No findings in the completed checks; this is not a guarantee of semantic correctness.',
     `Checked: ${report.checked.join(', ') || 'none'}.`,
     ...(report.partial.length ? ['Partial: '+report.partial.join(', ')+'.'] : []),
