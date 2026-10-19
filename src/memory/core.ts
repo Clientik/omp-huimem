@@ -535,9 +535,15 @@ export class MemoryStore {
   }
   private validate(c: Change) {
     if (!c || !/^[a-zA-Z0-9_.:/-]{1,100}$/.test(c.id)) throw new Error('INVALID_ID');
-    if (!['fact','decision','procedure','navigation','task'].includes(c.kind)) throw new Error('INVALID_KIND');
+    if (!['fact','decision','procedure','navigation','task','question'].includes(c.kind)) throw new Error('INVALID_KIND');
+    // ЗАМЕРЕНО 2026-10-19 на живом HUICAD (audit/huicad-after-0.6.7): девять вопросов, от которых
+    // зависело содержание 45 КБ архитектуры, нигде в памяти не существовали. Они выжили прозой —
+    // в сводке чекпоинта, в §19 документа и строкой «[?] уточнить — вопрос 3 сообщения 42bc704f
+    // без ответа» в DESIGN.md, — то есть ровно там, где правила велят прозе не доверять. Статуса
+    // «ждёт ответа пользователя» у задачи тоже не было: blocked не говорит, чем заблокировано.
     const statuses: Record<string, string[]> = { fact: ['active','proposed','retired'], decision: ['accepted','proposed','retired'],
-      procedure: ['active','proposed','retired'], navigation: ['active','proposed','retired'], task: ['todo','doing','done','blocked','retired'] };
+      procedure: ['active','proposed','retired'], navigation: ['active','proposed','retired'], task: ['todo','doing','done','blocked','retired'],
+      question: ['open','answered','dropped','retired'] };
     if (!statuses[c.kind].includes(c.status)) throw new Error('INVALID_STATUS');
     if (!Number.isInteger(c.expectedVersion) || c.expectedVersion < 0) throw new Error('INVALID_VERSION');
     if (typeof c.text !== 'string' || !c.text.trim() || c.text.length > 3000) throw new Error('INVALID_TEXT');
@@ -646,9 +652,11 @@ export class MemoryStore {
       const staleBecause = this.staleness(c, authority, id => latest.get(id) ?? null);
       const stale = staleBecause.length > 0;
       const score = termScore(terms, c.text + ' ' + c.id + ' ' + (c.rationale ?? ''));
-      const pinned = c.status === 'accepted' || ['doing','blocked','todo'].includes(c.status);
+      // open — вопрос без ответа: он закреплён и идёт в одном ряду с текущей работой, иначе
+      // «ждём ответа пользователя» снова осталось бы только в прозе.
+      const pinned = c.status === 'accepted' || ['doing','blocked','todo','open'].includes(c.status);
       // Порядок: обязательные; совпавшие с запросом; текущая работа; остальные закреплённые.
-      const tier = requiredSet.has(c.id) ? 0 : score > 0 ? 1 : ['doing','blocked'].includes(c.status) ? 2 : c.status === 'todo' ? 3 : 4;
+      const tier = requiredSet.has(c.id) ? 0 : score > 0 ? 1 : ['doing','blocked','open'].includes(c.status) ? 2 : c.status === 'todo' ? 3 : 4;
       return { c, version: row.version, stale, staleBecause, score, pinned, tier, supersededVersions:row.versionCount-1 };
     });
     const eligible=records.filter(r => r.c.status !== 'retired' && (r.tier === 0 || r.score > 0 || r.pinned || terms.length === 0))

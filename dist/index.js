@@ -878,14 +878,15 @@ class MemoryStore {
   validate(c) {
     if (!c || !/^[a-zA-Z0-9_.:/-]{1,100}$/.test(c.id))
       throw new Error("INVALID_ID");
-    if (!["fact", "decision", "procedure", "navigation", "task"].includes(c.kind))
+    if (!["fact", "decision", "procedure", "navigation", "task", "question"].includes(c.kind))
       throw new Error("INVALID_KIND");
     const statuses = {
       fact: ["active", "proposed", "retired"],
       decision: ["accepted", "proposed", "retired"],
       procedure: ["active", "proposed", "retired"],
       navigation: ["active", "proposed", "retired"],
-      task: ["todo", "doing", "done", "blocked", "retired"]
+      task: ["todo", "doing", "done", "blocked", "retired"],
+      question: ["open", "answered", "dropped", "retired"]
     };
     if (!statuses[c.kind].includes(c.status))
       throw new Error("INVALID_STATUS");
@@ -1022,8 +1023,8 @@ class MemoryStore {
       const staleBecause = this.staleness(c, authority, (id) => latest.get(id) ?? null);
       const stale = staleBecause.length > 0;
       const score = termScore(terms, c.text + " " + c.id + " " + (c.rationale ?? ""));
-      const pinned = c.status === "accepted" || ["doing", "blocked", "todo"].includes(c.status);
-      const tier = requiredSet.has(c.id) ? 0 : score > 0 ? 1 : ["doing", "blocked"].includes(c.status) ? 2 : c.status === "todo" ? 3 : 4;
+      const pinned = c.status === "accepted" || ["doing", "blocked", "todo", "open"].includes(c.status);
+      const tier = requiredSet.has(c.id) ? 0 : score > 0 ? 1 : ["doing", "blocked", "open"].includes(c.status) ? 2 : c.status === "todo" ? 3 : 4;
       return { c, version: row.version, stale, staleBecause, score, pinned, tier, supersededVersions: row.versionCount - 1 };
     });
     const eligible = records.filter((r) => r.c.status !== "retired" && (r.tier === 0 || r.score > 0 || r.pinned || terms.length === 0)).sort((a, b) => a.tier - b.tier || b.score - a.score || Number(a.stale) - Number(b.stale) || a.c.id.localeCompare(b.c.id));
@@ -2155,6 +2156,12 @@ function diagnoseMemory(root) {
     }, ".memory/todo.json");
   else if (records?.some((r) => r.data.kind === "task" && r.data.status !== "retired"))
     add("warning", "TODO_FILE_MISSING", ".memory/todo.json", "Registry tasks exist but the task file is absent.", "Review the project task-file convention before recreating it.");
+  const open = records?.filter((r) => r.data.kind === "question" && r.data.status === "open").map((r) => r.id) ?? [];
+  if (open.length)
+    add("info", "QUESTIONS_OPEN", "registry", `${open.length} question(s) are waiting for the user: ${open.slice(0, 10).join(", ")}${open.length > 10 ? ` and ${open.length - 10} more` : ""}.`, "Ask them, then save each question again as answered with links to the records the answer produced, or as dropped.");
+  const answered = records?.filter((r) => r.data.kind === "question" && r.data.status === "answered" && !r.data.links?.length).map((r) => r.id) ?? [];
+  if (answered.length)
+    add("warning", "ANSWER_WITHOUT_RECORD", "registry", `${answered.length} answered question(s) link to no record: ${answered.slice(0, 10).join(", ")}.`, "An answer that changed nothing in the registry is lost on the next session: save what it decided, or say in the question text that it changed nothing.");
   return report;
 }
 function formatDoctor(report) {
@@ -3021,8 +3028,9 @@ Do not claim memory or work was verified.`;
     label: "Project memory",
     loadMode: "essential",
     description: `Project memory of this project: a versioned registry of records with evidence. Operations: status | recall | episodes | history | evidence | doctor | commit.
-` + `COMMIT CONTRACT, one entry per record in changes[]: id \u2014 up to 100 of [a-zA-Z0-9_.:/-]; kind and its statuses \u2014 fact|procedure|navigation: active|proposed|retired, decision: accepted|proposed|retired, task: todo|doing|done|blocked|retired; text up to 3000 characters; expectedVersion \u2014 the version this entry replaces, 0 for a new record, so recall the id first; rationale is required for a decision and, when it is accepted, must be an exact excerpt of source.quote.
+` + `COMMIT CONTRACT, one entry per record in changes[]: id \u2014 up to 100 of [a-zA-Z0-9_.:/-]; kind and its statuses \u2014 fact|procedure|navigation: active|proposed|retired, decision: accepted|proposed|retired, task: todo|doing|done|blocked|retired, question: open|answered|dropped|retired; text up to 3000 characters; expectedVersion \u2014 the version this entry replaces, 0 for a new record, so recall the id first; rationale is required for a decision and, when it is accepted, must be an exact excerpt of source.quote.
 ` + `SOURCE, exactly one: a current user decision \u2014 source={origin:"user",quote:"exact words from the current user message"}, the episode ID is filled by code; a file observation \u2014 source={origin:"file",path:"project-relative path",quote:"exact text from the file"}, the hash is computed by code. An accepted decision cannot rest on a file, and a quote from your own message can only support a proposed record.
+` + `A question you are waiting on the user for is a record too: kind=question, status=open, text = the question as you asked it, source = your own message. An open question stays in the memory block until it is saved again as answered, with links to the records the answer produced, or dropped. Keep what blocks work there rather than only in prose.
 ` + `dependsOn=[{id}|{path}] names what a claim relies on; code pins their versions and hashes, and then only a change of those marks the record STALE with a reason. Without dependsOn any change of a canonical document does. STALE clears only through a new version saved with current dependencies.
 ` + `LIMITS: at most 30 changes per commit; summary is required and at most 2000 characters even when changes=[]; task=<task id> ties the summary (the next step) to that task.
 ` + `READS: recall query=<text>, or id=<record> (a task also returns its last checkpoint), or id=<record>,<record>,\u2026 for up to 10 records in one call \u2014 the block names the records it had to omit, so read them by ID instead of guessing; episodes query=<text> with optional role=user|assistant, ranked with the match shown in context, or id=<episode> for one message whole; history id=<record>; status; doctor \u2014 read-only diagnosis of records, sources, task drift and settings.
@@ -3038,9 +3046,9 @@ Do not claim memory or work was verified.`;
       task: z.string().optional(),
       changes: z.array(z.object({
         id: z.string(),
-        kind: z.enum(["fact", "decision", "procedure", "navigation", "task"]),
+        kind: z.enum(["fact", "decision", "procedure", "navigation", "task", "question"]),
         text: z.string(),
-        status: z.enum(["active", "proposed", "accepted", "todo", "doing", "done", "blocked", "retired"]),
+        status: z.enum(["active", "proposed", "accepted", "todo", "doing", "done", "blocked", "retired", "open", "answered", "dropped"]),
         expectedVersion: z.number().int().min(0),
         rationale: z.string().optional(),
         links: z.array(z.string()).optional(),

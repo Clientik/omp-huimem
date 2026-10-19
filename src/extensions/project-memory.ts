@@ -389,8 +389,9 @@ export default function install(pi: ExtensionAPI) {
     // устаревания. Её собственные слова: «Before saving anything, I'm reading how the plugin
     // validates commits». Контракт теперь здесь, в описании инструмента, а не только в коде.
     description: 'Project memory of this project: a versioned registry of records with evidence. Operations: status | recall | episodes | history | evidence | doctor | commit.\n'
-      + 'COMMIT CONTRACT, one entry per record in changes[]: id — up to 100 of [a-zA-Z0-9_.:/-]; kind and its statuses — fact|procedure|navigation: active|proposed|retired, decision: accepted|proposed|retired, task: todo|doing|done|blocked|retired; text up to 3000 characters; expectedVersion — the version this entry replaces, 0 for a new record, so recall the id first; rationale is required for a decision and, when it is accepted, must be an exact excerpt of source.quote.\n'
+      + 'COMMIT CONTRACT, one entry per record in changes[]: id — up to 100 of [a-zA-Z0-9_.:/-]; kind and its statuses — fact|procedure|navigation: active|proposed|retired, decision: accepted|proposed|retired, task: todo|doing|done|blocked|retired, question: open|answered|dropped|retired; text up to 3000 characters; expectedVersion — the version this entry replaces, 0 for a new record, so recall the id first; rationale is required for a decision and, when it is accepted, must be an exact excerpt of source.quote.\n'
       + 'SOURCE, exactly one: a current user decision — source={origin:"user",quote:"exact words from the current user message"}, the episode ID is filled by code; a file observation — source={origin:"file",path:"project-relative path",quote:"exact text from the file"}, the hash is computed by code. An accepted decision cannot rest on a file, and a quote from your own message can only support a proposed record.\n'
+      + 'A question you are waiting on the user for is a record too: kind=question, status=open, text = the question as you asked it, source = your own message. An open question stays in the memory block until it is saved again as answered, with links to the records the answer produced, or dropped. Keep what blocks work there rather than only in prose.\n'
       + 'dependsOn=[{id}|{path}] names what a claim relies on; code pins their versions and hashes, and then only a change of those marks the record STALE with a reason. Without dependsOn any change of a canonical document does. STALE clears only through a new version saved with current dependencies.\n'
       + 'LIMITS: at most 30 changes per commit; summary is required and at most 2000 characters even when changes=[]; task=<task id> ties the summary (the next step) to that task.\n'
       + 'READS: recall query=<text>, or id=<record> (a task also returns its last checkpoint), or id=<record>,<record>,… for up to 10 records in one call — the block names the records it had to omit, so read them by ID instead of guessing; episodes query=<text> with optional role=user|assistant, ranked with the match shown in context, or id=<episode> for one message whole; history id=<record>; status; doctor — read-only diagnosis of records, sources, task drift and settings.\n'
@@ -400,12 +401,12 @@ export default function install(pi: ExtensionAPI) {
       query: z.string().optional(), id: z.string().optional(), path: z.string().optional(), quote: z.string().optional(),
       role: z.enum(['user','assistant']).optional(),
       summary: z.string().optional(), task: z.string().optional(), changes: z.array(z.object({
-        id: z.string(), kind: z.enum(['fact','decision','procedure','navigation','task']),
+        id: z.string(), kind: z.enum(['fact','decision','procedure','navigation','task','question']),
         text: z.string(),
         // Перечислением, а не свободной строкой: раньше набор статусов был известен только
         // validate() в core.ts, и модель шла искать его в исходники. Сочетание kind+status
         // по-прежнему проверяется кодом — здесь объединение всех допустимых значений.
-        status: z.enum(['active','proposed','accepted','todo','doing','done','blocked','retired']),
+        status: z.enum(['active','proposed','accepted','todo','doing','done','blocked','retired','open','answered','dropped']),
         expectedVersion: z.number().int().min(0),
         rationale: z.string().optional(), links: z.array(z.string()).optional(),
         dependsOn: z.array(z.object({ id: z.string().optional(), version: z.number().int().optional(), path: z.string().optional(), hash: z.string().optional() })).optional(),

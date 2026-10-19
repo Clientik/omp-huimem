@@ -194,6 +194,16 @@ export function diagnoseMemory(root:string):DoctorReport {
   },'.memory/todo.json');
   else if(records?.some(r=>r.data.kind==='task' && r.data.status!=='retired'))
     add('warning','TODO_FILE_MISSING','.memory/todo.json','Registry tasks exist but the task file is absent.','Review the project task-file convention before recreating it.');
+  // Вопросы без ответа — состояние работы, а не замечание: их называют, чтобы «ждём пользователя»
+  // было видно в диагностике так же, как в блоке, а не только в прозе документов.
+  const open=records?.filter(r=>r.data.kind==='question' && r.data.status==='open').map(r=>r.id) ?? [];
+  if(open.length)
+    add('info','QUESTIONS_OPEN','registry',`${open.length} question(s) are waiting for the user: ${open.slice(0,10).join(', ')}${open.length>10 ? ` and ${open.length-10} more` : ''}.`,
+      'Ask them, then save each question again as answered with links to the records the answer produced, or as dropped.');
+  const answered=records?.filter(r=>r.data.kind==='question' && r.data.status==='answered' && !r.data.links?.length).map(r=>r.id) ?? [];
+  if(answered.length)
+    add('warning','ANSWER_WITHOUT_RECORD','registry',`${answered.length} answered question(s) link to no record: ${answered.slice(0,10).join(', ')}.`,
+      'An answer that changed nothing in the registry is lost on the next session: save what it decided, or say in the question text that it changed nothing.');
   return report;
 }
 
