@@ -94,6 +94,20 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       let r;
       try { r = initProject(ctx.cwd); } catch (e) { return say('Init failed: ' + String(e)); }
       const merge = r.differs.filter(p => ['AGENTS.md', '.omp/config.yml', '.omp/RULES.md'].includes(p));
+      // ЗАМЕРЕНО 2026-10-19 на тестовом проекте с моделью ai1: стартовый набор СОЗДАЁТ
+      // .memory/DESIGN.md, но канонический набор его не содержит, и блок при этом называет свой
+      // перечень полным. Та же нестыковка в живом HUICAD потребовала ручного /huimem include.
+      // Регистрируем только файл, созданный этим init: в проекте с записями добавление набора
+      // один раз помечает их STALE, и решать это пользователю, а не команде.
+      const design = '.memory/DESIGN.md';
+      let registered = '';
+      if (r.created.includes(design)) {
+        const current = readSettings(ctx.cwd);
+        if (!current.documents.includes(design)) {
+          writeSettings(ctx.cwd, { documents: [...current.documents, design] });
+          registered = `Canonical set: added ${design}, the design document this init created, so the block lists it.`;
+        }
+      }
       return say([
         wasEnabled ? `Project memory was already enabled in ${r.root}; only missing files were added.`
           : `Project memory ENABLED in ${r.root}. It works from your next message; no restart needed.`,
@@ -101,6 +115,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
         r.differs.length ? 'Existing files kept as they are (not overwritten):\n  ' + r.differs.join('\n  ') : '',
         merge.length ? 'These may lack the memory rules shipped in the plugin starter/: ' + merge.join(', ') + '. Merge them by hand if you want those rules.' : '',
         r.gitignoreAdded.length ? '.gitignore: added ' + r.gitignoreAdded.join(', ') + ' so the local transcript database stays out of git.' : '.gitignore already excludes the memory database.',
+        registered,
         '',
         'Next: ask the agent to use the initmem skill to map the real code.',
         'Architecture rules are not configured yet (/huimem arch); records you must never lose: /huimem require <id>.',

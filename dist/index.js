@@ -2266,6 +2266,15 @@ function registerSettingsCommand(pi, deps) {
         return say("Init failed: " + String(e));
       }
       const merge = r.differs.filter((p) => ["AGENTS.md", ".omp/config.yml", ".omp/RULES.md"].includes(p));
+      const design = ".memory/DESIGN.md";
+      let registered = "";
+      if (r.created.includes(design)) {
+        const current = readSettings(ctx.cwd);
+        if (!current.documents.includes(design)) {
+          writeSettings(ctx.cwd, { documents: [...current.documents, design] });
+          registered = `Canonical set: added ${design}, the design document this init created, so the block lists it.`;
+        }
+      }
       return say([
         wasEnabled ? `Project memory was already enabled in ${r.root}; only missing files were added.` : `Project memory ENABLED in ${r.root}. It works from your next message; no restart needed.`,
         r.created.length ? `Created:
@@ -2276,6 +2285,7 @@ function registerSettingsCommand(pi, deps) {
   `) : "",
         merge.length ? "These may lack the memory rules shipped in the plugin starter/: " + merge.join(", ") + ". Merge them by hand if you want those rules." : "",
         r.gitignoreAdded.length ? ".gitignore: added " + r.gitignoreAdded.join(", ") + " so the local transcript database stays out of git." : ".gitignore already excludes the memory database.",
+        registered,
         "",
         "Next: ask the agent to use the initmem skill to map the real code.",
         "Architecture rules are not configured yet (/huimem arch); records you must never lose: /huimem require <id>."

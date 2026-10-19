@@ -1210,11 +1210,22 @@ test('/huimem init enables memory in a bare project without copying the starter'
     expect(readFileSync(join(f.dir, '.gitignore'), 'utf8')).toContain('.memory/runtime/');
     expect(existsSync(join(f.dir, '.memory/runtime'))).toBe(false);
 
+    // ЗАМЕРЕНО 2026-10-19 на тестовом проекте с моделью ai1: стартовый набор создаёт
+    // .memory/DESIGN.md, но канонического набора он не касался, и блок называл свой перечень
+    // полным. Файл, созданный самим init, регистрируется сразу — записей, которые добавление
+    // пометило бы STALE, в новом проекте ещё нет.
+    expect(last(f)).toContain('.memory/DESIGN.md');
+    expect(JSON.parse(readFileSync(join(f.dir, '.memory/settings.json'), 'utf8')).documents).toEqual(['.memory/DESIGN.md']);
     await f.handlers.before_agent_start({ prompt: 'second' }, f.ctx);
-    expect(JSON.stringify(await f.handlers.context({ messages: [] }, f.ctx))).toContain('Memory ready');
+    const block = JSON.stringify(await f.handlers.context({ messages: [] }, f.ctx));
+    expect(block).toContain('Memory ready');
+    expect(block).toContain('.memory/DESIGN.md');
     await f.commands.huimem.handler('init', f.ctx);
     expect(last(f)).toContain('already enabled');
     expect(last(f)).toContain('Created: nothing');
+    // Повторный init не трогает набор: там, где записи уже есть, это решение пользователя.
+    expect(last(f)).not.toContain('Canonical set:');
+    expect(JSON.parse(readFileSync(join(f.dir, '.memory/settings.json'), 'utf8')).documents).toEqual(['.memory/DESIGN.md']);
   } finally { f.clean(); }
 });
 test('/huimem clamps an out-of-range limit and says so instead of failing quietly', async () => {
