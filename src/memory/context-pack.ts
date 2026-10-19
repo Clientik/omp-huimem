@@ -13,6 +13,11 @@
 import type { RetrievalResult } from './core';
 
 export const PREVIEW_FLOOR = 600;
+// ЗАМЕРЕНО 2026-10-19 на копии живого HUICAD (audit/release-0.6.8): при 20 записях блок упёрся
+// в предел, и сводка чекпоинта дошла обрезанной до 218 символов из 780. Сводка кончается
+// следующим шагом — «ответы пользователя на вопросы §19 архитектуры», — поэтому обрезка с начала
+// теряет ровно то, ради чего чекпоинт и нужен. Отсюда и пол, и обрезка с двух концов.
+export const CHECKPOINT_FLOOR = 500;
 
 export type PackInput = {
   limit: number; recallBudget: number;
@@ -35,6 +40,37 @@ export function clip(part: string, space: number): { text: string; state: 'whole
     if (text.trim()) return { text, state: 'trimmed' };
   }
   return { text: '', state: 'omitted' };
+}
+
+// Та же задача, но сохраняя конец: начало сводки говорит, что сделано, а конец — что дальше.
+// Пропуск назван прямо в тексте, чтобы две половины не читались как одна фраза.
+export const MIDDLE = ' […omitted; project_memory recall id=<task>…] ';
+export function clipEnds(part: string, space: number): { text: string; state: 'whole' | 'trimmed' | 'omitted' } {
+  if (part.length <= space) return { text: part, state: 'whole' };
+  if (space < MIDDLE.length + 120) return clip(part, space);
+  const room = space - MIDDLE.length - 1;
+  const headRoom = Math.ceil(room * 0.6), tailRoom = room - headRoom;
+  const head = part.slice(0, headRoom);
+  const cut = Math.max(head.lastIndexOf(' '), head.lastIndexOf('\n'));
+  const tail = part.slice(part.length - tailRoom).replace(/^\S*\s/, '');
+  const text = (cut > headRoom / 2 ? head.slice(0, cut) : head) + MIDDLE + tail;
+  return { text: text.endsWith('\n') ? text : text + '\n', state: 'trimmed' };
+}
+
+// У чекпоинтов каждая строка — отдельная сводка со своим следующим шагом, поэтому урезается
+// каждая, а не блок целиком: иначе выживают начало первой строки и конец последней.
+export function clipLines(part: string, space: number): { text: string; state: 'whole' | 'trimmed' | 'omitted' } {
+  if (part.length <= space) return { text: part, state: 'whole' };
+  const lines = part.split('\n').filter(Boolean).map(l => l + '\n');
+  if (lines.length < 2) return clipEnds(part, space);
+  const even = Math.floor(space / lines.length);
+  let left = space;
+  const out: string[] = [], long: number[] = [];
+  lines.forEach((l, n) => { if (l.length <= even) { out[n] = l; left -= l.length; } else { out[n] = ''; long.push(n); } });
+  const share = long.length ? Math.floor(left / long.length) : 0;
+  for (const n of long) { const c = clipEnds(lines[n], share); out[n] = c.text; }
+  const text = out.join('');
+  return text.trim() ? { text, state: 'trimmed' } : { text: '', state: 'omitted' };
 }
 
 export function budgetNotice(limit: number, omitted: string[], trimmed: string[]): string {
@@ -83,7 +119,11 @@ export function packContext(i: PackInput): PackResult {
   let space = i.limit - requiredLength - reserve;
   const omitted: string[] = [], trimmed: string[] = [];
   const previewFloor = Math.min(i.preview.length, PREVIEW_FLOOR);
-  const registryBudget = Math.max(0, Math.min(i.recallBudget, space - previewFloor));
+  // Пол чекпоинта: реестр уступает место последним, и на тесном бюджете он забирал всё, что
+  // осталось от сводки. Запись, не попавшую в блок, теперь можно позвать по ID из пометки о
+  // пропуске; потерянный следующий шаг позвать нельзя — о нём больше нигде не сказано.
+  const checkpointFloor = Math.min(i.checkpoint.length, CHECKPOINT_FLOOR);
+  const registryBudget = Math.max(0, Math.min(i.recallBudget, space - previewFloor - checkpointFloor));
   // Тот же бюджет — тот же результат поиска: повторный вызов (≈100 мс на большой памяти) не нужен.
   let retrieval = registryBudget === i.recallBudget ? natural : i.recall(registryBudget);
   let registry = retrieval.text;
@@ -100,10 +140,21 @@ export function packContext(i: PackInput): PackResult {
   }
   space -= registry.length;
   const parts: [string, string][] = [['canonical file list', i.preview], ['previous checkpoint', i.checkpoint], ['recent assistant sources', i.recent]];
+  // Сначала минимумы, потом остаток в прежнем порядке уступок. Прежде список файлов получал
+  // ВСЁ оставшееся место первым, и сводка чекпоинта уступала раньше него, хотя оба пола уже
+  // были вычтены из бюджета реестра: место, сбережённое для сводки, уходило списку файлов.
+  const allow: Record<string, number> = {};
+  for (const [name, floor] of [['canonical file list', previewFloor], ['previous checkpoint', checkpointFloor]] as [string, number][]) {
+    allow[name] = Math.min(floor, space); space -= allow[name];
+  }
+  for (const [name, text] of parts) {
+    const add = Math.max(0, Math.min(text.length - (allow[name] ?? 0), space));
+    allow[name] = (allow[name] ?? 0) + add; space -= add;
+  }
   const placed: Record<string, string> = {};
   for (const [name, text] of parts) {
-    const c = clip(text, space);
-    placed[name] = c.text; space -= c.text.length;
+    const c = name === 'previous checkpoint' ? clipLines(text, allow[name]) : clip(text, allow[name]);
+    placed[name] = c.text; space += allow[name] - c.text.length;
     if (c.state === 'omitted') omitted.push(name); else if (c.state === 'trimmed') trimmed.push(name);
   }
   const top = head(placed['canonical file list'], placed['recent assistant sources'], placed['previous checkpoint']);

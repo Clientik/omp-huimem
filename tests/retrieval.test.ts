@@ -46,7 +46,9 @@ test('selection preserves rank and whole records while adding only one omission 
   expect(out[0]).toBe(lines[0]);
   expect(out.slice(1,-1)).toEqual(chosen);
   expect(out.filter(l=>l.startsWith('['))).toHaveLength(1);
-  expect(out.at(-1)).toContain('2 record(s) omitted by budget: b-big [active], d-big [active]');
+  // Место под остаток «+N more» тоже зарезервировано, поэтому на тесном бюджете называется
+  // столько ID, сколько влезает, а остальные считаются.
+  expect(out.at(-1)).toContain('2 record(s) omitted by budget: b-big [active], +1 more');
   expect(result.counts).toEqual({selected:2,budget:2});
   expect(result.text.length).toBeLessThanOrEqual(budget);
   expect(full.text).not.toMatch(/record\(s\) omitted/);

@@ -665,14 +665,16 @@ export class MemoryStore {
     const omittedNotice=(list:{id:string;status:string}[],space:number) => {
       const head=`[${list.length} record(s) omitted by budget`;
       const tail='; recall id=<id>, commas for several, or narrow the query.]\n';
+      // Остаток «, +N more» тоже занимает место: без него пометка выходила за свой резерв,
+      // а превышение резерва выбрасывало из блока ВЕСЬ реестр (ветка «[Memory omitted.]»).
+      const rest=(n:number)=>n ? `, +${n} more` : '';
       let body='',listed=0;
       for(const r of list) {
         const piece=(listed ? ', ' : ': ')+`${r.id} [${r.status}]`;
-        if(head.length+body.length+piece.length+tail.length>space) break;
+        if(head.length+body.length+piece.length+rest(list.length).length+tail.length>space) break;
         body+=piece; listed++;
       }
-      const more=list.length-listed;
-      return head+body+(listed && more ? `, +${more} more` : '')+tail;
+      return head+body+(listed ? rest(list.length-listed) : '')+tail;
     };
     const omittedList:{id:string;status:string}[]=[];
     // Место под пометку резервируется заранее и по худшему случаю — все кандидаты пропущены.
@@ -681,7 +683,10 @@ export class MemoryStore {
     // шкалы хватает хотя бы на один ID: пропуск одной записи — самый частый случай.
     const bare=omittedNotice([],0).length;
     const listSpace=Math.min(MemoryStore.OMITTED_NOTICE_MAX,Math.max(bare+40,Math.floor(budget/8)));
-    const omittedReserve=omittedNotice(eligible.map(r=>({id:r.c.id,status:r.c.status})),listSpace).length;
+    // Резерв считается по САМЫМ ДЛИННЫМ ID: пропущенными окажутся не те записи, что стоят первыми
+    // в порядке отбора, и пометка по коротким именам не покрыла бы пометку по длинным.
+    const widest=[...eligible].sort((a,b)=>(b.c.id.length+b.c.status.length)-(a.c.id.length+a.c.status.length));
+    const omittedReserve=omittedNotice(widest.map(r=>({id:r.c.id,status:r.c.status})),listSpace).length;
     // Пропуск обязательной записи называется по ID; место под это сообщение резервируется заранее.
     const requiredNotice=(ids:string[]) => ids.length ? `[REQUIRED records not shown in full: ${ids.join(', ')}. Read them with project_memory recall by id before acting.]\n` : '';
     const compactRequiredNotice=(count:number)=>`[REQUIRED records not shown in full: ${count}; use project_memory status for IDs, then recall by id before acting.]\n`;
@@ -734,7 +739,9 @@ export class MemoryStore {
       take(r, line);
     }
     const notShown = [...unseen, ...inactive];
-    const omittedText=omitted ? omittedNotice(omittedList,listSpace) : '';
+    // Рендер по зарезервированному месту, а не по listSpace: пометка не может выйти за резерв,
+    // который уже учтён каждой отобранной записью.
+    const omittedText=omitted ? omittedNotice(omittedList,omittedReserve) : '';
     let requiredText=requiredNotice(notShown);
     if(out.length+requiredText.length+omittedText.length>budget && notShown.length)
       requiredText=compactRequiredNotice(notShown.length);

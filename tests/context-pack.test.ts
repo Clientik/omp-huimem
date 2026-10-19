@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { budgetNotice, clip, packContext } from '../src/memory/context-pack';
+import { budgetNotice, clip, clipEnds, clipLines, packContext, CHECKPOINT_FLOOR, MIDDLE } from '../src/memory/context-pack';
 import {MemoryStore} from '../src/memory/core';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
@@ -93,4 +93,43 @@ test('the registry search runs once when the pressure path keeps the same budget
   expect(packed.content.length).toBeLessThanOrEqual(4000);
   expect(calls).toBe(1);
   expect(packed.content).toContain(rec(1));
+});
+
+// ЗАМЕРЕНО 2026-10-19 на копии живого HUICAD (audit/release-0.6.8): при 20 записях сводка
+// чекпоинта доходила обрезанной до 218 символов из 780, а кончается она следующим шагом —
+// «ответы пользователя на вопросы §19 архитектуры». Начало сводки говорит, что сделано;
+// позвать потерянный следующий шаг, в отличие от пропущенной записи, неоткуда.
+test('a clipped checkpoint keeps its next step, line by line', () => {
+  const line = (n: string, mid: string) => `- ${n} [doing]: ${mid.repeat(40)} Следующий шаг: ответы пользователя по ${n}.\n`;
+  const part = 'Task checkpoints:\n' + line('repositories', 'сделано и проверено, ') + line('packaging', 'собрано и измерено, ');
+  expect(clipLines(part, part.length)).toEqual({ text: part, state: 'whole' });
+  const cut = clipLines(part, 700);
+  expect(cut.state).toBe('trimmed');
+  expect(cut.text.length).toBeLessThanOrEqual(700);
+  // Заголовок цел, и КАЖДАЯ строка сохранила свой конец, а не только последняя.
+  expect(cut.text.startsWith('Task checkpoints:\n')).toBe(true);
+  expect(cut.text).toContain('Следующий шаг: ответы пользователя по repositories.');
+  expect(cut.text).toContain('Следующий шаг: ответы пользователя по packaging.');
+  expect(cut.text.split(MIDDLE)).toHaveLength(3);
+  // Одна строка без середины режется с двух концов и остаётся одной строкой.
+  const one = clipEnds(line('repositories', 'сделано, '), 300);
+  expect(one.state).toBe('trimmed');
+  expect(one.text).toContain('Следующий шаг');
+  expect(one.text.endsWith('\n')).toBe(true);
+  // На совсем тесном месте середина не вырезается: пометка о пропуске съела бы само место.
+  expect(clipEnds('x'.repeat(400), 100).text.length).toBeLessThanOrEqual(100);
+});
+
+// Пол сводки: реестр уступает место последним, поэтому без явного минимума список канонических
+// файлов забирал весь остаток, и сводка уступала раньше него.
+test('the checkpoint keeps a floor when the rest of the block would take it', () => {
+  const checkpoint = '- task [doing]: ' + 'подробности работы, '.repeat(60) + 'Следующий шаг: ответ пользователя.\n';
+  const r = packContext({ ...base, limit: 6000, checkpoint, preview: 'preview line\n'.repeat(80),
+    recall: recallOf([1, 2, 3, 4, 5, 6, 7, 8].map(rec)) });
+  const placed = r.content.slice(0, r.registryOffset);
+  expect(placed).toContain('- task [doing]:');
+  expect(placed).toContain('Следующий шаг: ответ пользователя.');
+  const cp = placed.slice(placed.indexOf('- task [doing]:'));
+  expect(cp.length).toBeGreaterThanOrEqual(Math.min(checkpoint.length, CHECKPOINT_FLOOR) - 40);
+  expect(r.content.length).toBeLessThanOrEqual(6000);
 });

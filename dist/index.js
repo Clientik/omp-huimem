@@ -1036,21 +1036,22 @@ class MemoryStore {
       const head = `[${list.length} record(s) omitted by budget`;
       const tail = `; recall id=<id>, commas for several, or narrow the query.]
 `;
+      const rest = (n) => n ? `, +${n} more` : "";
       let body = "", listed = 0;
       for (const r of list) {
         const piece = (listed ? ", " : ": ") + `${r.id} [${r.status}]`;
-        if (head.length + body.length + piece.length + tail.length > space)
+        if (head.length + body.length + piece.length + rest(list.length).length + tail.length > space)
           break;
         body += piece;
         listed++;
       }
-      const more = list.length - listed;
-      return head + body + (listed && more ? `, +${more} more` : "") + tail;
+      return head + body + (listed ? rest(list.length - listed) : "") + tail;
     };
     const omittedList = [];
     const bare = omittedNotice([], 0).length;
     const listSpace = Math.min(MemoryStore.OMITTED_NOTICE_MAX, Math.max(bare + 40, Math.floor(budget / 8)));
-    const omittedReserve = omittedNotice(eligible.map((r) => ({ id: r.c.id, status: r.c.status })), listSpace).length;
+    const widest = [...eligible].sort((a, b) => b.c.id.length + b.c.status.length - (a.c.id.length + a.c.status.length));
+    const omittedReserve = omittedNotice(widest.map((r) => ({ id: r.c.id, status: r.c.status })), listSpace).length;
     const requiredNotice = (ids) => ids.length ? `[REQUIRED records not shown in full: ${ids.join(", ")}. Read them with project_memory recall by id before acting.]
 ` : "";
     const compactRequiredNotice = (count) => `[REQUIRED records not shown in full: ${count}; use project_memory status for IDs, then recall by id before acting.]
@@ -1125,7 +1126,7 @@ class MemoryStore {
       take(r, line);
     }
     const notShown = [...unseen, ...inactive];
-    const omittedText = omitted ? omittedNotice(omittedList, listSpace) : "";
+    const omittedText = omitted ? omittedNotice(omittedList, omittedReserve) : "";
     let requiredText = requiredNotice(notShown);
     if (out.length + requiredText.length + omittedText.length > budget && notShown.length)
       requiredText = compactRequiredNotice(notShown.length);
@@ -1227,6 +1228,7 @@ function architectureCheck(root, policy) {
 
 // src/memory/context-pack.ts
 var PREVIEW_FLOOR = 600;
+var CHECKPOINT_FLOOR = 500;
 var OPTIONAL = ["canonical file list", "previous checkpoint", "recent assistant sources", "registry"];
 function clip(part, space) {
   if (part.length <= space)
@@ -1242,6 +1244,51 @@ function clip(part, space) {
       return { text, state: "trimmed" };
   }
   return { text: "", state: "omitted" };
+}
+var MIDDLE = " [\u2026omitted; project_memory recall id=<task>\u2026] ";
+function clipEnds(part, space) {
+  if (part.length <= space)
+    return { text: part, state: "whole" };
+  if (space < MIDDLE.length + 120)
+    return clip(part, space);
+  const room = space - MIDDLE.length - 1;
+  const headRoom = Math.ceil(room * 0.6), tailRoom = room - headRoom;
+  const head = part.slice(0, headRoom);
+  const cut = Math.max(head.lastIndexOf(" "), head.lastIndexOf(`
+`));
+  const tail = part.slice(part.length - tailRoom).replace(/^\S*\s/, "");
+  const text = (cut > headRoom / 2 ? head.slice(0, cut) : head) + MIDDLE + tail;
+  return { text: text.endsWith(`
+`) ? text : text + `
+`, state: "trimmed" };
+}
+function clipLines(part, space) {
+  if (part.length <= space)
+    return { text: part, state: "whole" };
+  const lines = part.split(`
+`).filter(Boolean).map((l) => l + `
+`);
+  if (lines.length < 2)
+    return clipEnds(part, space);
+  const even = Math.floor(space / lines.length);
+  let left = space;
+  const out = [], long = [];
+  lines.forEach((l, n) => {
+    if (l.length <= even) {
+      out[n] = l;
+      left -= l.length;
+    } else {
+      out[n] = "";
+      long.push(n);
+    }
+  });
+  const share = long.length ? Math.floor(left / long.length) : 0;
+  for (const n of long) {
+    const c = clipEnds(lines[n], share);
+    out[n] = c.text;
+  }
+  const text = out.join("");
+  return text.trim() ? { text, state: "trimmed" } : { text: "", state: "omitted" };
 }
 function budgetNotice(limit, omitted, trimmed) {
   if (!omitted.length && !trimmed.length)
@@ -1291,7 +1338,8 @@ function packContext(i) {
   let space = i.limit - requiredLength - reserve;
   const omitted = [], trimmed = [];
   const previewFloor = Math.min(i.preview.length, PREVIEW_FLOOR);
-  const registryBudget = Math.max(0, Math.min(i.recallBudget, space - previewFloor));
+  const checkpointFloor = Math.min(i.checkpoint.length, CHECKPOINT_FLOOR);
+  const registryBudget = Math.max(0, Math.min(i.recallBudget, space - previewFloor - checkpointFloor));
   let retrieval = registryBudget === i.recallBudget ? natural : i.recall(registryBudget);
   let registry = retrieval.text;
   if (registry.length > registryBudget) {
@@ -1312,11 +1360,21 @@ function packContext(i) {
   }
   space -= registry.length;
   const parts = [["canonical file list", i.preview], ["previous checkpoint", i.checkpoint], ["recent assistant sources", i.recent]];
+  const allow = {};
+  for (const [name, floor] of [["canonical file list", previewFloor], ["previous checkpoint", checkpointFloor]]) {
+    allow[name] = Math.min(floor, space);
+    space -= allow[name];
+  }
+  for (const [name, text] of parts) {
+    const add = Math.max(0, Math.min(text.length - (allow[name] ?? 0), space));
+    allow[name] = (allow[name] ?? 0) + add;
+    space -= add;
+  }
   const placed = {};
   for (const [name, text] of parts) {
-    const c = clip(text, space);
+    const c = name === "previous checkpoint" ? clipLines(text, allow[name]) : clip(text, allow[name]);
     placed[name] = c.text;
-    space -= c.text.length;
+    space += allow[name] - c.text.length;
     if (c.state === "omitted")
       omitted.push(name);
     else if (c.state === "trimmed")
