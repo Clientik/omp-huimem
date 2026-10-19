@@ -78,6 +78,9 @@ describe('open questions', () => {
   test('answers must name your own earlier message', () => withStore(s => {
     const answer = s.capture('run', 'user', '1. Да');
     const later = s.capture('run', 'assistant', 'Вопрос, заданный уже после ответа');
+    // Время задаётся явно: на быстрой машине оба сообщения попадают в одну миллисекунду,
+    // и порядок, который проверяет правило, зависел бы от скорости (CI 2026-10-19).
+    s.db.query('UPDATE episodes SET time=? WHERE id=?').run(new Date(Date.now() + 1000).toISOString(), later);
     const other = s.capture('run', 'user', 'Другое сообщение пользователя');
     const save = (answers: string) => s.commit('run', [{ id: 'q', kind: 'fact', status: 'active', expectedVersion: 0,
       text: 'Ответ «да».', source: { episode: answer, quote: '1. Да', answers } }], 'x');
