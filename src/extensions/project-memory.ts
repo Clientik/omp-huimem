@@ -387,7 +387,7 @@ export default function install(pi: ExtensionAPI) {
       + 'SOURCE, exactly one: a current user decision — source={origin:"user",quote:"exact words from the current user message"}, the episode ID is filled by code; a file observation — source={origin:"file",path:"project-relative path",quote:"exact text from the file"}, the hash is computed by code. An accepted decision cannot rest on a file, and a quote from your own message can only support a proposed record.\n'
       + 'dependsOn=[{id}|{path}] names what a claim relies on; code pins their versions and hashes, and then only a change of those marks the record STALE with a reason. Without dependsOn any change of a canonical document does. STALE clears only through a new version saved with current dependencies.\n'
       + 'LIMITS: at most 30 changes per commit; summary is required and at most 2000 characters even when changes=[]; task=<task id> ties the summary (the next step) to that task.\n'
-      + 'READS: recall query=<text> or id=<record> (a task also returns its last checkpoint); episodes query=<text> with optional role=user|assistant, ranked with the match shown in context, or id=<episode> for one message whole; history id=<record>; status; doctor — read-only diagnosis of records, sources, task drift and settings.\n'
+      + 'READS: recall query=<text>, or id=<record> (a task also returns its last checkpoint), or id=<record>,<record>,… for up to 10 records in one call — the block names the records it had to omit, so read them by ID instead of guessing; episodes query=<text> with optional role=user|assistant, ranked with the match shown in context, or id=<episode> for one message whole; history id=<record>; status; doctor — read-only diagnosis of records, sources, task drift and settings.\n'
       + 'EVIDENCE CHECKS, instead of your own SQL over the memory database: evidence id=<record> re-checks that record against its own source; evidence id=<episode> quote=<text> says whether that message really contains the quote; evidence path=<file> quote=<text> does the same for a file; evidence with neither id nor path re-checks every record and names the unconfirmed ones. No background LLM.',
     parameters: z.object({
       op: z.enum(['status','recall','episodes','history','evidence','doctor','commit']),
@@ -419,7 +419,20 @@ export default function install(pi: ExtensionAPI) {
         switch (p.op) {
           case 'status': data = { ...s.status(), error: error || null, architecture: architectureReport(ctx), checkpoint: s.checkpoint(key()), required: readSettings(ctx.cwd).required }; break;
           case 'recall': {
-            if(p.id) {
+            // Несколько ID за вызов: expectedVersion требует знать текущую версию каждой записи,
+            // и за 19 октября это дало 14 поштучных recall id= (audit/huicad-after-0.6.7).
+            const ids=String(p.id ?? '').split(',').map((x:string)=>x.trim()).filter(Boolean);
+            if(ids.length>1) {
+              const taken=ids.slice(0,MemoryStore.RECALL_IDS);
+              const one=(id:string)=>{
+                const record:any=s.current(id);
+                const full=record?.kind==='task' ? {...record,lastCheckpoint:s.taskCheckpoint(id)} : record;
+                try { s.recordIdRetrieval(key(),id,record); } catch(e) { notify(ctx,'RETRIEVAL_TRACE_ERROR: '+String(e)); }
+                return full===null ? {id,missing:true} : full;
+              };
+              data={records:taken.map(one),
+                ...(ids.length>taken.length ? {omitted:ids.slice(taken.length)} : {})};
+            } else if(p.id) {
               data=s.current(p.id);
               if(data?.kind==='task') data={...data,lastCheckpoint:s.taskCheckpoint(p.id)};
               try { s.recordIdRetrieval(key(),p.id,data); } catch(e) { notify(ctx,'RETRIEVAL_TRACE_ERROR: '+String(e)); }

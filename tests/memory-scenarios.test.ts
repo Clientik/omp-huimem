@@ -103,7 +103,7 @@ function contract(install: typeof installSource) {
       if (!delivered) {
         const s = new MemoryStore(d.dir); const r = s.lastRetrieval(); s.close();
         expect(r.candidates.find((c: any) => c.id === 'security-rule')?.reason).toBe('budget');
-        expect(d.block.includes('[More records omitted') || /\[MEMORY_BUDGET[^\]]*registry/.test(d.block)).toBe(true);
+        expect(/\[\d+ record\(s\) omitted by budget/.test(d.block) || /\[MEMORY_BUDGET[^\]]*registry/.test(d.block)).toBe(true);
       }
     } finally { rmSync(d.dir, { recursive: true, force: true }); }
   });

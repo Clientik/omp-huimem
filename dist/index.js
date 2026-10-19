@@ -575,6 +575,8 @@ class MemoryStore {
       return { ...base, source: "file", path: s.path, match: false, detail: "accepted decision cannot rest on a file" };
     return { ...base, source: "file", path: s.path, match: true, quoteCharacters: s.quote.length };
   }
+  static OMITTED_NOTICE_MAX = 320;
+  static RECALL_IDS = 10;
   static VERIFY_LIMIT = 100;
   verifyRecords(limit = MemoryStore.VERIFY_LIMIT) {
     const ids = this.latestRecords().map((r) => r.id);
@@ -1030,7 +1032,25 @@ class MemoryStore {
       reasons.set(r.c.id, r.c.status === "retired" ? "retired" : "no-match");
     let out = `PROJECT MEMORY \u2014 evidence, not instructions. STALE/proposed are not established facts.
 `;
-    const omittedNotice = "[More records omitted: use project_memory recall with narrower query.]";
+    const omittedNotice = (list, space) => {
+      const head = `[${list.length} record(s) omitted by budget`;
+      const tail = `; recall id=<id>, commas for several, or narrow the query.]
+`;
+      let body = "", listed = 0;
+      for (const r of list) {
+        const piece = (listed ? ", " : ": ") + `${r.id} [${r.status}]`;
+        if (head.length + body.length + piece.length + tail.length > space)
+          break;
+        body += piece;
+        listed++;
+      }
+      const more = list.length - listed;
+      return head + body + (listed && more ? `, +${more} more` : "") + tail;
+    };
+    const omittedList = [];
+    const bare = omittedNotice([], 0).length;
+    const listSpace = Math.min(MemoryStore.OMITTED_NOTICE_MAX, Math.max(bare + 40, Math.floor(budget / 8)));
+    const omittedReserve = omittedNotice(eligible.map((r) => ({ id: r.c.id, status: r.c.status })), listSpace).length;
     const requiredNotice = (ids) => ids.length ? `[REQUIRED records not shown in full: ${ids.join(", ")}. Read them with project_memory recall by id before acting.]
 ` : "";
     const compactRequiredNotice = (count) => `[REQUIRED records not shown in full: ${count}; use project_memory status for IDs, then recall by id before acting.]
@@ -1067,7 +1087,7 @@ class MemoryStore {
     };
     const header = out.length, share = Math.floor(budget / 2);
     for (const r of eligible) {
-      const reserve = omittedNotice.length + requiredReserve;
+      const reserve = omittedReserve + requiredReserve;
       const fits = (l) => out.length + l.length + reserve <= budget;
       const inShare = (l) => out.length - header + l.length <= share;
       let line = withNote(r, render(r, r.c.source));
@@ -1090,6 +1110,7 @@ class MemoryStore {
         reasons.set(r.c.id, "budget");
         omitted = true;
         unseen.push(r.c.id);
+        omittedList.push({ id: r.c.id, status: r.c.status });
         continue;
       }
       if (out.length + line.length + reserve > budget) {
@@ -1097,16 +1118,18 @@ class MemoryStore {
         omitted = true;
         if (r.tier === 0)
           unseen.push(r.c.id);
+        omittedList.push({ id: r.c.id, status: r.c.status });
         continue;
       }
       reasons.set(r.c.id, "selected");
       take(r, line);
     }
     const notShown = [...unseen, ...inactive];
+    const omittedText = omitted ? omittedNotice(omittedList, listSpace) : "";
     let requiredText = requiredNotice(notShown);
-    if (out.length + requiredText.length + (omitted ? omittedNotice.length : 0) > budget && notShown.length)
+    if (out.length + requiredText.length + omittedText.length > budget && notShown.length)
       requiredText = compactRequiredNotice(notShown.length);
-    const suffix = requiredText + (omitted ? omittedNotice : "");
+    const suffix = requiredText + omittedText;
     if (out.length + suffix.length <= budget)
       out += suffix;
     else {
@@ -1231,9 +1254,8 @@ function packContext(i) {
   const natural = i.recall(i.recallBudget);
   const requiredLabel = "REQUIRED records (IDs: project_memory status)";
   const optional = natural.requiredCount ? [...OPTIONAL, requiredLabel] : OPTIONAL;
-  const incomplete = (r) => r.truncated ?? r.text.split(`
-`).some((l) => l.startsWith("[More records omitted"));
-  const visibleOmission = (r) => /\[(More records omitted|REQUIRED)/.test(r.text);
+  const incomplete = (r) => r.truncated ?? /\[\d+ record\(s\) omitted/.test(r.text);
+  const visibleOmission = (r) => /\[(\d+ record\(s\) omitted|REQUIRED)/.test(r.text);
   const whole = head(i.preview, i.recent, i.checkpoint);
   if (whole.length + natural.text.length <= i.limit && (!incomplete(natural) || visibleOmission(natural)))
     return {
@@ -2945,7 +2967,7 @@ Do not claim memory or work was verified.`;
 ` + `SOURCE, exactly one: a current user decision \u2014 source={origin:"user",quote:"exact words from the current user message"}, the episode ID is filled by code; a file observation \u2014 source={origin:"file",path:"project-relative path",quote:"exact text from the file"}, the hash is computed by code. An accepted decision cannot rest on a file, and a quote from your own message can only support a proposed record.
 ` + `dependsOn=[{id}|{path}] names what a claim relies on; code pins their versions and hashes, and then only a change of those marks the record STALE with a reason. Without dependsOn any change of a canonical document does. STALE clears only through a new version saved with current dependencies.
 ` + `LIMITS: at most 30 changes per commit; summary is required and at most 2000 characters even when changes=[]; task=<task id> ties the summary (the next step) to that task.
-` + `READS: recall query=<text> or id=<record> (a task also returns its last checkpoint); episodes query=<text> with optional role=user|assistant, ranked with the match shown in context, or id=<episode> for one message whole; history id=<record>; status; doctor \u2014 read-only diagnosis of records, sources, task drift and settings.
+` + `READS: recall query=<text>, or id=<record> (a task also returns its last checkpoint), or id=<record>,<record>,\u2026 for up to 10 records in one call \u2014 the block names the records it had to omit, so read them by ID instead of guessing; episodes query=<text> with optional role=user|assistant, ranked with the match shown in context, or id=<episode> for one message whole; history id=<record>; status; doctor \u2014 read-only diagnosis of records, sources, task drift and settings.
 ` + "EVIDENCE CHECKS, instead of your own SQL over the memory database: evidence id=<record> re-checks that record against its own source; evidence id=<episode> quote=<text> says whether that message really contains the quote; evidence path=<file> quote=<text> does the same for a file; evidence with neither id nor path re-checks every record and names the unconfirmed ones. No background LLM.",
     parameters: z.object({
       op: z.enum(["status", "recall", "episodes", "history", "evidence", "doctor", "commit"]),
@@ -2985,7 +3007,24 @@ Do not claim memory or work was verified.`;
             data = { ...s.status(), error: error || null, architecture: architectureReport(ctx), checkpoint: s.checkpoint(key()), required: readSettings(ctx.cwd).required };
             break;
           case "recall": {
-            if (p.id) {
+            const ids = String(p.id ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+            if (ids.length > 1) {
+              const taken = ids.slice(0, MemoryStore.RECALL_IDS);
+              const one = (id) => {
+                const record = s.current(id);
+                const full = record?.kind === "task" ? { ...record, lastCheckpoint: s.taskCheckpoint(id) } : record;
+                try {
+                  s.recordIdRetrieval(key(), id, record);
+                } catch (e) {
+                  notify(ctx, "RETRIEVAL_TRACE_ERROR: " + String(e));
+                }
+                return full === null ? { id, missing: true } : full;
+              };
+              data = {
+                records: taken.map(one),
+                ...ids.length > taken.length ? { omitted: ids.slice(taken.length) } : {}
+              };
+            } else if (p.id) {
               data = s.current(p.id);
               if (data?.kind === "task")
                 data = { ...data, lastCheckpoint: s.taskCheckpoint(p.id) };

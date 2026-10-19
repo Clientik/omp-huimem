@@ -24,7 +24,7 @@ test('an oversized record does not hide a later matching record within the same 
   const rows=result.text.split('\n').filter(line=>line.startsWith('{')).map(line=>JSON.parse(line));
   expect(rows.map(row=>row.id)).toEqual(['b-small']);
   expect(result.text.length).toBeLessThanOrEqual(500);
-  expect(result.text).toContain('[More records omitted');
+  expect(result.text).toMatch(/\[1 record\(s\) omitted by budget/);
   s.recordRetrieval('run','tool-search',result);
   expect(JSON.stringify(s.lastRetrieval())).not.toContain('needle');
   expect(s.lastRetrieval().characters).toBe(result.text.length);
@@ -38,13 +38,18 @@ test('selection preserves rank and whole records while adding only one omission 
   const full=s.recallDetailed('needle anchor');
   const lines=full.text.split('\n');
   const chosen=lines.filter(line=>line.startsWith('{') && ['a-first','c-last'].includes(JSON.parse(line).id));
-  const notice='[More records omitted: use project_memory recall with narrower query.]';
-  const budget=lines[0].length+1+chosen.reduce((n,line)=>n+line.length+1,0)+notice.length;
+  // Пометка о пропуске называет количество, ID и статус, поэтому её длина зависит от того,
+  // что пропущено; место под неё резервируется заранее, и бюджет считается с этим резервом.
+  const budget=lines[0].length+1+chosen.reduce((n,line)=>n+line.length+1,0)+MemoryStore.OMITTED_NOTICE_MAX;
   const result=s.recallDetailed('needle anchor',budget);
-  expect(result.text).toBe(lines[0]+'\n'+chosen.join('\n')+'\n'+notice);
+  const out=result.text.split('\n').filter(Boolean);
+  expect(out[0]).toBe(lines[0]);
+  expect(out.slice(1,-1)).toEqual(chosen);
+  expect(out.filter(l=>l.startsWith('['))).toHaveLength(1);
+  expect(out.at(-1)).toContain('2 record(s) omitted by budget: b-big [active], d-big [active]');
   expect(result.counts).toEqual({selected:2,budget:2});
-  expect(result.text.length).toBe(budget);
-  expect(full.text).not.toContain('[More records omitted');
+  expect(result.text.length).toBeLessThanOrEqual(budget);
+  expect(full.text).not.toMatch(/record\(s\) omitted/);
   for(const limit of [0,1,80,120]) {
     const small=s.recallDetailed('needle',limit);
     expect(small.text.length).toBeLessThanOrEqual(limit);
@@ -168,7 +173,7 @@ test('a STALE record yields to a fresh one at equal score but stays visible',()=
   writeFileSync(join(root,'a.txt'),'timeout 9');
   const full=s.recallDetailed('timeout');
   expect(rows(full.text).map(r=>[r.id,r.freshness.startsWith('STALE')])).toEqual([['b-timeout',false],['a-timeout',true]]);
-  const one=s.recallDetailed('timeout',full.text.indexOf('\n')+1+full.text.split('\n')[1].length+1+80);
+  const one=s.recallDetailed('timeout',full.text.indexOf('\n')+1+full.text.split('\n')[1].length+1+160);
   expect(rows(one.text).map(r=>r.id)).toEqual(['b-timeout']);
 }));
 
@@ -252,4 +257,28 @@ test('a precomputed authority gives the same retrieval as computing it inside',(
   const passed=s.recallDetailed('needle',3200,[],s.authority());
   expect(passed.text).toBe(own.text);
   expect(passed.candidates).toEqual(own.candidates);
+}));
+
+// ЗАМЕРЕНО 2026-10-19 на живом HUICAD (audit/huicad-after-0.6.7): при 20 записях в блок
+// попадали 7, остальные 13 отбрасывались по бюджету на каждом из 43 ходов, и пометка называла
+// только их количество. Позвать по ID то, о существовании чего не знаешь, нельзя — за день
+// 14 поштучных recall id=, угаданных по документам.
+test('on a real budget the omitted records are named with their status',()=>fixture(s=>{
+  const long='Решение по подсистеме: '+'подробности и обоснование. '.repeat(20);
+  for(let i=0;i<20;i++) save(s,'record-'+String(i).padStart(2,'0'),long+' Пункт '+i);
+  const result=s.recallDetailed('решение подсистеме',4800);
+  const shown=rows(result.text).map(r=>r.id);
+  expect(shown.length).toBeGreaterThan(2);
+  expect(shown.length).toBeLessThan(20);
+  const notice=result.text.split('\n').find(l=>l.startsWith('['))!;
+  expect(notice).toContain(`${20-shown.length} record(s) omitted by budget`);
+  // Названы именно пропущенные, со статусом, и каждое имя пригодно для recall id=.
+  const named=[...notice.matchAll(/([a-z-]+\d\d) \[(\w+)\]/g)].map(m=>m[1]);
+  expect(named.length).toBeGreaterThan(2);
+  for(const id of named) {
+    expect(shown).not.toContain(id);
+    expect(s.current(id)).not.toBeNull();
+  }
+  expect(notice).toContain('+'); // остаток назван числом, а не молча отброшен
+  expect(result.text.length).toBeLessThanOrEqual(4800);
 }));

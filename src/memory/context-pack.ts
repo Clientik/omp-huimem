@@ -53,8 +53,9 @@ export function packContext(i: PackInput): PackResult {
   const natural = i.recall(i.recallBudget);
   const requiredLabel='REQUIRED records (IDs: project_memory status)';
   const optional=natural.requiredCount ? [...OPTIONAL,requiredLabel] : OPTIONAL;
-  const incomplete=(r:RetrievalResult)=>r.truncated ?? r.text.split('\n').some(l=>l.startsWith('[More records omitted'));
-  const visibleOmission=(r:RetrievalResult)=>/\[(More records omitted|REQUIRED)/.test(r.text);
+  // Пометка о пропуске называет количество и ID записей: «[13 record(s) omitted by budget: …]».
+  const incomplete=(r:RetrievalResult)=>r.truncated ?? /\[\d+ record\(s\) omitted/.test(r.text);
+  const visibleOmission=(r:RetrievalResult)=>/\[(\d+ record\(s\) omitted|REQUIRED)/.test(r.text);
   const whole = head(i.preview, i.recent, i.checkpoint);
   if (whole.length + natural.text.length <= i.limit && (!incomplete(natural) || visibleOmission(natural)))
     return { content: whole + natural.text, registryOffset: whole.length, retrieval: natural,

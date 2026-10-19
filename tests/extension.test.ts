@@ -282,6 +282,36 @@ test('a storage failure is still an error',async()=>{
   } finally { f.clean(); }
 });
 
+// ЗАМЕРЕНО 2026-10-19 (audit/huicad-after-0.6.7): expectedVersion требует знать текущую версию
+// каждой записи, и за день это дало 14 поштучных recall id=, причём ID пришлось угадывать
+// по документам, потому что блок называл только число пропущенных записей.
+test('op=recall takes several IDs at once and names the ones it could not return',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Храним решения по сборке и зонам'},f.ctx);
+    const quote='Храним решения по сборке и зонам';
+    const commit=await f.tools.project_memory.execute('id',{op:'commit',summary:'две записи и задача',
+      changes:[{id:'occt-build',kind:'decision',status:'accepted',expectedVersion:0,text:'Сборка нативная.',rationale:quote,source:{origin:'user',quote}},
+        {id:'ui-zones',kind:'fact',status:'active',expectedVersion:0,text:'Зоны инструментов заданы.',source:{origin:'user',quote}},
+        {id:'zones-task',kind:'task',status:'doing',expectedVersion:0,text:'Разложить инструменты по зонам.',source:{origin:'user',quote}}]},null,null,f.ctx);
+    expect(commit.isError).not.toBe(true);
+    const many=await f.tools.project_memory.execute('id',{op:'recall',id:'occt-build, ui-zones ,zones-task,absent'},null,null,f.ctx);
+    expect(many.isError).not.toBe(true);
+    const records=many.details.records;
+    expect(records.map((r:any)=>r.id)).toEqual(['occt-build','ui-zones','zones-task','absent']);
+    expect(records[0]).toMatchObject({version:1,status:'accepted'});
+    // Версия каждой записи приходит за один вызов — именно она нужна для expectedVersion.
+    expect(records.every((r:any)=>r.missing || Number.isInteger(r.version))).toBe(true);
+    expect(records[2].lastCheckpoint).toBeDefined();
+    expect(records[3]).toEqual({id:'absent',missing:true});
+    // Один ID по-прежнему возвращает саму запись, а не список.
+    const one=await f.tools.project_memory.execute('id',{op:'recall',id:'ui-zones'},null,null,f.ctx);
+    expect(one.details).toMatchObject({id:'ui-zones',version:1});
+    const over=await f.tools.project_memory.execute('id',{op:'recall',id:Array.from({length:12},(_,i)=>'x'+i).join(',')},null,null,f.ctx);
+    expect(over.details.records).toHaveLength(MemoryStore.RECALL_IDS);
+    expect(over.details.omitted).toEqual(['x10','x11']);
+  } finally { f.clean(); }
+});
+
 // ЗАМЕРЕНО 2026-10-19 (audit/huicad-after-0.6.7): сверить цитаты записей с сохранёнными
 // сообщениями было нечем, и модель 17 раз открывала state.sqlite своим SQL — мимо журнала.
 test('op=evidence re-checks a record, a message and the whole registry, and leaves a receipt',async()=>{
@@ -831,7 +861,7 @@ test('context includes a fitting record after an oversized candidate and reports
     const content=result.messages.find((m:any)=>m.customType==='project-memory-context').content;
     expect(content).toContain('"id":"b-small"');
     expect(content).not.toContain('"id":"a-big"');
-    expect(content).toContain('[More records omitted');
+    expect(content).toContain('1 record(s) omitted by budget: a-big [active]');
     const check=new MemoryStore(f.dir);
     try {
       expect(check.lastContext().truncated).toBe(true);
