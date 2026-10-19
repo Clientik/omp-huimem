@@ -4,6 +4,7 @@ import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync,symli
 import {join} from 'node:path';
 import {MemoryStore} from '../src/memory/core';
 import {diagnoseMemory,formatDoctor} from '../src/memory/doctor';
+import {LIMITS} from '../src/memory/settings';
 
 function fixture(fn:(dir:string)=>void) {
   const dir=mkdtempSync(join(import.meta.dir,'doctor-test-'));
@@ -254,7 +255,7 @@ test('out-of-range settings values are reported with the value in effect',()=>fi
   writeFileSync(join(dir,'.memory/settings.json'),JSON.stringify({recallBudget:999999,injectionLimit:'big'}));
   const adjusted=diagnoseMemory(dir).issues.filter(i=>i.code==='SETTING_ADJUSTED').map(i=>i.message);
   expect(adjusted).toEqual(['recallBudget 999999 is not an integer within 500–12000; 12000 is used.',
-    'injectionLimit "big" is not an integer within 3000–16000; 8000 is used.']);
+    `injectionLimit "big" is not an integer within 3000–16000; ${LIMITS.injectionLimit.default} is used.`]);
   writeFileSync(join(dir,'.memory/settings.json'),JSON.stringify({recallBudget:4500,injectionLimit:8000}));
   expect(diagnoseMemory(dir).issues.some(i=>i.code==='SETTING_ADJUSTED')).toBe(false);
 }));

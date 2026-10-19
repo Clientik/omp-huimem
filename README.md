@@ -19,7 +19,7 @@ For developers working with an AI agent who want to stop explaining the same pro
 - **Evidence you can inspect.** Records require a checked quote from a message or file. Code supplies message IDs and file hashes.
 - **Corrections with history.** Updates create another version of the same record instead of silently replacing its history.
 - **Visible staleness.** Changed sources or core documents mark previous records `STALE` for review.
-- **Bounded context.** The extension supplies a memory block of up to 8,000 characters: the rules, a list of the canonical files, and the records that match the question. The agent reads full sources when it needs them.
+- **Bounded context.** The extension supplies a memory block of up to 9,000 characters: the rules, a list of the canonical files, and the records that match the question. The agent reads full sources when it needs them.
 
 ## Install
 
@@ -223,7 +223,7 @@ This is a small, inspectable memory system for one project. It offers checked ev
 
 Search is lexical, not semantic. Architecture checks match configured strings, not full dependency graphs. Source quotes establish provenance, not truth. File changes and SQLite writes are not one transaction. Real compaction, crashes, concurrent sessions, and branch changes need more live testing.
 
-The 8,000-character limit is not a token limit or a measured savings percentage. Memory still consumes main-model context. If you use a cloud model, the memory context sent to it reaches that provider.
+The 9,000-character limit is not a token limit or a measured savings percentage. Memory still consumes main-model context. If you use a cloud model, the memory context sent to it reaches that provider.
 
 Keep runtime SQLite out of Git. To back up history, stop active sessions and copy all of `.memory`, including existing WAL/SHM files. There is no automatic history cleanup.
 

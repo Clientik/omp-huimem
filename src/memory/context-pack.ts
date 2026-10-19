@@ -18,6 +18,10 @@ export const PREVIEW_FLOOR = 600;
 // следующим шагом — «ответы пользователя на вопросы §19 архитектуры», — поэтому обрезка с начала
 // теряет ровно то, ради чего чекпоинт и нужен. Отсюда и пол, и обрезка с двух концов.
 export const CHECKPOINT_FLOOR = 500;
+// ЗАМЕРЕНО 2026-10-19 там же: строка «Recent assistant sources» стоит последней и под давлением
+// пропадала целиком, а именно её ID берут для source.answers — связи ответа с вопросом. Строка
+// короткая, и её минимум дешевле, чем потерянная связь.
+export const RECENT_FLOOR = 200;
 
 export type PackInput = {
   limit: number; recallBudget: number;
@@ -123,7 +127,8 @@ export function packContext(i: PackInput): PackResult {
   // осталось от сводки. Запись, не попавшую в блок, теперь можно позвать по ID из пометки о
   // пропуске; потерянный следующий шаг позвать нельзя — о нём больше нигде не сказано.
   const checkpointFloor = Math.min(i.checkpoint.length, CHECKPOINT_FLOOR);
-  const registryBudget = Math.max(0, Math.min(i.recallBudget, space - previewFloor - checkpointFloor));
+  const recentFloor = Math.min(i.recent.length, RECENT_FLOOR);
+  const registryBudget = Math.max(0, Math.min(i.recallBudget, space - previewFloor - checkpointFloor - recentFloor));
   // Тот же бюджет — тот же результат поиска: повторный вызов (≈100 мс на большой памяти) не нужен.
   let retrieval = registryBudget === i.recallBudget ? natural : i.recall(registryBudget);
   let registry = retrieval.text;
@@ -144,7 +149,8 @@ export function packContext(i: PackInput): PackResult {
   // ВСЁ оставшееся место первым, и сводка чекпоинта уступала раньше него, хотя оба пола уже
   // были вычтены из бюджета реестра: место, сбережённое для сводки, уходило списку файлов.
   const allow: Record<string, number> = {};
-  for (const [name, floor] of [['canonical file list', previewFloor], ['previous checkpoint', checkpointFloor]] as [string, number][]) {
+  for (const [name, floor] of [['canonical file list', previewFloor], ['previous checkpoint', checkpointFloor],
+    ['recent assistant sources', recentFloor]] as [string, number][]) {
     allow[name] = Math.min(floor, space); space -= allow[name];
   }
   for (const [name, text] of parts) {

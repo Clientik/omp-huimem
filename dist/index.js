@@ -141,8 +141,8 @@ var FIXED = [".memory/MEMORY.md", ".memory/PROJECT.md", ".memory/todo.json", ".m
 var documentPath = (x) => typeof x === "string" && /^\.memory\/[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$/.test(x) && !x.includes("..") && !x.endsWith("/") && !FIXED.includes(x) && !x.startsWith(".memory/adr/") && !x.startsWith(".memory/runtime/") && x !== ".memory/RECORDS.md" && x !== ".memory/settings.json";
 var documentList = (v) => Array.isArray(v) ? [...new Set(v.filter(documentPath))].sort().slice(0, DOCUMENTS_MAX) : [];
 var LIMITS = {
-  recallBudget: { min: 500, max: 12000, default: 4800 },
-  injectionLimit: { min: 3000, max: 16000, default: 8000 }
+  recallBudget: { min: 500, max: 12000, default: 5200 },
+  injectionLimit: { min: 3000, max: 16000, default: 9000 }
 };
 var clamp = (v, l) => typeof v === "number" && Number.isFinite(v) ? Math.min(l.max, Math.max(l.min, Math.round(v))) : l.default;
 function readRaw(root) {
@@ -1251,6 +1251,7 @@ function architectureCheck(root, policy) {
 // src/memory/context-pack.ts
 var PREVIEW_FLOOR = 600;
 var CHECKPOINT_FLOOR = 500;
+var RECENT_FLOOR = 200;
 var OPTIONAL = ["canonical file list", "previous checkpoint", "recent assistant sources", "registry"];
 function clip(part, space) {
   if (part.length <= space)
@@ -1361,7 +1362,8 @@ function packContext(i) {
   const omitted = [], trimmed = [];
   const previewFloor = Math.min(i.preview.length, PREVIEW_FLOOR);
   const checkpointFloor = Math.min(i.checkpoint.length, CHECKPOINT_FLOOR);
-  const registryBudget = Math.max(0, Math.min(i.recallBudget, space - previewFloor - checkpointFloor));
+  const recentFloor = Math.min(i.recent.length, RECENT_FLOOR);
+  const registryBudget = Math.max(0, Math.min(i.recallBudget, space - previewFloor - checkpointFloor - recentFloor));
   let retrieval = registryBudget === i.recallBudget ? natural : i.recall(registryBudget);
   let registry = retrieval.text;
   if (registry.length > registryBudget) {
@@ -1383,7 +1385,11 @@ function packContext(i) {
   space -= registry.length;
   const parts = [["canonical file list", i.preview], ["previous checkpoint", i.checkpoint], ["recent assistant sources", i.recent]];
   const allow = {};
-  for (const [name, floor] of [["canonical file list", previewFloor], ["previous checkpoint", checkpointFloor]]) {
+  for (const [name, floor] of [
+    ["canonical file list", previewFloor],
+    ["previous checkpoint", checkpointFloor],
+    ["recent assistant sources", recentFloor]
+  ]) {
     allow[name] = Math.min(floor, space);
     space -= allow[name];
   }
