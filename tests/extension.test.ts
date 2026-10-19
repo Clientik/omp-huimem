@@ -291,6 +291,29 @@ test('a storage failure is still an error',async()=>{
   } finally { f.clean(); }
 });
 
+// ЗАМЕРЕНО 2026-10-19 на модели ai1: сохраняя вопросы к пользователю, модель передала
+// origin="episode" без episode — у вопроса, который задают сейчас, своего сообщения ещё нет, —
+// и отказ предлагал только "user" и "file". Отказ теперь называет все три формы и выход для вопроса.
+test('origin=episode without an ID says what a question should rest on instead',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Продолжи работу над billing.js по правилу про копейки.'},f.ctx);
+    const bad=await f.tools.project_memory.execute('id',{op:'commit',summary:'вопросы пользователю',
+      changes:[{id:'question:scope',kind:'question',status:'open',expectedVersion:0,text:'Что именно нужно в billing.js?',
+        source:{origin:'episode',quote:'Что именно нужно в billing.js?'}}]},null,null,f.ctx);
+    expect(bad.isError).toBe(true);
+    const text=JSON.stringify(bad);
+    expect(text).toContain('needs episode=');
+    expect(text).toContain('has no message yet');
+    // Путь, который отказ предлагает, работает с первого раза.
+    const good=await f.tools.project_memory.execute('id',{op:'commit',summary:'вопросы пользователю',
+      changes:[{id:'question:scope',kind:'question',status:'open',expectedVersion:0,text:'Что именно нужно в billing.js?',
+        source:{origin:'user',quote:'Продолжи работу над billing.js'}}]},null,null,f.ctx);
+    expect(good.isError).not.toBe(true);
+    const saved=await f.tools.project_memory.execute('id',{op:'recall',id:'question:scope'},null,null,f.ctx);
+    expect(saved.details).toMatchObject({kind:'question',status:'open',version:1});
+  } finally { f.clean(); }
+});
+
 // ЗАМЕРЕНО 2026-10-19 (audit/huicad-after-0.6.7): ответ пользователя пришёл номерами, и связь
 // с вопросом модель вписала прозой в MEMORY.md и ADR 0003 с пометкой «[?] сопоставлено по номеру».
 test('origin=user carries source.answers through to the saved record',async()=>{

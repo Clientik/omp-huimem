@@ -20,6 +20,19 @@ const ask = (s: MemoryStore, id: string, text: string, status = 'open', version 
 };
 
 describe('open questions', () => {
+  // ЗАМЕРЕНО 2026-10-19 на модели ai1: сохраняя три вопроса, модель передала origin="episode"
+  // без episode — у вопроса, который задают прямо сейчас, своего сообщения ещё нет, — и получила
+  // отказ, предлагавший только "user" и "file". Вопросы не сохранились вообще.
+  test('a question asked right now rests on the request that left the gap', () => withStore(s => {
+    const request = s.capture('run', 'user', 'Продолжи работу над billing.js по правилу про копейки.');
+    s.commit('run', [{ id: 'question:billing-scope', kind: 'question', status: 'open', expectedVersion: 0,
+      text: 'Что именно нужно в billing.js: новая функциональность или приведение кода к правилу?',
+      source: { episode: request, quote: 'Продолжи работу над billing.js' } }], 'вопрос пользователю');
+    expect(s.current('question:billing-scope')).toMatchObject({ kind: 'question', status: 'open' });
+    // Запись проходит обычную сверку: цитата из настоящего сообщения пользователя.
+    expect((s.verifyRecord('question:billing-scope') as any).match).toBe(true);
+  }));
+
   test('a question is saved from your own message and cannot be accepted or active', () => withStore(s => {
     ask(s, 'modelling-kind', 'Параметрическая история или прямое моделирование?');
     expect(s.current('modelling-kind')).toMatchObject({ kind: 'question', status: 'open', version: 1 });
