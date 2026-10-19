@@ -186,7 +186,7 @@ export class MemoryStore {
     const r=this.db.query('SELECT run,hash,characters,truncated,records,time FROM context_receipts ORDER BY seq DESC LIMIT 1').get() as any;
     return r ? {...r,truncated:Boolean(r.truncated),records:JSON.parse(r.records)} : null;
   }
-  recordRetrieval(run:string,channel:'context'|'tool-search'|'tool-id',result:RetrievalResult,finalRegistry?:string,checkpoints?:unknown) {
+  recordRetrieval(run:string,channel:'context'|'tool-search'|'tool-id'|'tool-evidence',result:RetrievalResult,finalRegistry?:string,checkpoints?:unknown) {
     const delivered=new Set<string>();
     if(finalRegistry!==undefined) for(const line of finalRegistry.split('\n')) {
       try { const r=JSON.parse(line); if(typeof r.id==='string' && Number.isInteger(r.version)) delivered.add(`${r.id}@${r.version}`); } catch {}
@@ -214,6 +214,16 @@ export class MemoryStore {
         selectionBasis:['explicit-id'],reason:'selected',supersededVersions:(this.db.query('SELECT COUNT(*) n FROM versions WHERE id=?').get(id) as any).n-1}] : [],
       counts:record ? {selected:1} : {missing:1},totalCandidates:record ? 1 : 0,detailsOmitted:0});
   }
+  // Сверка доказательств — тоже обращение к памяти, и она попадает в тот же журнал: иначе
+  // проверка цитат остаётся невидимой, а именно её труднее всего восстановить потом.
+  recordEvidence(run:string,subject:string,data:unknown,checked:{id:string;version?:number;match:boolean}[]) {
+    const text=JSON.stringify(data);
+    this.recordRetrieval(run,'tool-evidence',{text,queryHash:hash(subject),budget:null,
+      candidates:checked.map(c=>({id:c.id,version:c.version ?? 0,stale:false,score:0,pinned:false,
+        selectionBasis:['evidence-check'],reason:c.match ? 'confirmed' : 'unconfirmed',supersededVersions:0})),
+      counts:{confirmed:checked.filter(c=>c.match).length,unconfirmed:checked.filter(c=>!c.match).length},
+      totalCandidates:checked.length,detailsOmitted:0});
+  }
   probe() { this.db.query('INSERT OR REPLACE INTO health VALUES (1,?)').run(new Date().toISOString()); }
   capture(session: string, role: string, text: string) {
     if (!['user', 'assistant'].includes(role)) throw new Error('SOURCE_ROLE');
@@ -226,6 +236,56 @@ export class MemoryStore {
     const text = sourceText(this.root, path);
     if (!quote || !text.includes(quote) || scrub(quote) !== quote) throw new Error('SOURCE: invalid quote');
     return { path, hash: hash(text), quote };
+  }
+  // ЗАМЕРЕНО 2026-10-19 на живом HUICAD (audit/huicad-after-0.6.7): op=evidence сверял цитату
+  // только с файлом. Чтобы проверить цитаты записей против сохранённых сообщений, модель 17 раз
+  // открывала state.sqlite сама — bun:sqlite, свой SQL, свои скрипты. Главная проверка всей
+  // модели доказательств делалась СНАРУЖИ плагина, и в retrieval_receipts её нет: журнал
+  // перестаёт отвечать, что модель видела, ровно там, где это важнее всего.
+  episodeSource(id: string, quote: string) {
+    const e = this.episode(id);
+    if (!e) return { episode: id, found: false, detail: 'no such episode in this project memory' };
+    if (typeof quote !== 'string' || !quote) throw new Error('SOURCE: quote required to check a message');
+    const at = e.text.indexOf(quote);
+    return { episode: id, role: e.role, time: e.time, characters: e.text.length, found: at >= 0,
+      ...(at >= 0 ? { at, context: MemoryStore.window(e.text, at, 400).text }
+        : { detail: 'quote absent in this message; read it whole with episodes id=<episode>' }) };
+  }
+  // Запись против своего источника: цитата на месте, файл не изменился, роль сообщения допустима.
+  // match=false — это не исключение, а ответ: запись есть, доказательство под ней не подтвердилось.
+  verifyRecord(id: string) {
+    const row = this.latestRow(id);
+    if (!row) return { id, exists: false, detail: 'no such record' };
+    const c = row.data, s = c.source;
+    const base = { id, version: row.version, kind: c.kind, status: c.status, exists: true };
+    const accepted = c.kind === 'decision' && c.status === 'accepted';
+    if (s.episode) {
+      const e = this.episode(s.episode);
+      if (!e) return { ...base, source: 'episode', episode: s.episode, match: false, detail: 'episode missing from this project memory' };
+      if (!e.text.includes(s.quote)) return { ...base, source: 'episode', episode: s.episode, role: e.role, match: false, detail: 'quote absent in that message' };
+      if (accepted && e.role !== 'user') return { ...base, source: 'episode', episode: s.episode, role: e.role, match: false,
+        detail: `accepted decision rests on a ${e.role} message` };
+      if (accepted && !s.quote.includes(c.rationale ?? '')) return { ...base, source: 'episode', episode: s.episode, role: e.role, match: false,
+        detail: 'rationale is not an exact excerpt of the quote' };
+      return { ...base, source: 'episode', episode: s.episode, role: e.role, match: true, quoteCharacters: s.quote.length };
+    }
+    let text: string;
+    try { text = sourceText(this.root, s.path!); }
+    catch { return { ...base, source: 'file', path: s.path, match: false, detail: 'source file is missing or unreadable' }; }
+    if (hash(text) !== s.hash) return { ...base, source: 'file', path: s.path, match: false, detail: 'file changed since this record was saved' };
+    if (!text.includes(s.quote)) return { ...base, source: 'file', path: s.path, match: false, detail: 'quote absent in that file' };
+    if (accepted) return { ...base, source: 'file', path: s.path, match: false, detail: 'accepted decision cannot rest on a file' };
+    return { ...base, source: 'file', path: s.path, match: true, quoteCharacters: s.quote.length };
+  }
+  // Весь реестр за один вызов: именно это модель писала себе скриптом, запись за записью.
+  static readonly VERIFY_LIMIT = 100;
+  verifyRecords(limit = MemoryStore.VERIFY_LIMIT) {
+    const ids = this.latestRecords().map(r => r.id);
+    const take = Math.max(0, Math.min(MemoryStore.VERIFY_LIMIT, limit));
+    const checked = ids.slice(0, take).map(id => this.verifyRecord(id));
+    return { records: ids.length, checked: checked.length,
+      ...(ids.length > checked.length ? { omitted: ids.length - checked.length } : {}),
+      unconfirmed: checked.filter(r => !('match' in r) || !r.match).map(r => r.id), results: checked };
   }
   current(id: string): (Change & { version: number; freshness: string; staleReasons?: string[] }) | null {
     const row = this.latestRow(id);

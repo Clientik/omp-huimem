@@ -282,6 +282,35 @@ test('a storage failure is still an error',async()=>{
   } finally { f.clean(); }
 });
 
+// ЗАМЕРЕНО 2026-10-19 (audit/huicad-after-0.6.7): сверить цитаты записей с сохранёнными
+// сообщениями было нечем, и модель 17 раз открывала state.sqlite своим SQL — мимо журнала.
+test('op=evidence re-checks a record, a message and the whole registry, and leaves a receipt',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Бейдж референса оставляем 8.0.1, остальное на твоё усмотрение'},f.ctx);
+    const saved=await f.tools.project_memory.execute('id',{op:'commit',summary:'решение о версии OCCT',
+      changes:[{id:'occt-version',kind:'decision',status:'accepted',expectedVersion:0,text:'Версия OCCT — 8.0.1.',
+        rationale:'Бейдж референса оставляем 8.0.1',source:{origin:'user',quote:'Бейдж референса оставляем 8.0.1'}}]},null,null,f.ctx);
+    expect(saved.isError).not.toBe(true);
+    const one=await f.tools.project_memory.execute('id',{op:'evidence',id:'occt-version'},null,null,f.ctx);
+    expect(one.details).toMatchObject({id:'occt-version',source:'episode',role:'user',match:true});
+    // Тот же ID-параметр отвечает и про сообщение: запись и эпизод различаются существованием.
+    const episode=one.details.episode;
+    const message=await f.tools.project_memory.execute('id',{op:'evidence',id:episode,quote:'Бейдж референса оставляем 8.0.1'},null,null,f.ctx);
+    expect(message.details).toMatchObject({episode,role:'user',found:true});
+    const absent=await f.tools.project_memory.execute('id',{op:'evidence',id:episode,quote:'Бейдж референса оставляем 9.0.0'},null,null,f.ctx);
+    expect(absent.details.found).toBe(false);
+    // Без id и path проверяется весь реестр — ровно то, что модель делала скриптом.
+    const all=await f.tools.project_memory.execute('id',{op:'evidence'},null,null,f.ctx);
+    expect(all.details).toMatchObject({records:1,checked:1,unconfirmed:[]});
+    const s=new MemoryStore(f.dir);
+    try {
+      const receipt:any=s.lastRetrieval();
+      expect(receipt.channel).toBe('tool-evidence');
+      expect(receipt.counts).toEqual({confirmed:1,unconfirmed:0});
+    } finally { s.close(); }
+  } finally { f.clean(); }
+});
+
 // ЗАМЕРЕНО 2026-10-17 (audit/huicad-after-0.6.6): замечание doctor TASKS_NOT_IN_REGISTRY —
 // единственное, что за полтора дня привело к записи в реестр, и запустил его пользователь.
 // Своей операции у модели не было, поэтому она четыре раза импортировала doctor.ts через bun -e.

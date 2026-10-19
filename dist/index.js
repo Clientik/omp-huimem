@@ -472,6 +472,27 @@ class MemoryStore {
       detailsOmitted: 0
     });
   }
+  recordEvidence(run, subject, data, checked) {
+    const text = JSON.stringify(data);
+    this.recordRetrieval(run, "tool-evidence", {
+      text,
+      queryHash: hash2(subject),
+      budget: null,
+      candidates: checked.map((c) => ({
+        id: c.id,
+        version: c.version ?? 0,
+        stale: false,
+        score: 0,
+        pinned: false,
+        selectionBasis: ["evidence-check"],
+        reason: c.match ? "confirmed" : "unconfirmed",
+        supersededVersions: 0
+      })),
+      counts: { confirmed: checked.filter((c) => c.match).length, unconfirmed: checked.filter((c) => !c.match).length },
+      totalCandidates: checked.length,
+      detailsOmitted: 0
+    });
+  }
   probe() {
     this.db.query("INSERT OR REPLACE INTO health VALUES (1,?)").run(new Date().toISOString());
   }
@@ -490,6 +511,82 @@ class MemoryStore {
     if (!quote2 || !text.includes(quote2) || scrub(quote2) !== quote2)
       throw new Error("SOURCE: invalid quote");
     return { path, hash: hash2(text), quote: quote2 };
+  }
+  episodeSource(id, quote2) {
+    const e = this.episode(id);
+    if (!e)
+      return { episode: id, found: false, detail: "no such episode in this project memory" };
+    if (typeof quote2 !== "string" || !quote2)
+      throw new Error("SOURCE: quote required to check a message");
+    const at = e.text.indexOf(quote2);
+    return {
+      episode: id,
+      role: e.role,
+      time: e.time,
+      characters: e.text.length,
+      found: at >= 0,
+      ...at >= 0 ? { at, context: MemoryStore.window(e.text, at, 400).text } : { detail: "quote absent in this message; read it whole with episodes id=<episode>" }
+    };
+  }
+  verifyRecord(id) {
+    const row = this.latestRow(id);
+    if (!row)
+      return { id, exists: false, detail: "no such record" };
+    const c = row.data, s = c.source;
+    const base = { id, version: row.version, kind: c.kind, status: c.status, exists: true };
+    const accepted = c.kind === "decision" && c.status === "accepted";
+    if (s.episode) {
+      const e = this.episode(s.episode);
+      if (!e)
+        return { ...base, source: "episode", episode: s.episode, match: false, detail: "episode missing from this project memory" };
+      if (!e.text.includes(s.quote))
+        return { ...base, source: "episode", episode: s.episode, role: e.role, match: false, detail: "quote absent in that message" };
+      if (accepted && e.role !== "user")
+        return {
+          ...base,
+          source: "episode",
+          episode: s.episode,
+          role: e.role,
+          match: false,
+          detail: `accepted decision rests on a ${e.role} message`
+        };
+      if (accepted && !s.quote.includes(c.rationale ?? ""))
+        return {
+          ...base,
+          source: "episode",
+          episode: s.episode,
+          role: e.role,
+          match: false,
+          detail: "rationale is not an exact excerpt of the quote"
+        };
+      return { ...base, source: "episode", episode: s.episode, role: e.role, match: true, quoteCharacters: s.quote.length };
+    }
+    let text;
+    try {
+      text = sourceText(this.root, s.path);
+    } catch {
+      return { ...base, source: "file", path: s.path, match: false, detail: "source file is missing or unreadable" };
+    }
+    if (hash2(text) !== s.hash)
+      return { ...base, source: "file", path: s.path, match: false, detail: "file changed since this record was saved" };
+    if (!text.includes(s.quote))
+      return { ...base, source: "file", path: s.path, match: false, detail: "quote absent in that file" };
+    if (accepted)
+      return { ...base, source: "file", path: s.path, match: false, detail: "accepted decision cannot rest on a file" };
+    return { ...base, source: "file", path: s.path, match: true, quoteCharacters: s.quote.length };
+  }
+  static VERIFY_LIMIT = 100;
+  verifyRecords(limit = MemoryStore.VERIFY_LIMIT) {
+    const ids = this.latestRecords().map((r) => r.id);
+    const take = Math.max(0, Math.min(MemoryStore.VERIFY_LIMIT, limit));
+    const checked = ids.slice(0, take).map((id) => this.verifyRecord(id));
+    return {
+      records: ids.length,
+      checked: checked.length,
+      ...ids.length > checked.length ? { omitted: ids.length - checked.length } : {},
+      unconfirmed: checked.filter((r) => !("match" in r) || !r.match).map((r) => r.id),
+      results: checked
+    };
   }
   current(id) {
     const row = this.latestRow(id);
@@ -2848,7 +2945,8 @@ Do not claim memory or work was verified.`;
 ` + `SOURCE, exactly one: a current user decision \u2014 source={origin:"user",quote:"exact words from the current user message"}, the episode ID is filled by code; a file observation \u2014 source={origin:"file",path:"project-relative path",quote:"exact text from the file"}, the hash is computed by code. An accepted decision cannot rest on a file, and a quote from your own message can only support a proposed record.
 ` + `dependsOn=[{id}|{path}] names what a claim relies on; code pins their versions and hashes, and then only a change of those marks the record STALE with a reason. Without dependsOn any change of a canonical document does. STALE clears only through a new version saved with current dependencies.
 ` + `LIMITS: at most 30 changes per commit; summary is required and at most 2000 characters even when changes=[]; task=<task id> ties the summary (the next step) to that task.
-` + "READS: recall query=<text> or id=<record> (a task also returns its last checkpoint); episodes query=<text> with optional role=user|assistant, ranked with the match shown in context, or id=<episode> for one message whole; history id=<record>; evidence path=<file> quote=<text>; status; doctor \u2014 read-only diagnosis of records, sources, task drift and settings. No background LLM.",
+` + `READS: recall query=<text> or id=<record> (a task also returns its last checkpoint); episodes query=<text> with optional role=user|assistant, ranked with the match shown in context, or id=<episode> for one message whole; history id=<record>; status; doctor \u2014 read-only diagnosis of records, sources, task drift and settings.
+` + "EVIDENCE CHECKS, instead of your own SQL over the memory database: evidence id=<record> re-checks that record against its own source; evidence id=<episode> quote=<text> says whether that message really contains the quote; evidence path=<file> quote=<text> does the same for a file; evidence with neither id nor path re-checks every record and names the unconfirmed ones. No background LLM.",
     parameters: z.object({
       op: z.enum(["status", "recall", "episodes", "history", "evidence", "doctor", "commit"]),
       query: z.string().optional(),
@@ -2922,9 +3020,31 @@ Do not claim memory or work was verified.`;
             };
             break;
           }
-          case "evidence":
-            data = s.fileSource(p.path ?? "", p.quote ?? "");
+          case "evidence": {
+            let checked = [];
+            let subject = "";
+            if (p.path) {
+              subject = p.path;
+              data = s.fileSource(p.path, p.quote ?? "");
+              checked = [{ id: p.path, match: true }];
+            } else if (p.id) {
+              subject = p.id;
+              const record = s.verifyRecord(p.id);
+              data = record.exists ? record : s.episodeSource(p.id, p.quote ?? "");
+              checked = record.exists ? [{ id: p.id, version: record.version, match: Boolean(record.match) }] : [{ id: p.id, match: Boolean(data.found) }];
+            } else {
+              subject = "all records";
+              const all = s.verifyRecords();
+              data = all;
+              checked = all.results.map((r) => ({ id: r.id, version: r.version, match: Boolean(r.match) }));
+            }
+            try {
+              s.recordEvidence(key(), subject, data, checked);
+            } catch (e) {
+              notify(ctx, "RETRIEVAL_TRACE_ERROR: " + String(e));
+            }
             break;
+          }
           case "commit": {
             const architecture = check(ctx);
             const changes = (p.changes ?? []).map((change) => {

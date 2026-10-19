@@ -387,7 +387,8 @@ export default function install(pi: ExtensionAPI) {
       + 'SOURCE, exactly one: a current user decision — source={origin:"user",quote:"exact words from the current user message"}, the episode ID is filled by code; a file observation — source={origin:"file",path:"project-relative path",quote:"exact text from the file"}, the hash is computed by code. An accepted decision cannot rest on a file, and a quote from your own message can only support a proposed record.\n'
       + 'dependsOn=[{id}|{path}] names what a claim relies on; code pins their versions and hashes, and then only a change of those marks the record STALE with a reason. Without dependsOn any change of a canonical document does. STALE clears only through a new version saved with current dependencies.\n'
       + 'LIMITS: at most 30 changes per commit; summary is required and at most 2000 characters even when changes=[]; task=<task id> ties the summary (the next step) to that task.\n'
-      + 'READS: recall query=<text> or id=<record> (a task also returns its last checkpoint); episodes query=<text> with optional role=user|assistant, ranked with the match shown in context, or id=<episode> for one message whole; history id=<record>; evidence path=<file> quote=<text>; status; doctor — read-only diagnosis of records, sources, task drift and settings. No background LLM.',
+      + 'READS: recall query=<text> or id=<record> (a task also returns its last checkpoint); episodes query=<text> with optional role=user|assistant, ranked with the match shown in context, or id=<episode> for one message whole; history id=<record>; status; doctor — read-only diagnosis of records, sources, task drift and settings.\n'
+      + 'EVIDENCE CHECKS, instead of your own SQL over the memory database: evidence id=<record> re-checks that record against its own source; evidence id=<episode> quote=<text> says whether that message really contains the quote; evidence path=<file> quote=<text> does the same for a file; evidence with neither id nor path re-checks every record and names the unconfirmed ones. No background LLM.',
     parameters: z.object({
       op: z.enum(['status','recall','episodes','history','evidence','doctor','commit']),
       query: z.string().optional(), id: z.string().optional(), path: z.string().optional(), quote: z.string().optional(),
@@ -445,7 +446,32 @@ export default function install(pi: ExtensionAPI) {
               ...(full.issues.length > 50 ? { omittedIssues: full.issues.length - 50 } : {}) };
             break;
           }
-          case 'evidence': data = s.fileSource(p.path ?? '',p.quote ?? ''); break;
+          // ЗАМЕРЕНО 2026-10-19 (audit/huicad-after-0.6.7): сверять цитаты записей с сохранёнными
+          // сообщениями было нечем — op=evidence знал только файлы, — и модель 17 раз открывала
+          // state.sqlite своим SQL. Теперь то же самое делается здесь и попадает в журнал:
+          // path — файл; id — запись против своего источника, либо сообщение против цитаты;
+          // без id и path — весь реестр за один вызов, как модель и проверяла его скриптом.
+          case 'evidence': {
+            let checked: {id:string;version?:number;match:boolean}[] = [];
+            let subject = '';
+            if (p.path) { subject = p.path; data = s.fileSource(p.path, p.quote ?? ''); checked = [{ id: p.path, match: true }]; }
+            else if (p.id) {
+              subject = p.id;
+              const record: any = s.verifyRecord(p.id);
+              // Запись и эпизод различаются существованием, а не видом ID: ID записи и UUID
+              // сообщения проходят один и тот же набор символов.
+              data = record.exists ? record : s.episodeSource(p.id, p.quote ?? '');
+              checked = record.exists ? [{ id: p.id, version: record.version, match: Boolean(record.match) }]
+                : [{ id: p.id, match: Boolean((data as any).found) }];
+            } else {
+              subject = 'all records';
+              const all = s.verifyRecords();
+              data = all;
+              checked = all.results.map((r: any) => ({ id: r.id, version: r.version, match: Boolean(r.match) }));
+            }
+            try { s.recordEvidence(key(), subject, data, checked); } catch(e) { notify(ctx,'RETRIEVAL_TRACE_ERROR: '+String(e)); }
+            break;
+          }
           case 'commit': {
             const architecture = check(ctx);
             const changes = (p.changes ?? []).map((change: any) => {
