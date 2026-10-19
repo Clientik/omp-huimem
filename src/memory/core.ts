@@ -6,7 +6,7 @@ import { projectionStatus, stageProjection, syncProjection } from './projection'
 import { readSettings } from './settings';
 import { PLUGIN_VERSION } from './version';
 
-export type Source = { episode?: string; path?: string; hash?: string; quote: string };
+export type Source = { episode?: string; path?: string; hash?: string; quote: string; answers?: string };
 export type RetrievalCandidate = { id:string; version:number; stale:boolean; score:number; pinned:boolean; selectionBasis:string[]; reason:string; supersededVersions:number };
 export type RetrievalResult = { text:string; queryHash:string; budget:number|null; candidates:RetrievalCandidate[]; counts:Record<string,number>; totalCandidates:number; detailsOmitted:number; requiredOmissions?:string[]; requiredCount?:number; truncated?:boolean };
 // Зависимость основания: от версии другой записи или от хеша файла. Версию и хеш закрепляет код
@@ -557,7 +557,18 @@ export class MemoryStore {
       if (c.kind === 'decision' && c.status === 'accepted' && e.role !== 'user') throw new Error('USER_SOURCE_REQUIRED');
       if (c.kind === 'decision' && c.status === 'accepted' && !s.quote.includes(c.rationale!)) throw new Error('RATIONALE_SOURCE_REQUIRED: rationale must be an exact excerpt of source.quote; put interpretation in text or mark the decision proposed');
       if (e.role === 'assistant' && ['active','accepted'].includes(c.status)) throw new Error('SOURCE: assistant inference must be proposed');
+      // answers — сообщение, на которое пользователь отвечал. Нумерованный ответ («2. Это
+      // репозиторий») без вопроса не доказывает ничего, а вопрос задаёт ассистент, поэтому
+      // здесь ровно его сообщение, и оно должно быть РАНЬШЕ ответа.
+      if (s.answers !== undefined) {
+        if (e.role !== 'user') throw new Error('SOURCE: answers belongs on a user message');
+        const asked = this.episode(s.answers);
+        if (!asked) throw new Error('SOURCE: answers must name a saved message of this project');
+        if (asked.role !== 'assistant') throw new Error('SOURCE: answers must name your own message, the one the user replied to');
+        if (asked.time > e.time) throw new Error('SOURCE: answers names a message written after the answer');
+      }
     } else {
+      if (s.answers !== undefined) throw new Error('SOURCE: file evidence answers no question');
       const text = sourceText(this.root, s.path!);
       if (hash(text) !== s.hash || !text.includes(s.quote)) throw new Error('SOURCE: changed file or absent quote');
       if (c.kind === 'decision' && c.status === 'accepted') throw new Error('USER_SOURCE_REQUIRED');

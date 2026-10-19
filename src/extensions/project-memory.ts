@@ -261,7 +261,9 @@ export default function install(pi: ExtensionAPI) {
         // не говорил, что это полный и фиксированный набор, поэтому перечень читался как пример.
         preview: `Canonical files — the complete set for this project; nothing else is project memory, and .memory/RECORDS.md is generated from the registry rather than part of it. This is a list, not their content: read a file before relying on it.\n${authority.listing}`,
         // Путь origin="episode" для выводов ассистента остаётся: ID нужны модели, роль всегда assistant.
-        recent: recentSources.length && !short ? `Recent assistant sources (inferences only; episode IDs): ${recentSources.map(r => r.episode).join(', ')}\n` : '',
+        // Эти же ID ставятся в source.answers, когда пользователь отвечает номерами на вопросы
+        // из такого сообщения: без вопроса «2. Это репозиторий» не доказывает ничего.
+        recent: recentSources.length && !short ? `Recent assistant sources (your own messages: inferences only, and source.answers for a reply to them; episode IDs): ${recentSources.map(r => r.episode).join(', ')}\n` : '',
         // Без чекпоинтов с задачей строка прежняя. С ними шаг каждой задачи подписан её ID,
         // а сводка без задачи идёт отдельно с меткой времени.
         checkpoint: short ? '' : !checkpoints.tasks.length
@@ -390,7 +392,7 @@ export default function install(pi: ExtensionAPI) {
     // validates commits». Контракт теперь здесь, в описании инструмента, а не только в коде.
     description: 'Project memory of this project: a versioned registry of records with evidence. Operations: status | recall | episodes | history | evidence | doctor | commit.\n'
       + 'COMMIT CONTRACT, one entry per record in changes[]: id — up to 100 of [a-zA-Z0-9_.:/-]; kind and its statuses — fact|procedure|navigation: active|proposed|retired, decision: accepted|proposed|retired, task: todo|doing|done|blocked|retired, question: open|answered|dropped|retired; text up to 3000 characters; expectedVersion — the version this entry replaces, 0 for a new record, so recall the id first; rationale is required for a decision and, when it is accepted, must be an exact excerpt of source.quote.\n'
-      + 'SOURCE, exactly one: a current user decision — source={origin:"user",quote:"exact words from the current user message"}, the episode ID is filled by code; a file observation — source={origin:"file",path:"project-relative path",quote:"exact text from the file"}, the hash is computed by code. An accepted decision cannot rest on a file, and a quote from your own message can only support a proposed record.\n'
+      + 'SOURCE, exactly one: a current user decision — source={origin:"user",quote:"exact words from the current user message"}, the episode ID is filled by code; a file observation — source={origin:"file",path:"project-relative path",quote:"exact text from the file"}, the hash is computed by code. An accepted decision cannot rest on a file, and a quote from your own message can only support a proposed record. When the user answers a question of yours — "1. Yes", "2. It is the repository" — add source.answers=<ID of your message with the question>, listed in the block as a recent assistant source: the numbered answer alone proves nothing without it.\n'
       + 'A question you are waiting on the user for is a record too: kind=question, status=open, text = the question as you asked it, source = your own message. An open question stays in the memory block until it is saved again as answered, with links to the records the answer produced, or dropped. Keep what blocks work there rather than only in prose.\n'
       + 'dependsOn=[{id}|{path}] names what a claim relies on; code pins their versions and hashes, and then only a change of those marks the record STALE with a reason. Without dependsOn any change of a canonical document does. STALE clears only through a new version saved with current dependencies.\n'
       + 'LIMITS: at most 30 changes per commit; summary is required and at most 2000 characters even when changes=[]; task=<task id> ties the summary (the next step) to that task.\n'
@@ -410,7 +412,8 @@ export default function install(pi: ExtensionAPI) {
         expectedVersion: z.number().int().min(0),
         rationale: z.string().optional(), links: z.array(z.string()).optional(),
         dependsOn: z.array(z.object({ id: z.string().optional(), version: z.number().int().optional(), path: z.string().optional(), hash: z.string().optional() })).optional(),
-        source: z.object({ origin: z.enum(['user','file','episode']).optional(), episode: z.string().optional(), path: z.string().optional(), hash: z.string().optional(), quote: z.string() }),
+        source: z.object({ origin: z.enum(['user','file','episode']).optional(), episode: z.string().optional(), path: z.string().optional(), hash: z.string().optional(), quote: z.string(),
+          answers: z.string().optional() }),
       })).optional(),
     }),
     async execute(_id, p: any, _signal, _update, ctx) {
@@ -500,7 +503,13 @@ export default function install(pi: ExtensionAPI) {
               if (source.origin === 'user') {
                 if (!sourceEpisode) throw new Error('USER_SOURCE_REQUIRED: no current user message; use an existing user episode');
                 if (source.path || source.hash || source.episode) throw new Error('SOURCE: origin=user needs only quote; code selects current user episode');
-                return {...change, source:{episode:sourceEpisode,quote:source.quote}};
+                // ЗАМЕРЕНО 2026-10-19 на живом HUICAD (audit/huicad-after-0.6.7): ответ пришёл
+                // номерами — «1. Да 2. У тебя уже есть репозиторий…», — и цитата «Это репозиторий»
+                // сама по себе не доказывает ничего. Смысл модель восстановила рукой, вписав
+                // в MEMORY.md и ADR 0003 «[?] сопоставлено по номеру пункта со вторым вопросом
+                // сообщения ассистента 42bc704f». Теперь это поле записи, а не проза.
+                return {...change, source:{episode:sourceEpisode,quote:source.quote,
+                  ...(source.answers ? {answers:source.answers} : {})}};
               }
               if (source.origin === 'file') {
                 if (source.episode) throw new Error('SOURCE: file evidence cannot include episode');

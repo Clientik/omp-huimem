@@ -282,6 +282,32 @@ test('a storage failure is still an error',async()=>{
   } finally { f.clean(); }
 });
 
+// ЗАМЕРЕНО 2026-10-19 (audit/huicad-after-0.6.7): ответ пользователя пришёл номерами, и связь
+// с вопросом модель вписала прозой в MEMORY.md и ADR 0003 с пометкой «[?] сопоставлено по номеру».
+test('origin=user carries source.answers through to the saved record',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Готовлю вопросы'},f.ctx);
+    await f.handlers.message_end({message:{role:'assistant',content:'2. hui-vue — это и есть UI-репозиторий из трёх?'}},f.ctx);
+    const block=await f.handlers.context({messages:[]},f.ctx);
+    const line=(block.messages.find((m:any)=>m.customType==='project-memory-context').content as string)
+      .split('\n').find(l=>l.startsWith('Recent assistant sources'))!;
+    const asked=line.match(/[0-9a-f-]{36}/)![0];
+    await f.handlers.before_agent_start({prompt:'1. Да\n2. Это репозиторий'},f.ctx);
+    const saved=await f.tools.project_memory.execute('id',{op:'commit',summary:'ответ пользователя',
+      changes:[{id:'hui-vue-is-ui-repo',kind:'decision',status:'accepted',expectedVersion:0,
+        text:'hui-vue и есть UI-репозиторий из трёх.',rationale:'Это репозиторий',
+        source:{origin:'user',quote:'2. Это репозиторий',answers:asked}}]},null,null,f.ctx);
+    expect(saved.isError).not.toBe(true);
+    const back=await f.tools.project_memory.execute('id',{op:'recall',id:'hui-vue-is-ui-repo'},null,null,f.ctx);
+    expect(back.details.source.answers).toBe(asked);
+    // Чужой ID для answers отклоняется там же, где проверяется цитата.
+    const bad=await f.tools.project_memory.execute('id',{op:'commit',summary:'x',
+      changes:[{id:'other',kind:'fact',status:'active',expectedVersion:0,text:'x',
+        source:{origin:'user',quote:'2. Это репозиторий',answers:'00000000-0000-4000-8000-000000000000'}}]},null,null,f.ctx);
+    expect(bad.isError).toBe(true);
+  } finally { f.clean(); }
+});
+
 // ЗАМЕРЕНО 2026-10-19 (audit/huicad-after-0.6.7): expectedVersion требует знать текущую версию
 // каждой записи, и за день это дало 14 поштучных recall id=, причём ID пришлось угадывать
 // по документам, потому что блок называл только число пропущенных записей.
@@ -1318,7 +1344,7 @@ test('the block keeps IDs, full sources and templates, with minute checkpoint ti
     expect(text).toMatch(/- task-export \[doing, matches this request; \d{4}-\d\d-\d\d \d\d:\d\d\]: Следующий шаг: колонка НДС\./);
     await f.handlers.message_end({ message: { role: 'assistant', content: 'Проверил порт.' } }, f.ctx);
     text = await ctxBlock();
-    expect(text).toMatch(/Recent assistant sources \(inferences only; episode IDs\): [0-9a-f-]{36}\n/);
+    expect(text).toMatch(/Recent assistant sources \(your own messages: inferences only, and source\.answers for a reply to them; episode IDs\): [0-9a-f-]{36}\n/);
   } finally { f.clean(); }
 });
 

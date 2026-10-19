@@ -58,6 +58,34 @@ describe('open questions', () => {
     expect(ids).toContain('direct-modelling');
   }));
 
+  // ЗАМЕРЕНО 2026-10-19 (audit/huicad-after-0.6.7): ответ пришёл номерами — «1. Да 2. У тебя уже
+  // есть репозиторий…» — и цитата «Это репозиторий» сама по себе не доказывает ничего. Связь
+  // с вопросом модель восстановила рукой: «[?] сопоставлено по номеру пункта со вторым вопросом
+  // сообщения ассистента 42bc704f» в MEMORY.md и ADR 0003.
+  test('a numbered answer carries the message it answers', () => withStore(s => {
+    const asked = s.capture('run', 'assistant', '2. hui-vue — это и есть UI-репозиторий из трёх?');
+    const answer = s.capture('run', 'user', '1. Да\n2. Это репозиторий\n3. На твоё усмотрение');
+    s.commit('run', [{ id: 'hui-vue-is-ui-repo', kind: 'decision', status: 'accepted', expectedVersion: 0,
+      text: 'hui-vue и есть UI-репозиторий из трёх.', rationale: 'Это репозиторий',
+      source: { episode: answer, quote: '2. Это репозиторий', answers: asked } }], 'ответ пользователя');
+    const record: any = s.current('hui-vue-is-ui-repo');
+    expect(record.source.answers).toBe(asked);
+    // Сама запись проверяется как прежде, и связь видна вместе с ней.
+    expect((s.verifyRecord('hui-vue-is-ui-repo') as any).match).toBe(true);
+    expect(s.recallDetailed('репозиторий', 4000).text).toContain(asked);
+  }));
+
+  test('answers must name your own earlier message', () => withStore(s => {
+    const answer = s.capture('run', 'user', '1. Да');
+    const later = s.capture('run', 'assistant', 'Вопрос, заданный уже после ответа');
+    const other = s.capture('run', 'user', 'Другое сообщение пользователя');
+    const save = (answers: string) => s.commit('run', [{ id: 'q', kind: 'fact', status: 'active', expectedVersion: 0,
+      text: 'Ответ «да».', source: { episode: answer, quote: '1. Да', answers } }], 'x');
+    expect(() => save('нет такого')).toThrow('answers must name a saved message');
+    expect(() => save(other)).toThrow('answers must name your own message');
+    expect(() => save(later)).toThrow('written after the answer');
+  }));
+
   test('doctor names what is waiting for the user and an answer that changed nothing', () => withStore((s, dir) => {
     writeFileSync(join(dir, '.memory/MEMORY.md'), '# Память проекта\n');
     ask(s, 'modelling-kind', 'Параметрическая история или прямое моделирование?');
