@@ -496,11 +496,18 @@ class MemoryStore {
   probe() {
     this.db.query("INSERT OR REPLACE INTO health VALUES (1,?)").run(new Date().toISOString());
   }
+  static DEDUP_WINDOW_MS = 5 * 60 * 1000;
   capture(session, role, text) {
     if (!["user", "assistant"].includes(role))
       throw new Error("SOURCE_ROLE");
+    const now = new Date;
+    const scrubbed = scrub(text);
+    const since = new Date(now.getTime() - MemoryStore.DEDUP_WINDOW_MS).toISOString();
+    const same = this.db.query("SELECT id FROM episodes WHERE role=? AND time>=? AND text=? ORDER BY time DESC LIMIT 1").get(role, since, scrubbed);
+    if (same)
+      return same.id;
     const id = randomUUID2();
-    this.db.query("INSERT INTO episodes VALUES (?,?,?,?,?)").run(id, session, role, scrub(text), new Date().toISOString());
+    this.db.query("INSERT INTO episodes VALUES (?,?,?,?,?)").run(id, session, role, scrubbed, now.toISOString());
     return id;
   }
   episode(id) {

@@ -81,6 +81,23 @@ describe('evidence checks', () => {
     expect(out.results.find((r: any) => r.id === 'occt-version').match).toBe(true);
   }));
 
+  // ЗАМЕРЕНО 2026-10-19 (audit/huicad-after-0.6.7): один ответ пользователя сохранён тремя
+  // эпизодами — 16:33:54, 16:34:19, 16:34:51, — потому что OMP отдал ход трижды. Какой из трёх
+  // ID «то самое сообщение», сказать было нельзя.
+  test('the same message repeated within the window is one episode', () => withStore(s => {
+    const first = s.capture('run', 'user', '1. Да\n2. Это репозиторий');
+    expect(s.capture('run', 'user', '1. Да\n2. Это репозиторий')).toBe(first);
+    expect(s.capture('run2', 'user', '1. Да\n2. Это репозиторий')).toBe(first);
+    // Другая роль и другой текст — другие эпизоды.
+    expect(s.capture('run', 'assistant', '1. Да\n2. Это репозиторий')).not.toBe(first);
+    expect(s.capture('run', 'user', '1. Да')).not.toBe(first);
+    expect((s.db.query('SELECT COUNT(*) n FROM episodes').get() as any).n).toBe(3);
+    // За окном тот же текст — снова отдельное сообщение: «Продолжай» в разные дни не одно и то же.
+    const old = new Date(Date.now() - MemoryStore.DEDUP_WINDOW_MS - 1000).toISOString();
+    s.db.query('UPDATE episodes SET time=?').run(old);
+    expect(s.capture('run', 'user', '1. Да\n2. Это репозиторий')).not.toBe(first);
+  }));
+
   test('an evidence check leaves a receipt naming what was confirmed', () => withStore(s => {
     const episode = s.capture('run', 'user', '4. ' + QUOTE + '.');
     save(s, episode);

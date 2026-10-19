@@ -479,9 +479,12 @@ test('a project that starts on this version is never told about an upgrade',asyn
 // Выключатель проекта: пользователь глушит память для обычных разговоров, не удаляя записи.
 test('/huimem off stops the block, the transcript and commits; /huimem on restores them',async()=>{
   const f=fixture(); try {
+    // Текст запроса разный на каждом ходу: повтор того же сообщения — один эпизод (0.6.8).
+    let turn=0;
     const block=async()=>{
-      await f.handlers.before_agent_start({prompt:'Что по проекту?'},f.ctx);
-      const ctxEvent=await f.handlers.context({messages:[{role:'user',content:'Что по проекту?'}]},f.ctx);
+      const prompt=`Что по проекту? Ход ${++turn}`;
+      await f.handlers.before_agent_start({prompt},f.ctx);
+      const ctxEvent=await f.handlers.context({messages:[{role:'user',content:prompt}]},f.ctx);
       return ctxEvent?.messages?.find((m:any)=>m.customType==='project-memory-context')?.content as string|undefined;
     };
     expect(await block()).toContain('Memory ready');

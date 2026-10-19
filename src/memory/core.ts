@@ -225,10 +225,22 @@ export class MemoryStore {
       totalCandidates:checked.length,detailsOmitted:0});
   }
   probe() { this.db.query('INSERT OR REPLACE INTO health VALUES (1,?)').run(new Date().toISOString()); }
+  // ЗАМЕРЕНО 2026-10-19 на живом HUICAD (audit/huicad-after-0.6.7): один ответ пользователя на
+  // девять вопросов сохранён тремя эпизодами — 16:33:54, 16:34:19, 16:34:51, — потому что OMP
+  // отдал ход трижды (в стенограмме те же три сообщения, рядом stop=aborted). Для доказательства
+  // это неоднозначность: какой из трёх ID «то самое сообщение». Повтор того же текста той же роли
+  // в пределах окна — один эпизод; «Продолжай» в разные дни остаётся разными эпизодами.
+  static readonly DEDUP_WINDOW_MS = 5 * 60 * 1000;
   capture(session: string, role: string, text: string) {
     if (!['user', 'assistant'].includes(role)) throw new Error('SOURCE_ROLE');
+    const now = new Date();
+    const scrubbed = scrub(text);
+    const since = new Date(now.getTime() - MemoryStore.DEDUP_WINDOW_MS).toISOString();
+    const same = this.db.query('SELECT id FROM episodes WHERE role=? AND time>=? AND text=? ORDER BY time DESC LIMIT 1')
+      .get(role, since, scrubbed) as any;
+    if (same) return same.id as string;
     const id = randomUUID();
-    this.db.query('INSERT INTO episodes VALUES (?,?,?,?,?)').run(id, session, role, scrub(text), new Date().toISOString());
+    this.db.query('INSERT INTO episodes VALUES (?,?,?,?,?)').run(id, session, role, scrubbed, now.toISOString());
     return id;
   }
   episode(id: string) { return this.db.query('SELECT * FROM episodes WHERE id=?').get(id) as any; }

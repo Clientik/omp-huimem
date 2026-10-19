@@ -13,9 +13,11 @@ function enable(dir:string) {
   mkdirSync(join(dir,'.memory'),{recursive:true});
   writeFileSync(join(dir,'.memory/MEMORY.md'),'# Project memory');
 }
+// Текст сообщения разный у каждой записи: одинаковые сообщения одной роли, записанные подряд,
+// с 0.6.8 считаются одним эпизодом (повтор хода в OMP), и правка одного меняла бы все.
 function seed(s:MemoryStore,id='fact',kind='fact',status='active') {
   return {id,kind,status,text:'Keep the current design',expectedVersion:0,dependsOn:[],
-    source:{episode:s.capture('r','user','Keep the current design'),quote:'Keep the current design'}};
+    source:{episode:s.capture('r','user',`Keep the current design (${id})`),quote:'Keep the current design'}};
 }
 const codes=(dir:string)=>diagnoseMemory(dir).issues.map(i=>i.code);
 
