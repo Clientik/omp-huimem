@@ -9,7 +9,7 @@
 
 Keep project knowledge across sessions without running another model. Current facts live in readable files; evidence and revision history live in local SQLite. One OMP extension, no memory server, embeddings service, or background LLM.
 
-> **Preview v0.6.9 · Tested with OMP 18.11.0.** Upstream Pi is not supported. Memory makes project context easier to recover and inspect; it does not eliminate hallucinations.
+> **Preview v0.6.10 · Tested with OMP 18.11.0.** Upstream Pi is not supported. Memory makes project context easier to recover and inspect; it does not eliminate hallucinations.
 
 ## Why use it?
 
@@ -22,6 +22,21 @@ For developers working with an AI agent who want to stop explaining the same pro
 - **Bounded context.** The extension supplies a memory block of up to 9,000 characters: the rules, a list of the canonical files, and the records that match the question. The agent reads full sources when it needs them.
 
 ## Install
+
+**New in v0.6.10**, from the same test session:
+
+- **Editing a memory document no longer stales a record that quotes a message.** Ordinary work
+  edits `.memory`, and every record without `dependsOn` turned STALE; the only possible answer was
+  to save them again with the same text — ten records in the measured project, four in the test
+  one, a minute and forty-four seconds of a six-minute turn. A signal cleared by ritual stops
+  being a signal. A user's words cannot change with a document, so those records are left alone;
+  a file source keeps the old rule, an explicit `dependsOn` still decides for itself, and
+  tampering with the message is still caught by doctor and `op=evidence`. On the test project's
+  own records: one ordinary edit of `MEMORY.md` staled 7 of 7 before, 0 of 7 now.
+- **The refusal names the third source form.** Citing the answer from the previous turn, the model
+  was told to "copy an exact excerpt from the current user message" and nothing else; finding that
+  message and citing it with `origin="episode"` was not mentioned, and it spent a minute getting
+  there alone.
 
 **New in v0.6.9**, measured on a test project driven by a model on the user's own inference
 server (`ai1/qwen38-flash-next`, 131K context) rather than a frontier one:
@@ -104,7 +119,7 @@ You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model
 **Legacy ADRs:** `/huimem adr-audit` lists ADRs without a basis section that can be moved into the contract, and writes nothing. `/huimem adr-audit apply` inserts the user's quote from the registry as the basis and keeps every original line under an "Interpretation [?]" heading, after a byte-exact backup to `.memory/adr-backup/`. A document is migrated only when exactly one accepted decision names it by path, its rationale is an exact excerpt of the quote, and the quote is re-checked at migration time against the stored message, which must exist and belong to the user; otherwise it is reported as `UNVERIFIED` and nothing is written. v0.5.0 skipped that last check: if you ran `apply` with it on an edited, merged or restored database, compare each migrated basis with the original message. Linked conversation decisions show STALE afterwards. In a preregistered 20-vs-20 test the migrated documents had no outright misattribution, but a reliability gain over unmigrated ones was not statistically proven.
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.6.9
+omp plugin install github:Clientik/omp-huimem#v0.6.10
 ```
 
 > [!IMPORTANT]
@@ -126,7 +141,7 @@ After `init`, ask the agent to use the `initmem` skill to map the actual code. D
 **Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 and again with 18.11.0 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
 ```sh
-git clone --branch v0.6.9 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.6.10 https://github.com/Clientik/omp-huimem.git
 # Run from your working project, using the cloned repository's absolute path:
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```
