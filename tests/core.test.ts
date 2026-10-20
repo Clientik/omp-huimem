@@ -3,15 +3,20 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync, renameSync, readFileSync
 import { join } from 'node:path';
 import { MemoryStore, architectureCheck } from '../src/memory/core';
 
-test('canonical file change invalidates conversation records until explicitly revised', () => withStore((s,dir) => {
+// ЗАМЕРЕНО дважды, 2026-10-19: правка канонических документов помечала STALE и записи, чей
+// источник — сообщение пользователя, а оно неизменяемо; ответом было пересохранение с тем же
+// текстом (10 записей в HUICAD, 4 на тестовом проекте). Теперь такую запись документ не трогает,
+// а подмену самого сообщения ловит doctor и op=evidence.
+test('a canonical file change leaves a record quoting a message alone', () => withStore((s,dir) => {
   writeFileSync(join(dir,'.memory/MEMORY.md'),'Provider: Stripe');
   s.commit('a',[fact(s)],'saved');
   expect(s.current('payments')?.freshness).not.toBe('STALE');
   writeFileSync(join(dir,'.memory/MEMORY.md'),'Provider: YooKassa');
-  expect(s.current('payments')?.freshness).toBe('STALE');
-  expect(s.recall('Платежи')).toContain('STALE');
-  s.commit('b',[fact(s,'Платежи: YooKassa',1)],'rechecked against canonical file');
   expect(s.current('payments')?.freshness).not.toBe('STALE');
+  // Слово STALE есть в шапке блока как часть правила, поэтому проверяется сама строка записи.
+  expect(s.recall('Платежи').split('\n').find(l => l.startsWith('{'))).toContain('source unchanged');
+  // Сообщение, на которое запись ссылается, по-прежнему проверяется само по себе.
+  expect((s.verifyRecord('payments') as any).match).toBe(true);
 }));
 
 const withStore = (fn: (s: MemoryStore, dir: string) => void) => {

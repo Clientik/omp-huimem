@@ -263,7 +263,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
         if (!cfg.documents.includes(value)) return say(`${value} is not in the added set. Added: ${listed}.`);
         const saved = writeSettings(ctx.cwd, { documents: cfg.documents.filter(p => p !== value) });
         return say(`${value} is no longer canonical: it is not listed in the block and no longer tracked for staleness.\n`
-          + `Added: ${saved.documents.join(', ') || 'none'}. Records saved without dependsOn will show STALE once, because the canonical set changed.`);
+          + `Added: ${saved.documents.join(', ') || 'none'}. File-sourced records without dependsOn will show STALE once, because the canonical set changed; records quoting a message are untouched.`);
       }
       if (cfg.documents.includes(value)) return say(`${value} is already canonical.`);
       if (!documentPath(value)) return say(
@@ -275,8 +275,8 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       const saved = writeSettings(ctx.cwd, { documents: [...cfg.documents, value] });
       return say(`${value} is canonical from the next message: listed in the memory block, hashed with the set and tracked for staleness.\n`
         + `Added: ${saved.documents.join(', ')}. File: ${SETTINGS_PATH}\n`
-        + 'Records saved without dependsOn will show STALE once: the canonical set changed, which is exactly what STALE reports. '
-        + 'Recheck them or save corrected versions; nothing is deleted.');
+        + 'File-sourced records without dependsOn will show STALE once: the canonical set changed, which is exactly what STALE reports. '
+        + 'Recheck them or save corrected versions; nothing is deleted. A record quoting a message is not touched: its source cannot change with a document.');
     }
 
     // Обязательные записи задаёт только пользователь: модель не может объявить удобное ей

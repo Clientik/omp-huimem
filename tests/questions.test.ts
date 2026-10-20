@@ -102,6 +102,29 @@ describe('open questions', () => {
     expect(() => save(later)).toThrow('written after the answer');
   }));
 
+  // ЗАМЕРЕНО дважды, 2026-10-19: обычная работа правит документы .memory, после чего каждая
+  // запись без dependsOn становилась STALE, и снимали это пересохранением С ТЕМ ЖЕ ТЕКСТОМ —
+  // 10 записей в HUICAD, 4 на тестовом проекте с ai1 (минута сорок четыре из шести минут хода).
+  test('answering a question and editing documents does not stale what quotes a message', () => withStore((s, dir) => {
+    const asked = s.capture('run', 'assistant', '1. Параметрическая история или прямое моделирование?');
+    s.commit('run', [{ id: 'modelling', kind: 'question', status: 'open', expectedVersion: 0,
+      text: '1. Параметрическая история или прямое моделирование?',
+      source: { episode: asked, quote: 'Параметрическая история или прямое моделирование?' } }], 'вопрос');
+    const answer = s.capture('run', 'user', '1. Прямое моделирование.');
+    s.commit('run', [{ id: 'direct-modelling', kind: 'decision', status: 'accepted', expectedVersion: 0,
+        text: 'Прямое моделирование, без истории построения.', rationale: 'Прямое моделирование',
+        source: { episode: answer, quote: '1. Прямое моделирование.', answers: asked } },
+      { id: 'modelling', kind: 'question', status: 'answered', expectedVersion: 1,
+        text: '1. Параметрическая история или прямое моделирование?', links: ['direct-modelling'],
+        source: { episode: asked, quote: 'Параметрическая история или прямое моделирование?' } }], 'ответ');
+    // Дальше обычная работа: решение записано в документы памяти.
+    writeFileSync(join(dir, '.memory/MEMORY.md'), '# Память\n- Прямое моделирование (ADR 0001).\n');
+    for (const id of ['direct-modelling', 'modelling']) {
+      expect(s.current(id)!.freshness).not.toBe('STALE');
+      expect((s.verifyRecord(id) as any).match).toBe(true);
+    }
+  }));
+
   test('doctor names what is waiting for the user and an answer that changed nothing', () => withStore((s, dir) => {
     writeFileSync(join(dir, '.memory/MEMORY.md'), '# Память проекта\n');
     ask(s, 'modelling-kind', 'Параметрическая история или прямое моделирование?');

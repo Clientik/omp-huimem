@@ -78,7 +78,12 @@ test('bounded diagnostics retain selected records after many oversized candidate
 }));
 
 test('stale records remain selectable and final clipping is separate from retrieval',()=>fixture((s,root)=>{
-  save(s,'a','needle'); save(s,'a','needle revised','active',1);
+  // Источник — файл: правка канонических документов устаревает именно такие записи. Запись,
+  // цитирующая сообщение, с 0.6.10 от правки документа не устаревает (см. tests/core.test.ts).
+  writeFileSync(join(root,'source.md'),'needle');
+  const file=(version=0,text='needle')=>({id:'a',kind:'decision',status:'proposed',text,rationale:'needle',
+    expectedVersion:version,source:s.fileSource('source.md','needle')});
+  s.commit('t',[file()],'saved'); s.commit('t',[file(1,'needle revised')],'revised');
   writeFileSync(join(root,'.memory/MEMORY.md'),'changed');
   const result=s.recallDetailed('needle');
   expect(result.candidates[0]).toMatchObject({id:'a',version:2,stale:true,reason:'selected',supersededVersions:1});

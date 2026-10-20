@@ -215,9 +215,11 @@ test('a project document can join the canonical set, and only the user can add i
     await f.commands.huimem.handler('include .memory/DESIGN.md',f.ctx);
     const after=await block();
     expect(after).toContain('.memory/DESIGN.md — project document, added in settings · 33 chars');
-    // Набор изменился — и это ровно то, о чём сообщает STALE; предупреждение сказано заранее.
+    // Предупреждение сказано заранее и относится к файловым источникам: запись, цитирующая
+    // сообщение, от смены набора не устаревает — сообщение не меняется вместе с документом.
     expect(String(f.notices.at(-1)?.content)).toContain('will show STALE once');
-    expect((await tool.execute('id',{op:'recall',id:'palette'},null,null,f.ctx)).details.freshness).toContain('STALE');
+    expect(String(f.notices.at(-1)?.content)).toContain('quoting a message is not touched');
+    expect((await tool.execute('id',{op:'recall',id:'palette'},null,null,f.ctx)).details.freshness).not.toContain('STALE');
     // Теперь правка документа тоже делает записи STALE: он часть набора.
     const hashed=new MemoryStore(f.dir); let before:string;
     try { before=hashed.authority().hash; } finally { hashed.close(); }

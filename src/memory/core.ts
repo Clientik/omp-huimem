@@ -337,7 +337,16 @@ export class MemoryStore {
           if (inner.length) reasons.push(`${ref.id} is STALE (${inner[0]})`);
         }
       }
-    } else if (this.authorityChanged(c, authority)) reasons.push('canonical project documents changed since this record was saved');
+    // ЗАМЕРЕНО дважды, 2026-10-19: правка документов .memory по ходу обычной работы помечала
+    // STALE все записи без dependsOn, и единственным ответом было пересохранение С ТЕМ ЖЕ
+    // ТЕКСТОМ: в HUICAD так пересохранены 10 записей («без изменения смысла»), в тестовом
+    // проекте на ai1 — 4 записи, минута сорок четыре из шестиминутного хода. Сигнал «перепроверь
+    // источник» превращался в обряд. У записи с источником-эпизодом источник НЕИЗМЕНЯЕМ: правка
+    // MEMORY.md не может сделать цитату пользователя другой, поэтому набор документов её больше
+    // не устаревает. Файловый источник ведёт себя как прежде — его файл мог быть среди
+    // изменённых, — а явный dependsOn по-прежнему решает всё сам. Подмену самого эпизода ловит
+    // отдельная проверка doctor (EPISODE_EVIDENCE_INVALID) и op=evidence.
+    } else if (c.source.path && this.authorityChanged(c, authority)) reasons.push('canonical project documents changed since this record was saved');
     if (c.source.path) {
       try { if (hash(sourceText(this.root, c.source.path)) !== c.source.hash) reasons.push(`source ${c.source.path} changed`); }
       catch { reasons.push(`source ${c.source.path} is missing or unreadable`); }

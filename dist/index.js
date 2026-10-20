@@ -642,7 +642,7 @@ class MemoryStore {
             reasons.push(`${ref.id} is STALE (${inner[0]})`);
         }
       }
-    } else if (this.authorityChanged(c, authority))
+    } else if (c.source.path && this.authorityChanged(c, authority))
       reasons.push("canonical project documents changed since this record was saved");
     if (c.source.path) {
       try {
@@ -2434,7 +2434,7 @@ Usage: /huimem ${verb} <path inside .memory>`);
           return say(`${value} is not in the added set. Added: ${listed}.`);
         const saved2 = writeSettings(ctx.cwd, { documents: cfg.documents.filter((p) => p !== value) });
         return say(`${value} is no longer canonical: it is not listed in the block and no longer tracked for staleness.
-` + `Added: ${saved2.documents.join(", ") || "none"}. Records saved without dependsOn will show STALE once, because the canonical set changed.`);
+` + `Added: ${saved2.documents.join(", ") || "none"}. File-sourced records without dependsOn will show STALE once, because the canonical set changed; records quoting a message are untouched.`);
       }
       if (cfg.documents.includes(value))
         return say(`${value} is already canonical.`);
@@ -2448,7 +2448,7 @@ Use a path inside .memory, for example .memory/DESIGN.md. ` + "MEMORY.md, PROJEC
       const saved = writeSettings(ctx.cwd, { documents: [...cfg.documents, value] });
       return say(`${value} is canonical from the next message: listed in the memory block, hashed with the set and tracked for staleness.
 ` + `Added: ${saved.documents.join(", ")}. File: ${SETTINGS_PATH}
-` + "Records saved without dependsOn will show STALE once: the canonical set changed, which is exactly what STALE reports. " + "Recheck them or save corrected versions; nothing is deleted.");
+` + "File-sourced records without dependsOn will show STALE once: the canonical set changed, which is exactly what STALE reports. " + "Recheck them or save corrected versions; nothing is deleted. A record quoting a message is not touched: its source cannot change with a document.");
     }
     if (verb === "require" || verb === "unrequire") {
       if (!value)

@@ -108,9 +108,26 @@ test('staleness clears only through a new version that repins the current basis;
   expect(history).toEqual([[{ id: 'db', version: 1 }], [{ id: 'db', version: 3 }]]);
 }));
 
-test('records saved without dependsOn keep the earlier conservative rule', () => fixture((s, root) => {
+// ЗАМЕРЕНО дважды, 2026-10-19 (audit/huicad-after-0.6.7, audit/local-ai1-0.6.8): правка документов
+// .memory помечала STALE все записи без dependsOn, и ответом было пересохранение с тем же текстом —
+// 10 записей в HUICAD, 4 на тестовом проекте. У источника-эпизода текст сообщения не меняется.
+test('a record quoting a message no longer goes stale when documents change', () => fixture((s, root) => {
   s.commit('1', [decision(s, 'legacy', 'Legacy. Причина: давно.', 'давно')], 'legacy');
   expect(s.current('legacy')!.dependsOn).toBeUndefined();
   writeFileSync(join(root, '.memory/adr/0003-any.md'), '# any');
-  expect(reasons(s, 'legacy')).toEqual(['canonical project documents changed since this record was saved']);
+  writeFileSync(join(root, '.memory/MEMORY.md'), 'переписано целиком');
+  expect(reasons(s, 'legacy')).toEqual([]);
+  expect(s.current('legacy')!.freshness).not.toBe('STALE');
+}));
+
+// Файловый источник ведёт себя по-прежнему: изменённый документ мог быть именно его источником.
+// (У факта из файла своё правило с 0.6.x — он сверяется с составом набора, а не с его текстом.)
+test('a record quoting a file still follows the conservative rule', () => fixture((s, root) => {
+  writeFileSync(join(root, '.memory/DESIGN.md'), 'вкладки не закрываются');
+  s.commit('1', [{ id: 'tabs', kind: 'decision', status: 'proposed', expectedVersion: 0,
+    text: 'Предлагаю считать, что вкладки не закрываются.', rationale: 'вкладки не закрываются',
+    source: s.fileSource('.memory/DESIGN.md', 'вкладки не закрываются') }], 'tabs');
+  expect(reasons(s, 'tabs')).toEqual([]);
+  writeFileSync(join(root, '.memory/adr/0003-any.md'), '# any');
+  expect(reasons(s, 'tabs')).toEqual(['canonical project documents changed since this record was saved']);
 }));

@@ -217,8 +217,10 @@ test('apply backs up the original byte for byte outside the ADR folder and is id
     expect(again.skipped.map(i => i.state)).toEqual(['has-basis']);
     expect(existsSync(join(dir, '.memory/adr-backup/stamp-2'))).toBe(false);
 
-    // Ожидаемое следствие: решение из разговора следит за хешем канонических документов.
-    expect(store.current('fact-retry')!.freshness).toBe('STALE');
+    // С 0.6.10 перенос ADR не делает STALE решение из разговора: его источник — сообщение
+    // пользователя, и правка документа не может изменить сказанное. Сама цитата проверяется.
+    expect(store.current('fact-retry')!.freshness).not.toBe('STALE');
+    expect((store.verifyRecord('fact-retry') as any).match).toBe(true);
     store.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
