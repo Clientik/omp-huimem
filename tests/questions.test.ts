@@ -88,6 +88,26 @@ describe('open questions', () => {
     expect(s.recallDetailed('репозиторий', 4000).text).toContain(asked);
   }));
 
+  // ЗАМЕРЕНО 2026-10-19 на модели ai1: цитируя мой ответ из ПРОШЛОГО хода, модель получила
+  // «quote absent… copy an exact excerpt from the current user message» — третий путь, сослаться
+  // на то сообщение явно, отказ не называл, и минута ушла на то, чтобы дойти до него самой.
+  test('quoting an earlier message is refused with the way to cite it', () => withStore(s => {
+    const earlier = s.capture('run', 'user', '1. Только привести код к правилу, новой функциональности не надо.');
+    const now = s.capture('run', 'user', 'Продолжай: закрой вопросы.');
+    const save = (episode: string) => s.commit('run', [{ id: 'scope', kind: 'decision', status: 'accepted',
+      expectedVersion: 0, text: 'Только приведение кода к правилу.', rationale: 'Только привести код к правилу',
+      source: { episode, quote: 'Только привести код к правилу' } }], 'ответ');
+    try { save(now); throw new Error('ожидался отказ'); } catch (e) {
+      const message = String(e);
+      expect(message).toContain('quote absent in selected message');
+      expect(message).toContain('episodes query=<text> role=user');
+      expect(message).toContain('origin:"episode"');
+    }
+    // Путь, который называет отказ, работает.
+    save(earlier);
+    expect(s.current('scope')).toMatchObject({ kind: 'decision', status: 'accepted', version: 1 });
+  }));
+
   test('answers must name your own earlier message', () => withStore(s => {
     const answer = s.capture('run', 'user', '1. Да');
     const later = s.capture('run', 'assistant', 'Вопрос, заданный уже после ответа');

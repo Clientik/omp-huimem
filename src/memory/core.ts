@@ -574,7 +574,11 @@ export class MemoryStore {
     if (!s || typeof s.quote !== 'string' || !s.quote.trim() || s.quote.length > 3000 || (!!s.episode === !!s.path)) throw new Error('SOURCE: exactly one source required');
     if (s.episode) {
       const e = this.episode(s.episode);
-      if (!e || !e.text.includes(s.quote)) throw new Error('SOURCE: quote absent in selected message. Copy an exact excerpt from the current user message for origin=user; do not paraphrase the quote.');
+      // ЗАМЕРЕНО 2026-10-19 на модели ai1: отказ предлагал только текущее сообщение, а слова,
+      // которые модель цитировала, были в ОТВЕТЕ ИЗ ПРОШЛОГО ХОДА. Третий путь — найти то
+      // сообщение и сослаться на него явно — назван не был, и минута ушла на то, чтобы дойти
+      // до него самой. Тот же класс, что исправлен в 0.6.9 для вопросов.
+      if (!e || !e.text.includes(s.quote)) throw new Error('SOURCE: quote absent in selected message. Copy an exact excerpt and do not paraphrase it: origin="user" quotes the CURRENT user message only. If the words are in an earlier message, find it with episodes query=<text> role=user and cite it as source={origin:"episode",episode:"<ID>",quote:"<exact words>"}.');
       if (c.kind === 'decision' && c.status === 'accepted' && e.role !== 'user') throw new Error('USER_SOURCE_REQUIRED');
       if (c.kind === 'decision' && c.status === 'accepted' && !s.quote.includes(c.rationale!)) throw new Error('RATIONALE_SOURCE_REQUIRED: rationale must be an exact excerpt of source.quote; put interpretation in text or mark the decision proposed');
       if (e.role === 'assistant' && ['active','accepted'].includes(c.status)) throw new Error('SOURCE: assistant inference must be proposed');

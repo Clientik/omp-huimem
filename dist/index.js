@@ -913,7 +913,7 @@ class MemoryStore {
     if (s.episode) {
       const e = this.episode(s.episode);
       if (!e || !e.text.includes(s.quote))
-        throw new Error("SOURCE: quote absent in selected message. Copy an exact excerpt from the current user message for origin=user; do not paraphrase the quote.");
+        throw new Error('SOURCE: quote absent in selected message. Copy an exact excerpt and do not paraphrase it: origin="user" quotes the CURRENT user message only. If the words are in an earlier message, find it with episodes query=<text> role=user and cite it as source={origin:"episode",episode:"<ID>",quote:"<exact words>"}.');
       if (c.kind === "decision" && c.status === "accepted" && e.role !== "user")
         throw new Error("USER_SOURCE_REQUIRED");
       if (c.kind === "decision" && c.status === "accepted" && !s.quote.includes(c.rationale))
@@ -1972,7 +1972,7 @@ var FIXES = {
   DEPENDENCY_VERSION: "Recall the dependency and recheck the claim against its current version before retrying.",
   DEPENDENCY_HASH: "Read the dependency file and recheck the claim against its current contents before retrying.",
   AUTHORITY_CHANGED: "Reread the relevant project rules and sources, then reconsider the changes before retrying.",
-  SOURCE_ORIGIN_REQUIRED: 'Add source.origin="user" for an exact current user quote, or origin="file" with a relative path and exact file quote.',
+  SOURCE_ORIGIN_REQUIRED: 'Add source.origin="user" for an exact current user quote, origin="file" with a relative path and exact file quote, or origin="episode" with the ID of an earlier message and an exact quote from it.',
   SOURCE_REQUIRED: "Provide one source: the current user message, a stored episode, or a project file, with an exact quote.",
   SOURCE: 'Use exactly one source and a verbatim quote present in it. For the current user use origin="user" and quote only; for a file use origin="file", path and quote; for a stored message use origin="episode", episode and quote.',
   USER_SOURCE_REQUIRED: "An accepted decision needs a stored user message. Use an exact user quote, or keep an unsupported inference proposed.",
