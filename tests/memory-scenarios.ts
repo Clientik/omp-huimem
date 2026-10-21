@@ -7,6 +7,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MemoryStore } from '../src/memory/core';
+import type installAdapter from '../src/extensions/project-memory';
 
 export type Scenario = {
   id: string;
@@ -228,17 +229,125 @@ export const SCENARIOS: Scenario[] = [
       s.close();
     },
   },
+  {
+    id: 'quote-only-match',
+    question: 'Что известно про Kafka? Только чтение: ничего не сохраняй.',
+    requiredIds: ['z-event-bus'],
+    allowedBasis: ['Используем Kafka для событий.'],
+    forbiddenInBlock: [],
+    forbiddenInAnswer: ['неподтверждённая причина выбора Kafka'],
+    modelPass: 'Названа Kafka с дословным источником; не выдумана причина выбора; новых versions/checkpoints нет.',
+    modelRun: true,
+    settings: { injectionLimit: 9000, recallBudget: 5200 },
+    seed(dir) {
+      project(dir, this.settings);
+      const s = new MemoryStore(dir);
+      const quote = 'Используем Kafka для событий.', episode = s.capture('seed', 'user', quote);
+      s.commit('seed:event-bus', [{ id: 'z-event-bus', kind: 'fact', status: 'active',
+        text: 'Шина событий', expectedVersion: 0, source: { episode, quote } }], 'seed event bus');
+      for (let i = 0; i < 12; i++)
+        decision(s, `a-noise-${String(i).padStart(2, '0')}`, `Отступ ${i + 1} пробелов. Причина: единообразие.`,
+          'единообразие', `Отступ ${i + 1} пробелов.`);
+      s.close();
+    },
+  },
+  {
+    id: 'short-tech',
+    question: 'Go',
+    requiredIds: ['z-generator'],
+    allowedBasis: ['Генератор: Go.'],
+    forbiddenInBlock: ['Google для поиска.'],
+    forbiddenInAnswer: [],
+    modelPass: '',
+    modelRun: false,
+    settings: { injectionLimit: 9000, recallBudget: 5200 },
+    seed(dir) {
+      project(dir, this.settings);
+      const s = new MemoryStore(dir);
+      for (const [id, text] of [['z-generator', 'Генератор: Go.'], ['a-search', 'Google для поиска.']]) {
+        const episode = s.capture('seed', 'user', text);
+        s.commit(`seed:${id}`, [{ id, kind: 'fact', status: 'active', text, expectedVersion: 0,
+          source: { episode, quote: text } }], `seed ${id}`);
+      }
+      s.close();
+    },
+  },
+  {
+    id: 'related-basis',
+    question: 'Что известно о CSV и его связях? Только чтение: ничего не сохраняй.',
+    requiredIds: ['task-csv', 'storage-choice'],
+    allowedBasis: ['Экспорт счетов в CSV.', 'Для хранения используем SQLite.'],
+    forbiddenInBlock: [],
+    forbiddenInAnswer: ['связь records выдана за доказанную причину выбора SQLite'],
+    modelPass: 'Названы экспорт CSV и связанное хранение SQLite; link не объявлен причиной архитектурного решения; новых versions/checkpoints нет.',
+    modelRun: true,
+    settings: { injectionLimit: 9000, recallBudget: 5200 },
+    seed(dir) {
+      project(dir, this.settings);
+      const s = new MemoryStore(dir);
+      const text = 'Для хранения используем SQLite.', episode = s.capture('seed', 'user', text);
+      s.commit('seed:storage', [{ id: 'storage-choice', kind: 'fact', status: 'active', text,
+        expectedVersion: 0, source: { episode, quote: text } }], 'seed storage');
+      const quote = 'Экспорт счетов в CSV.', taskEpisode = s.capture('seed', 'user', quote);
+      s.commit('seed:task', [{ id: 'task-csv', kind: 'task', status: 'doing', text: quote,
+        expectedVersion: 0, source: { episode: taskEpisode, quote }, links: ['storage-choice'] }], 'seed task');
+      s.close();
+    },
+  },
+  {
+    id: 'salient-topic',
+    question: 'Kafka export report format',
+    requiredIds: ['z-topic'],
+    allowedBasis: ['Kafka: durable event queue.'],
+    forbiddenInBlock: [], forbiddenInAnswer: [], modelPass: '', modelRun: false,
+    settings: { injectionLimit: 9000, recallBudget: 1000 },
+    seed(dir) {
+      project(dir, this.settings);
+      const s = new MemoryStore(dir);
+      const quote = 'Kafka: durable event queue.', episode = s.capture('seed', 'user', quote);
+      s.commit('seed:topic', [{id:'z-topic',kind:'fact',status:'active',text:quote,
+        expectedVersion:0,source:{episode,quote}}], 'seed topic');
+      for (let i = 0; i < 12; i++)
+        decision(s,`a-noise-${i}`,`Export report format rule ${i}. Reason: consistency.`,
+          'consistency',`Export report format rule ${i}.`);
+      s.close();
+    },
+  },
+  {
+    id: 'salient-linked-basis',
+    question: 'Kafka export report format',
+    requiredIds: ['z-topic','storage-basis'],
+    allowedBasis: ['Kafka: durable event queue.','SQLite: persistent storage.'],
+    forbiddenInBlock: [], forbiddenInAnswer: [], modelPass: '', modelRun: false,
+    settings: { injectionLimit: 9000, recallBudget: 5200 },
+    seed(dir) {
+      project(dir, this.settings);
+      const s = new MemoryStore(dir);
+      const quote = 'Kafka: durable event queue.', episode = s.capture('seed', 'user', quote);
+      const basis = 'SQLite: persistent storage.', basisEpisode = s.capture('seed','user',basis);
+      s.commit('seed:topic', [
+        {id:'storage-basis',kind:'fact',status:'active',text:basis,expectedVersion:0,source:{episode:basisEpisode,quote:basis}},
+        {id:'z-topic',kind:'fact',status:'active',text:quote,expectedVersion:0,source:{episode,quote},links:['storage-basis']},
+      ], 'seed topic and basis');
+      for (let i = 0; i < 12; i++)
+        decision(s,`a-noise-${i}`,`Export report format rule ${i}. Reason: consistency.`,
+          'consistency',`Export report format rule ${i}.`);
+      s.close();
+    },
+  },
 ];
 
 type Delivered = { block: string; records: any[]; dir: string };
 
 // Новая сессия = новый экземпляр расширения, как у нового процесса OMP; прежнего чата нет.
-export async function newSession(install: any, scenario: Scenario): Promise<Delivered> {
+export async function newSession(install: typeof installAdapter, scenario: Scenario, options: {agentDir?:string} = {}): Promise<Delivered> {
   const dir = mkdtempSync(join(import.meta.dir, 'scenario-'));
   scenario.seed(dir);
   scenario.between?.(dir);
   const handlers: any = {}; const chain: any = new Proxy(() => chain, { get: () => chain });
-  install({ zod: chain, on: (n: string, f: any) => handlers[n] = f, registerTool: () => {}, registerCommand: () => {}, sendMessage: () => {} } as any);
+  // The fixture implements only registration hooks exercised by the adapter factory.
+  const api={ zod: chain, on: (n: string, f: unknown) => handlers[n] = f, registerTool: () => {}, registerCommand: () => {}, sendMessage: () => {} } as unknown as Parameters<typeof installAdapter>[0];
+  install(api,{agentDir:options.agentDir ?? join(dir,'agent-profile')});
   const ctx: any = { cwd: dir, hasUI: false, ui: { notify() {} }, sessionManager: { getSessionId: () => 'fresh' } };
   await handlers.before_agent_start({ prompt: scenario.question }, ctx);
   const out = await handlers.context({ messages: [] }, ctx);

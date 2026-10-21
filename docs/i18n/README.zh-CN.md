@@ -9,7 +9,7 @@
 
 在不同会话之间保留项目知识，无需运行第二个模型。当前事实保存在可读文件中，证据和版本历史保存在本地 SQLite 中。只需一个 OMP 扩展，无需独立的记忆服务器、向量嵌入服务或后台 LLM。
 
-> **预览版 v0.6.10，已在 OMP 18.11.0 上测试。** 暂不支持原版 Pi。这个插件帮助恢复和检查项目上下文，但不能消除模型幻觉。
+> **预览版 v0.7.0，已在 OMP 18.11.0 上测试。** 暂不支持原版 Pi。这个插件帮助恢复和检查上下文，但不能消除模型幻觉。
 
 ## 适合谁？
 
@@ -22,6 +22,33 @@
 - **有上限的上下文。** 自动注入的记忆块最多为 9,000 个字符：规则、规范文件清单，以及与问题相关的记录；需要时由代理读取完整来源。
 
 ## 安装
+
+**v0.7.0 新增：基于来源的检索、更少的重复写入、明确的记忆作用域。**
+
+- 检索覆盖记录、理由、原始引文与来源/依赖路径；`Go`、`БД`、数字、`C#`、`C++`
+  按完整 token 匹配。稀疏 IDF 排序保留不同信息，不用重复引文提高权重。
+  最多三个新鲜命中可沿 `dependsOn`/`links` 带入六个一跳依据，不改变证据权威。
+- 原始消息可用 `episodes id=<id> offset=<offset>` 分页；按 `nextOffset` 继续到 `null`。
+  UTF-16 地址不能拆开代理对；默认 2400 单位，最多 4000，保留原文与角色。
+- **可重建的历史索引。** `.memory/runtime/search.sqlite` 用 FTS5 保存 token，
+  不复制第二份对话；原始消息仍在 `state.sqlite`。旧 writer 会触发核对，
+  索引失败明确显示 degraded，并完整扫描原始历史。`/huimem index [rebuild]` 用于检查或重建。
+- **减少自动噪声。** 不再只因 accepted 状态而每轮注入无关决策。必需规则、
+  有意义的匹配和进行中的工作仍有优先级；显式 recall、按 ID 读取和来源更新保持可用。
+- **人工发起的 Wiki/ADR。** `/huimem learn` 启动主代理的普通整理回合。
+  `project_memory op=wiki` 可列出、读取、发布、检查带精确来源版本的派生页面。
+  来源变化会使页面 STALE；页面不能成为独立证据，也不能把 proposed 变为 accepted。
+  `action=history path=<路径>` 只查询本地 Git 历史，不证明决策理由。
+- **Project/session/personal。** 旧调用仍默认 project。Session 跟随原生会话 ID，
+  与项目记录分开。Personal 默认关闭，只有用户执行 `/huimem personal on` 才能在当前
+  OMP profile 启用；显式 `scope=personal` 保存只复制选定的原始证据，不镜像整个项目对话。
+- **仅在变化时写入。** 相同 retrieval receipt、已确认的文件投影和未变 checkpoint
+  不再重复触发 SQL 修改；真实变化仍持久化且可检查。
+
+主数据库保持 schema 2，默认**总**上下文预算仍为 9000 UTF-16 单位，包含明确标注的 scoped 记录。
+不添加 MCP、服务器、embeddings 或后台模型。[二十个插件的源码审计](../RETRIEVAL-RESEARCH.md)
+说明取舍；[验证记录](../VALIDATION.md)区分检索、延迟、兼容性和实际模型回答，不保证覆盖所有任务。
+
 
 **v0.6.10 新增**，来自同一次测试会话：
 
@@ -76,7 +103,9 @@
 并且子代理会收到不含保存规则的精简记忆块（`subagentBlock: short | full | off`）。保存契约写在工具说明里——
 此前模型曾 34 次读取已安装的插件源码来弄清它。`project_memory op=doctor` 让模型用上与 `/huimem doctor`
 相同的只读诊断。片段搜索会打分排序、显示长消息中真正命中的部分、支持 `role=user|assistant`，并可按 id
-返回整条片段。规范部分是文件清单而不是文件正文；项目用 `/huimem include` 加入自己的文档。
+分页读取原始片段：`episodes id=<id> offset=<hit.offset>`，随后按 `nextOffset` 继续，直到 `null`。
+偏移量为不拆开代理对的非负安全 UTF-16 整数；默认一页 2400 单位，最多 4000 单位，保留原文与角色。
+规范部分是文件清单而不是文件正文；项目用 `/huimem include` 加入自己的文档。
 `CHECKPOINT_MISSING` 是提醒而非错误，一次性提示写入事件日志，子代理的并发无法将其冲掉（`/huimem context`
 会显示它）。
 
@@ -98,7 +127,8 @@
 和 `.memory/adr/**`。`/huimem include <路径>` 可把 `.memory` 内的其他文档加入集合，`/huimem exclude`
 移除，最多十个。加入的文档会出现在记忆块清单中、计入集合哈希并参与过期判定。在被测项目里，一份 17 KB 的
 `.memory/DESIGN.md` 是实际使用的记忆文档却不在集合内，而记忆块却告诉模型除集合之外没有别的项目记忆。
-加入文档会改变集合哈希，因此未声明 `dependsOn` 的记录会一次性显示 STALE；命令在执行前后都会说明这一点。
+加入文档会改变集合哈希，可能使未声明 `dependsOn` 的文件来源记录过期；消息来源不受此影响。
+派生 RECORDS.md、Wiki 页面和 runtime 文件不能加入规范集合。
 
 **开放问题（自 v0.6.8）：** 等待用户回答的问题是一条 `kind=question`、`status=open` 的记录：正文是你提出
 的那个问题，来源是你自己的消息。开放问题会固定留在记忆块中、与当前工作并列，因此"在等答复"这件事随记忆
@@ -119,7 +149,7 @@
 **旧 ADR：** `/huimem adr-audit` 列出缺少「依据」部分、可迁移到约定结构的 ADR，不写入任何内容。`/huimem adr-audit apply` 将记录库中用户的原话写入依据部分，并把全部原始行保留在「解释 [?]」标题下，写入前先逐字节备份到 `.memory/adr-backup/`。只有当恰好一条已接受决策按路径明确指向该文档、其理由逐字包含在引文中，并且迁移时会再次将引文与已保存的消息核对（该消息必须存在且属于用户）时才会迁移；否则显示 `UNVERIFIED`，不写入任何内容。v0.5.0 缺少最后这项核对：如果你曾在被修改、合并或恢复过的数据库上用它执行 `apply`，请将每个迁移后的依据与原始消息逐一核对。迁移后，相关的对话决策会显示 STALE。在预先登记的 20 对 20 测试中，迁移后的文档没有出现明确的错误归因，但相对未迁移文档的可靠性提升在统计上未得到证明。
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.6.10
+omp plugin install github:Clientik/omp-huimem#v0.7.0
 ```
 
 > [!IMPORTANT]
@@ -133,32 +163,32 @@ omp plugin install github:Clientik/omp-huimem#v0.6.10
 > `.omp/RULES.md`、`AGENTS.md`，并补充 `.gitignore` 条目。已有文件绝不会被覆盖，保留的文件会逐一列出。
 > 记忆从下一条消息开始生效：无需重启，也无需复制文件。
 
-插件按用户级安装，因此会在你打开的所有项目中加载，但在未执行 `/huimem init` 的项目中不做任何事——不建数据库、不注入上下文、不发出提示，`project_memory` 返回 `PROJECT_MEMORY_NOT_ENABLED`。这样其他仓库不会被改动，也不会出现其 `.gitignore` 未覆盖的会话记录数据库。启用标志是 `.memory/MEMORY.md`。
+插件按用户级安装。未执行 `/huimem init` 时，项目记忆关闭：不建项目数据库、不记录项目对话，默认 `project_memory` 返回 `PROJECT_MEMORY_NOT_ENABLED`。单独授权的 personal 记忆可以在这里工作，但不会创建项目 `.memory`。项目启用标志仍为 `.memory/MEMORY.md`。
 
 执行 `init` 后，让代理使用 `initmem` skill，根据真实代码填写项目地图。架构规则需要针对项目设置（`/huimem arch`）；默认没有预设规则。
 
 **安装状态：** 已在 Windows + OMP 18.1.5 与 18.11.0 上完整验证 GitHub 安装流程——插件安装、注册并在实际会话中运行。直接加载同样可用：
 
 ```sh
-git clone --branch v0.6.10 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.7.0 https://github.com/Clientik/omp-huimem.git
 # 在工作项目中运行，使用克隆仓库的绝对路径：
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```
 
 Windows 路径请加引号。直接加载时，如需使用配套 skills，请将 `skills/` 复制到工作项目的 `.omp/skills`。不要同时加载旧的 `project-memory.ts` 扩展。
 
-OMP 的原生 GitHub 安装作用于用户级，不能通过 `--scope project` 改为项目级。记忆数据仍保存在当前项目的 `.memory` 中。
+OMP 的原生 GitHub 安装作用于用户级，不能通过 `--scope project` 改为项目级。Project/session 数据位于项目 `.memory`，可选 personal 数据属于当前 OMP profile。
 
 **设置界面：** 在终端中，`/huimem` 会打开一个由 OMP 原生对话框构成的界面。每一行显示当前值；
 按 Enter 修改该值或执行操作，按 Esc 关闭。在这里可以关闭或开启本项目的记忆、暂停保存、设置召回预算与注入上限、从记录库中
 选择必需记录、重新发布 `RECORDS.md`、查看最近的记忆块与事件日志、迁移旧 ADR 以及重置上限。在未启用记忆的
 项目中，同一界面会提供启用选项。取值按项目保存在 `.memory/settings.json`。
 
-**开关（自 v0.6.4）：** `/huimem off` 会让本项目的记忆静默——不注入记忆块、不记录消息、不保存，
-`/huimem on` 恢复。已保存的记录和文件保持不变；状态存于 `.memory/settings.json`，重启后依然有效。
-适用于在使用记忆的项目中进行普通对话。`/huimem pause` 的范围更窄：只阻止 commit，且仅限当前 OMP 进程。在 RPC 和 `-p` 模式下，
-`/huimem` 以文本输出状态，所有操作仍可通过子命令使用（`/huimem help`）。`/huimem omp` 列出影响记忆的
-OMP 设置：插件只展示，不改写他人配置。
+**开关（自 v0.6.4）：** `/huimem off` 关闭 project/session 的注入、对话记录和保存，
+`/huimem on` 恢复；数据保留，状态存于 `.memory/settings.json`。
+Personal 单独用 `/huimem personal off` 关闭。`/huimem pause` 在当前进程阻止
+commit/checkpoint、Wiki 发布和索引 rebuild，仍可读取。在 RPC 和 `-p` 模式下，
+`/huimem` 输出状态，所有操作可用子命令；`/huimem omp` 只展示 OMP 设置，不改写它。
 `huimem` 无法在 `memory.backend` 中选择——该列表在 OMP 中是封闭枚举，也没有供扩展注册后端的
 API。它与其中任意一个并行工作。
 
@@ -167,13 +197,14 @@ API。它与其中任意一个并行工作。
 `.memory/settings.json`。必需记录合计最多占用召回预算的一半；更长的记录只显示其引文的原文开头，
 标记为 `quoteClipped`；若连这样也放不下，该记录不会送达，并在 `REQUIRED records not shown in full`
 提示中列出，改为按 ID 读取，腾出的空间留给与请求匹配的记录（如果放得下）。不存在或已停用的 ID 也会在其中列出。该提示
-不会在 ID 中间截断：列表过长时改为数量，`project_memory status` 会返回全部必需 ID。其余记录依次按问题匹配、当前 `doing`/`blocked` 任务、其他已接受的决策排序；
-同等排名时，STALE 记录让位于新鲜记录。
+不会在 ID 中间截断：列表过长时改为数量，`project_memory status` 会返回全部必需 ID。
+自动上下文之后选择有意义的匹配、当前工作和一跳依据，不再固定注入无关 accepted 决策。
 
 **可解释的过期标记：** 记录可以列出其依据：`dependsOn: [{id}]` 或 `[{path}]`；代码会固定当前的
 记录版本或文件哈希。只有当这些依据发生变化、被停用或丢失时，该记录才会变为 STALE，并显示原因
-（`db changed: version 1 -> 2`），沿记录链同样适用。无关记录不受影响。只有保存一个带当前依据的新版本
-才能清除 STALE。没有 `dependsOn` 的记录（包括所有旧记录）沿用原规则：任何规范文档变化都会将其标记为 STALE。
+（`db changed: version 1 -> 2`），沿记录链同样适用。无关记录不受影响。
+STALE 只有保存带当前依据的新版本才清除。没有 `dependsOn` 时，消息来源仍保持原始证据；
+文件来源记录还受规范文档变化影响。
 
 **并行任务：** 当 commit 恰好修改一条任务记录或传入 `task=<任务 ID>` 时，检查点摘要归属该任务。
 记忆块随后以 `Task checkpoints` 列出，每条摘要位于其任务 ID 之下，与请求匹配的任务排在最前，
@@ -192,6 +223,9 @@ API。它与其中任意一个并行工作。
 | `.memory/architecture.json` | 明确、可检查的架构限制 |
 | `.memory/DESIGN.md` | 界面设计约定 |
 | `.memory/runtime/state.sqlite` | 对话片段、证据版本和检查点摘要 |
+| `.memory/runtime/search.sqlite` | 可重建的历史索引，不是证据 |
+| `.memory/wiki/` | 带来源引用的派生 Wiki/ADR 页面，不是规范证据 |
+| `.memory/runtime/scopes/<session hash>/` | 单个原生会话的独立记录 |
 | `.omp/RULES.md` | 简短硬性要求，会在当前回合附近重新附加 |
 | `AGENTS.md` | 背景与约定，仅在会话开始时提供一次 |
 
@@ -207,13 +241,13 @@ API。它与其中任意一个并行工作。
 
 ## 取舍与限制
 
-这是面向单个项目、易于检查的记忆系统。它提供来源验证和本地持久化，不需要独立提取服务。目前没有对比基准能证明其效果优于其他记忆系统。
+这是以项目为主、可选 personal 与 session 作用域的可检查记忆系统。它提供来源验证和本地持久化，不需要独立提取服务。目前没有对比基准能证明其效果优于其他记忆系统。
 
 搜索基于文本匹配，不是语义搜索。架构检查匹配指定字符串，不分析完整依赖图。引用验证证明来源，不证明内容正确。文件和 SQLite 写入不是同一个事务。真实上下文压缩、崩溃、并发会话和分支切换仍需更多测试。
 
 9,000 字符不是 token 上限，也不是已经测得的节省比例。使用云端主模型时，注入的记忆上下文会发送给该提供商。
 
-不要将运行时 SQLite 提交到 Git。备份历史前请停止会话，复制整个 `.memory`，包括存在的 WAL/SHM 文件。目前没有自动历史清理。
+不要将运行时 SQLite 提交到 Git。备份前停止会话，复制整个 `.memory`，包括 WAL/SHM；启用 personal 时另行备份 profile 的 `huimem/`。目前没有自动历史清理。
 
 ## 文档与开发
 

@@ -27,12 +27,12 @@ export const DOCUMENTS_MAX = 10;
 const requiredIds = (v: unknown): string[] => Array.isArray(v)
   ? [...new Set(v.filter((x): x is string => typeof x === 'string' && /^[a-zA-Z0-9_.:/-]{1,100}$/.test(x)))].slice(0, REQUIRED_MAX) : [];
 // Только внутри .memory и только то, что не входит в набор иначе: ADR подбираются глоблм,
-// RECORDS.md генерируется, settings.json и runtime — не документы памяти.
+// RECORDS.md и wiki/ — derived views; settings.json и runtime — не документы памяти.
 const FIXED = ['.memory/MEMORY.md', '.memory/PROJECT.md', '.memory/todo.json', '.memory/architecture.json'];
 export const documentPath = (x: unknown): x is string => typeof x === 'string'
   && /^\.memory\/[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$/.test(x) && !x.includes('..') && !x.endsWith('/')
   && !FIXED.includes(x) && !x.startsWith('.memory/adr/') && !x.startsWith('.memory/runtime/')
-  && x !== '.memory/RECORDS.md' && x !== '.memory/settings.json';
+  && !x.toLowerCase().startsWith('.memory/wiki/') && x !== '.memory/RECORDS.md' && x !== '.memory/settings.json';
 const documentList = (v: unknown): string[] => Array.isArray(v)
   ? [...new Set(v.filter(documentPath))].sort().slice(0, DOCUMENTS_MAX) : [];
 

@@ -24,12 +24,14 @@ export type CommandDeps = {
   health: () => string;
   commitsPaused: (ctx: any) => boolean;
   setPaused: (ctx: any, value: boolean) => void;
+  personalEnabled: () => Promise<boolean>;
+  setPersonalEnabled: (value: boolean) => Promise<void>;
+  learn: (ctx: Parameters<CommandDeps['store']>[0]) => Promise<void>;
   // Только чтение. Уровень размышления принадлежит OMP; память его показывает, но не меняет:
   // ЗАМЕРЕНО 2026-10-14 в HUICAD — проектный autoThinkingMaxEffort: high не перекрыл глобальный
   // max, и расхождение пришлось искать по файлам сессий. Метода может не быть в старом OMP.
   thinkingLevel: () => string | undefined;
-  // Эта сессия — подагент. Показывается в состоянии, чтобы признак можно было проверить,
-  // а не принимать на веру: метода «я подагент» в API расширений нет.
+  // Native ctx.agent.kind, with the older session-file fallback, is shown for provenance inspection.
   subagent: (ctx: any) => boolean;
 };
 
@@ -40,6 +42,8 @@ const HELP = [
   '  /huimem on           switch it back on',
   '  /huimem pause        block commits in this project for this OMP process',
   '  /huimem resume       allow commits again',
+  '  /huimem personal on|off   explicitly allow or disable profile-owned personal memory (not project settings)',
+  '  /huimem learn        ask the main agent to curate source-backed Wiki pages in one ordinary turn',
   '  /huimem              memory state for this project',
   '  /huimem recall <N>   recall budget in characters (' + LIMITS.recallBudget.min + '–' + LIMITS.recallBudget.max + ')',
   '  /huimem limit <N>    injected context limit in characters (' + LIMITS.injectionLimit.min + '–' + LIMITS.injectionLimit.max + ')',
@@ -51,6 +55,7 @@ const HELP = [
   '  /huimem exclude <path>  stop counting it',
   '  /huimem reset        restore the default limits',
   '  /huimem sync         retry publishing .memory/RECORDS.md from saved records',
+  '  /huimem index [rebuild]   inspect or rebuild only the derived local search index',
   '  /huimem context      inspect the latest memory block prepared for OMP',
   '  /huimem doctor       diagnose memory, sources and task-file drift without repairs',
   '  /huimem adr-audit    propose moving legacy ADRs into the basis contract (dry run)',
@@ -73,6 +78,25 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
   // проверки пределов, require и init не расходятся между двумя способами управления.
   async function run(verb: string | undefined, value: string | undefined, ctx: any, say: (text: string) => unknown = send) {
     if (verb === 'help' || verb === '--help') return say(HELP);
+    if (verb==='personal') {
+      if (value!=='on' && value!=='off')
+        return say(`Personal memory is ${await deps.personalEnabled() ? 'ON' : 'OFF'} in this OMP profile. Usage: /huimem personal on|off. Only this human command changes permission.`);
+      try {
+        await deps.setPersonalEnabled(value==='on');
+        return say(value==='on'
+          ? 'Personal memory ON in this OMP profile. Use scope=personal explicitly to save; only selected original evidence is copied. Relevant personal records may use a small labelled share of context.'
+          : 'Personal memory OFF in this OMP profile. No personal capture, reads, commits or injection; existing saved data is preserved.');
+      } catch (error) {return say(String(error));}
+    }
+    if (verb==='learn') {
+      try {await deps.learn(ctx);} catch(error) {return say(String(error));}
+      return;
+    }
+    if ((verb==='pause' || verb==='resume') && !deps.deployed(ctx) && await deps.personalEnabled()) {
+      deps.setPaused(ctx,verb==='pause');
+      return say(verb==='pause' ? 'Scoped commits PAUSED for this working directory in this OMP process; reads remain available.'
+        : 'Scoped commits enabled for this working directory.');
+    }
     if (verb === 'doctor') return say(formatDoctor(diagnoseMemory(ctx.cwd)));
 
     // Выключатель проекта. Он сильнее паузы: блок памяти не собирается, эпизоды не пишутся,
@@ -131,6 +155,15 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
     }
 
     const cfg = readSettings(ctx.cwd);
+    if (verb==='index') {
+      if (!deps.switchedOn(ctx)) return say('PROJECT_MEMORY_OFF: use /huimem on before reading the index.');
+      if (value && value!=='rebuild') return say('Usage: /huimem index [rebuild]');
+      if (value==='rebuild' && deps.commitsPaused(ctx)) return say('COMMITS_PAUSED: use /huimem resume before rebuilding derived data.');
+      try {
+        const store=deps.store(ctx);
+        return say(JSON.stringify(value==='rebuild' ? store.rebuildIndex() : store.searchStatus(),null,2));
+      } catch(error) {return say(String(error));}
+    }
     if(verb==='pause' || verb==='resume') {
       deps.setPaused(ctx,verb==='pause');
       return say(verb==='pause'
@@ -269,7 +302,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       if (!documentPath(value)) return say(
         `Not an addable path: ${value}\nUse a path inside .memory, for example .memory/DESIGN.md. `
         + 'MEMORY.md, PROJECT.md, todo.json, architecture.json and .memory/adr/** are always canonical; '
-        + 'RECORDS.md is generated, settings.json and runtime/ are not documents.');
+        + 'RECORDS.md and wiki/ are derived; settings.json and runtime/ are not documents.');
       if (cfg.documents.length >= DOCUMENTS_MAX) return say(`At most ${DOCUMENTS_MAX} added documents. Remove one with /huimem exclude <path> first.`);
       if (!existsSync(resolve(ctx.cwd, value))) return say(`No such file: ${value}. Create the document first; the set names real files.`);
       const saved = writeSettings(ctx.cwd, { documents: [...cfg.documents, value] });
@@ -329,6 +362,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
         `Effort:             ${deps.thinkingLevel() ?? 'not reported by this OMP build'}`,
         `Memory:             ${on ? 'ON' : 'OFF (/huimem on to switch it back)'}`,
         `Commits:            ${deps.commitsPaused(ctx) ? 'PAUSED (this process)' : 'enabled'}`,
+        `Personal memory:    ${await deps.personalEnabled() ? 'ON (this OMP profile)' : 'OFF (/huimem personal on to opt in)'}`,
         'Requires OMP + a main model. No mnemopi, memory server or additional model required.',
         '',
         `Storage:            ${counts}`,
@@ -366,10 +400,14 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
     for (;;) {
       if (!deps.deployed(ctx)) {
         const enable = 'Enable memory in this project';
+        const personal=await deps.personalEnabled();
+        const personalLabel=`Personal memory: ${personal ? 'ON' : 'OFF'}`;
         const pick = await ui.select(`huimem · ${ctx.cwd} · memory is OFF here`, [
           { label: enable, description: 'Creates missing starter files (.memory, .omp, AGENTS.md, .gitignore lines). Existing files are never overwritten.' },
+          {label:personalLabel,description:'Explicit profile-owned opt-in; works without creating project memory. Enter toggles permission.'},
           { label: 'Close', description: 'Memory stays off; nothing is created.' },
         ]);
+        if (pick===personalLabel) {await run('personal',personal ? 'off' : 'on',ctx,note);continue;}
         if (pick !== enable) return;
         await run('init', undefined, ctx);
         continue;
@@ -382,6 +420,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       catch (e) { view = 'ERROR: ' + String(e); }
       const a = cfg.enabled ? deps.architecture(ctx) : { configured: false, ok: false, failures: [] };
       const paused = deps.commitsPaused(ctx);
+      const personal=await deps.personalEnabled();
       // Действие возвращает true, если после него экран закрывается: вывод длинный и его нужно прочитать.
       const items: [string, string, () => Promise<boolean | void>][] = [
         [`Memory: ${cfg.enabled ? 'ON' : 'OFF'}`,
@@ -389,6 +428,12 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
           async () => { await run(cfg.enabled ? 'off' : 'on', undefined, ctx, note); }],
         [`Commits: ${paused ? 'PAUSED' : 'enabled'}`, 'Enter toggles. Pause blocks project_memory commit in this OMP process; a restart clears it.',
           async () => { await run(paused ? 'resume' : 'pause', undefined, ctx, note); }],
+        [`Personal memory: ${personal ? 'ON' : 'OFF'}`, 'Explicit profile-owned permission. Only selected evidence is copied when saving with scope=personal.',
+          async () => {await run('personal',personal ? 'off' : 'on',ctx,note);}],
+        ['Curate Wiki from sources', 'Starts one intentional main-agent turn; summaries never become evidence.',
+          async () => {await run('learn',undefined,ctx);return true;}],
+        ['Search index status', 'Inspect the rebuildable local sidecar; /huimem index rebuild explicitly rebuilds it.',
+          async () => {await run('index',undefined,ctx);return true;}],
         [`Recall budget: ${cfg.recallBudget}`, `Characters of registry records per turn, ${LIMITS.recallBudget.min}–${LIMITS.recallBudget.max}.`,
           async () => editNumber(ctx, 'recall', 'Recall budget', cfg.recallBudget, LIMITS.recallBudget)],
         [`Injection limit: ${cfg.injectionLimit}`, `Characters of the whole memory block, ${LIMITS.injectionLimit.min}–${LIMITS.injectionLimit.max}.`,

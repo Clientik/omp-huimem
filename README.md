@@ -9,7 +9,7 @@
 
 Keep project knowledge across sessions without running another model. Current facts live in readable files; evidence and revision history live in local SQLite. One OMP extension, no memory server, embeddings service, or background LLM.
 
-> **Preview v0.6.10 · Tested with OMP 18.11.0.** Upstream Pi is not supported. Memory makes project context easier to recover and inspect; it does not eliminate hallucinations.
+> **Preview v0.7.0 · Tested with OMP 18.11.0.** Upstream Pi is not supported. Memory makes context easier to recover and inspect; it does not eliminate hallucinations.
 
 ## Why use it?
 
@@ -22,6 +22,46 @@ For developers working with an AI agent who want to stop explaining the same pro
 - **Bounded context.** The extension supplies a memory block of up to 9,000 characters: the rules, a list of the canonical files, and the records that match the question. The agent reads full sources when it needs them.
 
 ## Install
+
+**New in v0.7.0 — source-backed retrieval, lower write overhead, and explicit scopes:**
+
+- Recall searches record text, rationale, saved source quotes, source paths and dependency paths.
+  Short words (`Go`, `БД`), numbers and `C#`/`C++` match whole tokens; other words keep the
+  existing ending heuristic. Score counts distinct terms, not repeated quotes. Within each
+  priority class, corpus-aware sparse relevance ranks distinctive terms above common words,
+  then coverage, freshness, exact words and ID break ties. History and retired records do not
+  inflate corpus statistics. The same relevance selects relation seeds.
+- Up to three fresh lexical matches can bring in six zero-score records through one outgoing
+  `dependsOn`/`links` hop. Required records, matches and open work stay ahead of these neighbors.
+  Relations do not accept proposals, refresh `STALE` records or change source authority.
+- `project_memory op=episodes id=<id> offset=<hit.offset>` reads a verbatim original page.
+  Follow `nextOffset` until `null` to read the remainder; without an offset, reading starts at 0.
+  Offsets are safe non-negative UTF-16 positions and cannot split a surrogate pair. The default
+  page is 2400 units, capped at 4000; roles and full original length are preserved.
+
+- **Rebuildable history search.** Lazy SQLite FTS5 in `.memory/runtime/search.sqlite` indexes
+  tokens, not another transcript. Original messages stay authoritative in `state.sqlite`.
+  Old writers are detected; an unavailable index gives a visible degraded state and a complete
+  streaming fallback. `/huimem index` inspects it; `/huimem index rebuild` rebuilds derived data.
+- **Less automatic noise.** Unrelated accepted decisions no longer fill every turn just because
+  they are accepted. Required rules, meaningful matches and current work keep their priority.
+  Explicit recall and ID reads remain available; corrections and changed sources are not frozen.
+- **Curated Wiki/ADR pages.** `/huimem learn` starts an intentional main-agent curation turn.
+  `project_memory op=wiki` lists, reads, publishes and lints derived pages with exact source
+  record versions; changed evidence makes a page STALE. Pages cannot become evidence or
+  promote proposals. `action=history path=<path>` reads local Git history, not proof of rationale.
+- **Project, session, personal.** Old calls still use project scope. `scope=session` follows the
+  native dialogue ID and is separate from project records. Personal memory is off by default;
+  only the human `/huimem personal on` enables it in the active OMP profile. Saving with
+  `scope=personal` copies only selected original evidence, never the whole project transcript.
+- **Changed-only diagnostics.** Identical retrieval receipts, acknowledged projections and
+  unchanged checkpoints skip redundant SQL changes. Real changes remain durable and observable.
+
+The primary database stays schema 2; no MCP, server, embeddings or background model is added.
+The default **total** context limit stays 9,000 UTF-16 units, including labelled scoped records.
+The [20-plugin source audit and research](docs/RETRIEVAL-RESEARCH.md) explain what was selected
+and rejected; [validation](docs/VALIDATION.md) separates retrieval, latency, compatibility and
+actual-model checks. These are not a claim to cover every possible task or beat other systems.
 
 **New in v0.6.10**, from the same test session:
 
@@ -95,7 +135,7 @@ short block without the saving rules (`subagentBlock: short | full | off`). The 
 lives in the tool description, after the model made 34 calls into the installed plugin source to
 learn it. `project_memory op=doctor` gives the model the same read-only diagnosis as
 `/huimem doctor`. Episode search ranks matches, shows the part of a long message that matched,
-takes `role=user|assistant` and returns one episode whole by id. The canonical section is a list of
+takes `role=user|assistant` and reads original episode pages by id (see the paging contract above). The canonical section is a list of
 files rather than their text, and a project adds its own documents with `/huimem include`.
 `CHECKPOINT_MISSING` is advice, not an error, and one-shot notices go to an events log that a
 fan-out of subagents cannot wipe (`/huimem context` prints it).
@@ -119,7 +159,7 @@ You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model
 **Legacy ADRs:** `/huimem adr-audit` lists ADRs without a basis section that can be moved into the contract, and writes nothing. `/huimem adr-audit apply` inserts the user's quote from the registry as the basis and keeps every original line under an "Interpretation [?]" heading, after a byte-exact backup to `.memory/adr-backup/`. A document is migrated only when exactly one accepted decision names it by path, its rationale is an exact excerpt of the quote, and the quote is re-checked at migration time against the stored message, which must exist and belong to the user; otherwise it is reported as `UNVERIFIED` and nothing is written. v0.5.0 skipped that last check: if you ran `apply` with it on an edited, merged or restored database, compare each migrated basis with the original message. Linked conversation decisions show STALE afterwards. In a preregistered 20-vs-20 test the migrated documents had no outright misattribution, but a reliability gain over unmigrated ones was not statistically proven.
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.6.10
+omp plugin install github:Clientik/omp-huimem#v0.7.0
 ```
 
 > [!IMPORTANT]
@@ -134,21 +174,21 @@ omp plugin install github:Clientik/omp-huimem#v0.6.10
 > overwrites a file you already have and lists the ones it kept. Memory works from your next
 > message; no restart and no copying needed.
 
-Installation is user-scoped, so the extension loads in every project you open with OMP, but it does nothing where you have not run `/huimem init`: no database, no injected context, no notices, and `project_memory` answers `PROJECT_MEMORY_NOT_ENABLED`. Other repositories stay untouched, with no transcript database their `.gitignore` does not cover. The marker is `.memory/MEMORY.md`.
+Installation is user-scoped, so the extension loads in every project. Project memory stays off without `/huimem init`: no project database or transcript capture, and default `project_memory` calls return `PROJECT_MEMORY_NOT_ENABLED`. Explicitly opted-in personal memory is independent and can work without creating a project `.memory`. The project enable marker is `.memory/MEMORY.md`.
 
 After `init`, ask the agent to use the `initmem` skill to map the actual code. Define architecture rules for your project (`/huimem arch`); none are configured by default.
 
 **Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 and again with 18.11.0 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
 ```sh
-git clone --branch v0.6.10 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.7.0 https://github.com/Clientik/omp-huimem.git
 # Run from your working project, using the cloned repository's absolute path:
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```
 
 On Windows, quote the path. With direct loading, copy `skills/` to the project's `.omp/skills` if desired. Do not also load an older `project-memory.ts` extension.
 
-Native GitHub installation in OMP is user-scoped; `--scope project` does not apply. Memory data stays in the current project's `.memory`. See the [user guide (Russian)](docs/GUIDE.md) for setup and troubleshooting.
+Native GitHub installation in OMP is user-scoped; `--scope project` does not apply. Project/session data stays in the project's `.memory`; optional personal data belongs to the active OMP profile. See the [user guide (Russian)](docs/GUIDE.md) for setup and troubleshooting.
 
 **Settings screen:** in the terminal, `/huimem` opens a screen built from OMP's own dialogs.
 Each row shows the current value; Enter changes it or runs the action, Esc closes. From there
@@ -159,10 +199,11 @@ legacy ADRs and reset limits. In a project without memory the same screen offers
 stored per project in `.memory/settings.json`.
 
 **Switch (since v0.6.4):** `/huimem off` silences memory in this project — no memory block, no
-recorded messages, no commits — and `/huimem on` brings it back. Saved records and files stay
-untouched; the state lives in `.memory/settings.json` and survives a restart. Use it for ordinary
-conversations in a project that otherwise uses memory. `/huimem pause` is narrower: it blocks only
-commits, and only in the running OMP process. In RPC and `-p` modes `/huimem` prints the state
+project transcript capture or project commits — and `/huimem on` brings it back. Saved records
+and files stay untouched; the state lives in `.memory/settings.json` and survives a restart.
+Personal permission is independent: use `/huimem personal off` to disable that scope too.
+`/huimem pause` blocks record/checkpoint commits, Wiki publication and index rebuild in the
+running process; reads remain available. In RPC and `-p` modes `/huimem` prints the state
 instead, and every action stays available as a subcommand (`/huimem help`). `/huimem omp` lists
 the OMP settings that affect memory; the plugin reports them and never rewrites that config.
 `huimem` cannot be selected under `memory.backend`: that list is a closed enum in OMP and
@@ -177,16 +218,17 @@ not fit, it is left out and named in a `REQUIRED records not shown in full` noti
 by ID and its space goes to records that match the request, if they fit. Missing or retired IDs are named there too. The
 notice is never cut mid-ID: a long list becomes a count, and `project_memory status` returns
 every required ID.
-Other records are ranked by question match, then current `doing`/`blocked` tasks, then the
-remaining accepted decisions; at equal rank a STALE record yields to a fresh one.
+Automatic context then selects meaningful question matches, current work and bounded related
+bases, not every unrelated accepted decision. Explicit recall keeps its broader overview.
 
 **Canonical documents (since v0.6.7):** the set is `MEMORY.md`, `PROJECT.md`, `todo.json`,
 `architecture.json` and `.memory/adr/**`. `/huimem include <path>` adds another document inside
 `.memory` to it, `/huimem exclude` removes it, up to ten. An added document is listed in the block,
 hashed with the set and tracked for staleness. In the measured project a 17 KB `.memory/DESIGN.md`
 was a live memory document outside the set, while the block told the model that nothing else was
-project memory. Adding a document changes the set hash, so records saved without `dependsOn` show
-STALE once; the command says so before and after.
+project memory. Adding a document changes the set hash: file-backed records without explicit
+`dependsOn` may become STALE; conversation-backed records retain their original evidence.
+Generated `RECORDS.md`, Wiki pages and runtime files cannot be added as canonical documents.
 
 **Open questions (since v0.6.8):** a question you are waiting on the user for is a record with
 `kind=question` and `status=open`, its text the question as you asked it and its source your own
@@ -213,8 +255,8 @@ keeps the evidence rules, the file list and the records, and drops the saving ru
 `[{path}]`; code pins the current version or file hash. Such a record turns STALE only when one
 of those changes, is retired or goes missing, and the reason is shown (`db changed: version
 1 -> 2`), also along a chain of records. Independent records are untouched. STALE clears only
-through a new version saved with the current basis. Records without `dependsOn`, including
-all older ones, keep the earlier rule: any canonical document change marks them STALE.
+through a new version saved with the current basis. Without `dependsOn`, conversation-backed
+records stay tied to their immutable source; file-backed records also track canonical changes.
 
 **Parallel tasks:** a checkpoint summary belongs to a task when the commit changes exactly one
 task record or passes `task=<task id>`. The memory block then lists `Task checkpoints` under
@@ -236,6 +278,9 @@ the main checkout's records.
 | `.memory/architecture.json` | Explicit, testable architecture restrictions |
 | `.memory/DESIGN.md` | UI design agreements |
 | `.memory/runtime/state.sqlite` | Episodes, evidence versions, and checkpoint summaries |
+| `.memory/runtime/search.sqlite` | Rebuildable history index; not evidence |
+| `.memory/wiki/` | Derived source-linked Wiki/ADR pages; not canonical evidence |
+| `.memory/runtime/scopes/<session hash>/` | Isolated records for one native dialogue |
 | `.omp/RULES.md` | Short hard requirements, re-attached near the current turn |
 | `AGENTS.md` | Background and conventions, given once when the session opens |
 
@@ -253,13 +298,13 @@ When a decision changes, the agent updates the files and creates a new record ve
 
 ## Trade-offs
 
-This is a small, inspectable memory system for one project. It offers checked evidence and local persistence without a separate extraction service. It has not been shown to outperform other memory systems in comparative benchmarks.
+This is an inspectable project-first memory system with opt-in personal and session scopes. It offers checked evidence and local persistence without a separate extraction service. It has not been shown to outperform other memory systems in comparative benchmarks.
 
 Search is lexical, not semantic. Architecture checks match configured strings, not full dependency graphs. Source quotes establish provenance, not truth. File changes and SQLite writes are not one transaction. Real compaction, crashes, concurrent sessions, and branch changes need more live testing.
 
 The 9,000-character limit is not a token limit or a measured savings percentage. Memory still consumes main-model context. If you use a cloud model, the memory context sent to it reaches that provider.
 
-Keep runtime SQLite out of Git. To back up history, stop active sessions and copy all of `.memory`, including existing WAL/SHM files. There is no automatic history cleanup.
+Keep runtime SQLite out of Git. To back up history, stop active sessions and copy all of `.memory`, including existing WAL/SHM files. Back up the profile's `huimem/` separately if personal memory is enabled. There is no automatic history cleanup.
 
 ## Documentation
 

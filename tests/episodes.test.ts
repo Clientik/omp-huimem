@@ -54,7 +54,7 @@ describe('episode search', () => {
     expect(out.total).toBe(1);
   }));
 
-  test('an id returns the whole episode, not a window', () => withStore(s => {
+  test('an id returns original text rather than a search window', () => withStore(s => {
     const id = s.capture('s', 'user', plan);
     const out: any = s.episodes('', { id });
     expect(out.found).toBe(true);
@@ -85,3 +85,100 @@ describe('episode search', () => {
     expect((s.episodes('ggg_zzz') as any).total).toBe(0);
   }));
 });
+
+test('an episode tail can be read verbatim after finding its search offset',()=>withStore(s=>{
+  const quote='OCCT: выбираем ядро.';
+  const original='x'.repeat(4600)+' '+quote+' '+'y'.repeat(2000);
+  const id=s.capture('s','user',original);
+  const search=s.episodes(quote);
+  if(!('hits' in search)) throw new Error('Expected episode search results');
+  const hit=search.hits[0];
+  expect(hit.id).toBe(id);
+  const options={id,offset:hit.offset};
+  const tail=s.episodes('',options);
+  if(!('text' in tail)) throw new Error('Expected an original episode page');
+  expect(tail.text).toContain(quote);
+  expect(tail.text).toBe(original.slice(hit.offset,hit.offset+2400));
+}));
+
+test('episode matching keeps short and technical tokens distinct',()=>withStore(s=>{
+  const entries=[['Go','Генератор: Go.'],['Google','Google для поиска.'],['БД','БД проекта.'],
+    ['C#','Пишем C#.'],['C++','Пишем C++.'],['на','на месте'],['журнал','журнал']];
+  const ids=new Map(entries.map(([key,text])=>[key,s.capture('s','user',text)]));
+  for(const query of ['Go','БД','C#','C++','на']) {
+    const result=s.episodes(query);
+    if(!('hits' in result)) throw new Error('Expected search results');
+    expect(result.hits.map(h=>h.id)).toEqual([ids.get(query)]);
+  }
+}));
+
+test('episode focus ignores substring distractions and chooses the earliest full-token window',()=>withStore(s=>{
+  const text='20261 Google журнал '.repeat(180)+' 2026 Go рядом БД '+'x'.repeat(1500)+' Go рядом БД';
+  const id=s.capture('s','user',text);
+  for(const query of ['2026','Go БД']) {
+    const result=s.episodes(query);
+    if(!('hits' in result)) throw new Error('Expected search results');
+    expect(result.hits[0].id).toBe(id);
+    expect(result.hits[0].text).toContain(query==='2026' ? '2026 Go' : 'Go рядом БД');
+    expect(result.hits[0].offset).toBeGreaterThan(3000);
+    expect(result.hits[0].offset).toBeLessThan(4000);
+  }
+}));
+
+test('episode pages reconstruct a long original without splitting a boundary emoji',()=>withStore(s=>{
+  const original='a'.repeat(2399)+'😀'+'b'.repeat(3900);
+  const id=s.capture('s','user',original);
+  const first=s.episodes('',{id});
+  if(!('text' in first)) throw new Error('Expected source page');
+  expect(first).toMatchObject({offset:0,nextOffset:2399,truncated:true,role:'user'});
+  expect(first.text).toBe('a'.repeat(2399));
+  let offset=0,all='';
+  for(let page=0;page<10;page++) {
+    const result=s.episodes('',{id,offset});
+    if(!('text' in result)) throw new Error('Expected source page');
+    expect(result.offset).toBe(offset);
+    expect(result.text).toBe(original.slice(offset,offset+result.text.length));
+    all+=result.text;
+    if(result.nextOffset===null) break;
+    expect(result.nextOffset).toBeGreaterThan(offset);
+    offset=result.nextOffset;
+  }
+  expect(all).toBe(original);
+  for(const offset of [original.length,original.length+100]) {
+    expect(s.episodes('',{id,offset})).toMatchObject({
+      found:true,offset:original.length,nextOffset:null,length:original.length,text:'',truncated:true});
+  }
+  expect(s.episodes('',{id:'missing',offset:0})).toMatchObject({found:false});
+}));
+
+test('episode offsets reject invalid addresses, including a split surrogate pair',()=>withStore(s=>{
+  const id=s.capture('s','user','a😀b');
+  for(const offset of [-1,0.5,Number.MAX_SAFE_INTEGER+1,NaN,Infinity,2])
+    expect(()=>s.episodes('',{id,offset})).toThrow('INVALID_EPISODE_OFFSET');
+  expect(()=>s.episodes('',{offset:0})).toThrow('INVALID_EPISODE_OFFSET');
+  expect(s.episodes('',{id,offset:1})).toMatchObject({offset:1,nextOffset:null,text:'😀b'});
+  expect(s.episodes('',{id,offset:Number.MAX_SAFE_INTEGER})).toMatchObject({offset:4,nextOffset:null,text:''});
+}));
+
+test('episode page size keeps the bounded window contract',()=>withStore(s=>{
+  const original='x'.repeat(6000),id=s.capture('s','user',original);
+  for(const [window,size] of [[1,800],[700,2800],[700.1,2800],[2000,4000],[9000,4000]]) {
+    const page=s.episodes('',{id,window});
+    if(!('text' in page)) throw new Error('Expected source page');
+    expect(page.text).toBe(original.slice(0,size));
+    expect(page.nextOffset).toBe(size);
+  }
+}));
+
+test('episode search cursors can read original pages when window boundaries meet emoji',()=>withStore(s=>{
+  const original='x'.repeat(4400)+'😀'+'z'.repeat(198)+' OCCT '+'w'.repeat(393)+'😀'+'y'.repeat(2000);
+  const id=s.capture('s','user',original);
+  const search=s.episodes('OCCT');
+  if(!('hits' in search)) throw new Error('Expected search results');
+  const hit=search.hits[0];
+  const page=s.episodes('',{id,offset:hit.offset});
+  if(!('text' in page)) throw new Error('Expected source page');
+  expect(page.text).toContain('OCCT');
+  expect(page.text).toBe(original.slice(hit.offset,hit.offset+page.text.length));
+  expect(hit.text.isWellFormed()).toBe(true);
+}));

@@ -1,7 +1,7 @@
 import {test,expect} from 'bun:test';
 import {mkdtempSync,rmSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {MemoryStore} from '../src/memory/core';
+import {MemoryStore,type Change} from '../src/memory/core';
 
 function fixture(fn:(s:MemoryStore,root:string)=>void) {
   const root=mkdtempSync(join(import.meta.dir,'retrieval-test-'));
@@ -288,4 +288,200 @@ test('on a real budget the omitted records are named with their status',()=>fixt
   }
   expect(notice).toContain('+'); // остаток назван числом, а не молча отброшен
   expect(result.text.length).toBeLessThanOrEqual(4800);
+}));
+
+test('a quote-only match outranks unrelated accepted decisions and preserves its source',()=>fixture(s=>{
+  const quote='Используем Kafka для событий.',episode=s.capture('test','user',quote);
+  s.commit('test',[{id:'z-event-bus',kind:'fact',status:'active',text:'Шина событий',
+    expectedVersion:0,source:{episode,quote}}],'saved');
+  for(let i=0;i<12;i++) decide(s,`a-noise-${i}`,`Отступ ${i+1} пробелов. Причина: единообразие.`,'единообразие');
+  const result=s.recallDetailed('Что известно про Kafka? Только чтение: ничего не сохраняй.',5200);
+  expect(rows(result.text)[0]).toMatchObject({id:'z-event-bus',source:{episode,quote}});
+  expect(result.candidates[0].selectionBasis).toEqual(['query-match','match:quote']);
+}));
+
+test('short technical tokens match whole words rather than turning into an overview',()=>fixture(s=>{
+  for(const [id,text] of [['generator','Генератор: Go.'],['search','Google для поиска.'],
+    ['database','БД проекта.'],['database-long','БДшка.'],['sharp','Язык C#.'],['cpp','Язык C++.'],
+    ['journal','журнал'],['preposition','на месте'],['year','2026'],['long-year','20261']])
+    save(s,id,text);
+  for(const [query,ids] of [['Go',['generator']],['БД',['database']],['C#',['sharp']],['C++',['cpp']],
+    ['на',['preposition']],['2026',['year']]] as const)
+    expect(rows(s.recall(query)).map(r=>r.id)).toEqual(ids);
+  expect(rows(s.recall('% \\')).map(r=>r.id).sort()).toEqual(s.latestRecords().map(r=>r.id).sort());
+}));
+
+test('source and dependency paths are searchable without making changed evidence fresh',()=>fixture((s,root)=>{
+  writeFileSync(join(root,'transport-config.txt'),'Значение очереди.');
+  writeFileSync(join(root,'limits.yaml'),'Количество попыток.');
+  s.commit('test',[{id:'settings',kind:'fact',status:'active',text:'Настройка транспорта.',
+    expectedVersion:0,source:s.fileSource('transport-config.txt','Значение очереди.'),
+    dependsOn:[{path:'limits.yaml'}]}],'saved');
+  const fresh=s.recallDetailed(String.raw`transport-config.txt`);
+  expect(rows(fresh.text)[0].id).toBe('settings');
+  expect(fresh.candidates[0].selectionBasis).toEqual(['query-match','match:path']);
+  expect(rows(s.recall(String.raw`limits.yaml`))[0].id).toBe('settings');
+  writeFileSync(join(root,'transport-config.txt'),'Другое значение.');
+  const stale=s.recallDetailed('transport-config.txt');
+  expect(stale.candidates[0]).toMatchObject({id:'settings',stale:true,reason:'selected'});
+  expect(rows(stale.text)[0].freshness).toContain('STALE');
+}));
+
+test('each matching field class is reported once without repetition changing coverage',()=>fixture((s,root)=>{
+  writeFileSync(join(root,'Kafka.txt'),'Kafka Kafka Kafka');
+  s.commit('test',[{id:'bus',kind:'fact',status:'active',text:'Kafka',expectedVersion:0,
+    source:s.fileSource('Kafka.txt','Kafka Kafka Kafka')}],'saved');
+  save(s,'other-bus','Kafka');
+  const result=s.recallDetailed('Kafka Kafka');
+  expect(rows(result.text).map(r=>r.id)).toEqual(['bus','other-bus']);
+  expect(result.candidates[0].score).toBe(result.candidates[1].score);
+  expect(result.candidates[0].selectionBasis).toEqual(['query-match','match:record','match:quote','match:path']);
+}));
+
+function graphChange(s:MemoryStore,id:string,text:string,extra:Partial<Change>={}):Change {
+  const episode=s.capture('graph','user',text);
+  return {id,kind:'fact',status:'active',text,expectedVersion:0,source:{episode,quote:text},...extra};
+}
+
+test('related evidence follows outgoing dependencies before links once, keeping latest status and provenance',()=>fixture((s,root)=>{
+  writeFileSync(join(root,'basis.txt'),'Первое хранение.');
+  const assistant=s.capture('graph','assistant','Предлагаю отдельную очередь.');
+  s.commit('graph',[
+    graphChange(s,'dep-a','Основание алфавита.'),
+    graphChange(s,'dep-z','Предложение очереди.',{status:'proposed',source:{episode:assistant,quote:'Предлагаю отдельную очередь.'}}),
+    graphChange(s,'linked','Первое хранение.',{source:s.fileSource('basis.txt','Первое хранение.'),links:['seed','deep']}),
+    graphChange(s,'deep','Второй переход.'),
+    graphChange(s,'reverse','Обратное ребро.',{links:['seed']}),
+    graphChange(s,'old','Прежняя запись.',{status:'retired'}),
+    graphChange(s,'gone','Исчезнувший сосед.'),
+    graphChange(s,'seed','Экспорт CSV.',{kind:'task',status:'doing',dependsOn:[{id:'dep-z'},{id:'dep-a'}],
+      links:['linked','dep-z','old','seed','linked','gone']}),
+  ],'graph');
+  // A legacy dangling link must not turn a read into an error.
+  s.db.query('DELETE FROM versions WHERE id=?').run('gone');
+  writeFileSync(join(root,'basis.txt'),'Текущее хранение.');
+  s.commit('graph',[graphChange(s,'linked','Текущее хранение.',{expectedVersion:1,
+    source:s.fileSource('basis.txt','Текущее хранение.'),links:['seed','deep']})],'updated basis');
+  writeFileSync(join(root,'basis.txt'),'Непроверенное хранение.');
+  const result=s.recallDetailed('CSV',12000);
+  expect(rows(result.text).map(r=>r.id)).toEqual(['seed','dep-a','dep-z','linked']);
+  for(const id of ['dep-a','dep-z'])
+    expect(result.candidates.find(c=>c.id===id)).toMatchObject({score:0,pinned:false,selectionBasis:['related:dependsOn:seed']});
+  expect(result.candidates.find(c=>c.id==='linked')).toMatchObject({
+    version:2,stale:true,score:0,selectionBasis:['related:links:seed']});
+  expect(rows(result.text).find(r=>r.id==='linked').source.quote).toBe('Текущее хранение.');
+  expect(rows(result.text).find(r=>r.id==='dep-z').status).toBe('proposed');
+  expect(s.verifyRecord('dep-z')).toMatchObject({role:'assistant',match:true});
+}));
+
+test('related evidence limits expansion to three fresh lexical seeds and six unique lower-priority neighbors',()=>fixture(s=>{
+  const changes:Change[]=[];
+  for(let i=0;i<4;i++) {
+    for(let j=0;j<3;j++) changes.push(graphChange(s,`neighbor-${i}-${j}`,`Основание ${i} ${j}.`));
+    changes.push(graphChange(s,`seed-${i}`,'CSV',{links:[
+      'required','work','blocked','question','queued','neighbor-0-0',...Array.from({length:3},(_,j)=>`neighbor-${i}-${j}`)]}));
+  }
+  changes.push(graphChange(s,'required','Обязательное правило.'),
+    graphChange(s,'work','Текущая работа.',{kind:'task',status:'doing'}),
+    graphChange(s,'blocked','Ожидание.',{kind:'task',status:'blocked'}),
+    graphChange(s,'question','Как продолжать?',{kind:'question',status:'open'}),
+    graphChange(s,'queued','Следующая работа.',{kind:'task',status:'todo'}));
+  s.commit('graph',changes,'graph');
+  const result=s.recallDetailed('CSV',12000,['required']);
+  const related=result.candidates.filter(c=>c.selectionBasis.some(b=>b.startsWith('related:')));
+  expect(related.map(c=>c.id)).toEqual(['neighbor-0-0','neighbor-0-1','neighbor-0-2','neighbor-1-0','neighbor-1-1','neighbor-1-2']);
+  expect(result.candidates.find(c=>c.id==='neighbor-0-0')!.selectionBasis).toEqual(['related:links:seed-0']);
+  expect(rows(result.text).slice(0,9).map(r=>r.id)).toEqual([
+    'required','seed-0','seed-1','seed-2','seed-3','blocked','question','work','queued']);
+}));
+
+test('related evidence caps seeds independently of the six-neighbor limit',()=>fixture(s=>{
+  const changes:Change[]=[];
+  for(let i=0;i<4;i++) changes.push(graphChange(s,`leaf-${i}`,`Основание ${i}.`),
+    graphChange(s,`seed-${i}`,'CSV',{links:[`leaf-${i}`]}));
+  s.commit('graph',changes,'graph');
+  const result=s.recallDetailed('CSV',12000);
+  expect(rows(result.text).map(r=>r.id)).toEqual(['seed-0','seed-1','seed-2','seed-3','leaf-0','leaf-1','leaf-2']);
+}));
+
+test('related evidence never expands overview, required-only, retired or stale lexical seeds',()=>fixture((s,root)=>{
+  save(s,'leaf','Существующее основание.');
+  writeFileSync(join(root,'seed.txt'),'CSV');
+  s.commit('graph',[graphChange(s,'seed','CSV',{source:s.fileSource('seed.txt','CSV'),links:['leaf']})],'graph');
+  for(const query of ['', 'неизвестное']) {
+    const result=s.recallDetailed(query,12000,['seed']);
+    expect(result.candidates.every(c=>c.selectionBasis.every(b=>!b.startsWith('related:')))).toBe(true);
+  }
+  writeFileSync(join(root,'seed.txt'),'Другой текст.');
+  const stale=s.recallDetailed('CSV',12000);
+  expect(rows(stale.text).map(r=>r.id)).toEqual(['seed']);
+  expect(stale.candidates[0].stale).toBe(true);
+  save(s,'retired-seed','CSV','retired');
+  expect(s.recallDetailed('CSV').candidates.find(c=>c.id==='leaf')!.reason).toBe('no-match');
+}));
+
+test('related evidence cannot revive an old pinned dependency version',()=>fixture(s=>{
+  save(s,'basis','Первое основание.');
+  s.commit('graph',[graphChange(s,'seed','CSV',{dependsOn:[{id:'basis'}]})],'graph');
+  save(s,'basis','Заменённое основание.','active',1);
+  const result=s.recallDetailed('CSV',12000,['basis']);
+  expect(rows(result.text).map(r=>[r.id,r.version])).toEqual([['basis',2],['seed',1]]);
+  expect(result.candidates.find(c=>c.id==='seed')!.stale).toBe(true);
+  expect(result.candidates.every(c=>c.selectionBasis.every(b=>!b.startsWith('related:')))).toBe(true);
+}));
+
+test('related evidence stays behind fitting matches and blockers while oversized seeds use skip-fit',()=>fixture(s=>{
+  s.commit('graph',[
+    graphChange(s,'a-neighbor','Связанное основание.'),
+    graphChange(s,'a-rule','Обязательное правило.'),
+    graphChange(s,'b-huge','CSV '+'x'.repeat(2800),{links:['a-neighbor']}),
+    graphChange(s,'z-task','CSV',{kind:'task',status:'doing'}),
+    graphChange(s,'z-block','Ждём ответа.',{kind:'question',status:'open'}),
+    graphChange(s,'z-todo','Следующий шаг.',{kind:'task',status:'todo'}),
+  ],'graph');
+  const result=s.recallDetailed('CSV',2500,['a-rule']);
+  expect(rows(result.text).map(r=>r.id)).toEqual(['a-rule','z-task','z-block','z-todo','a-neighbor']);
+  expect(result.text).toContain('b-huge [active]');
+  expect(result.text.length).toBeLessThanOrEqual(2500);
+  expect(result.candidates.find(c=>c.id==='b-huge')!.reason).toBe('budget');
+}));
+
+test('sparse relevance delivers a distinctive topic before several ubiquitous query words',()=>{
+  for(const entity of ['Kafka','OCCT','RabbitMQ','WebAssembly']) fixture(s=>{
+    const quote=`${entity}: durable event queue.`;
+    s.commit('sparse',[graphChange(s,'z-topic',quote),
+      ...Array.from({length:12},(_,i)=>graphChange(s,`a-noise-${i}`,`Export report format rule ${i}.`))],'corpus');
+    const result=s.recallDetailed(`${entity} export report format`,800);
+    expect(rows(result.text)[0]).toMatchObject({id:'z-topic',source:{quote}});
+    expect(result.text.length).toBeLessThanOrEqual(800);
+  });
+});
+
+test('sparse relevance chooses related-evidence seeds by topic rather than common vocabulary',()=>fixture(s=>{
+  s.commit('sparse',[graphChange(s,'basis','SQLite: persistent storage.'),
+    graphChange(s,'z-topic','Kafka: durable event queue.',{links:['basis']}),
+    ...Array.from({length:8},(_,i)=>graphChange(s,`a-noise-${i}`,`Export report format rule ${i}.`))],'corpus');
+  const result=s.recallDetailed('Kafka export report format',12000);
+  expect(rows(result.text)[0].id).toBe('z-topic');
+  expect(rows(result.text).find(r=>r.id==='basis').source.quote).toBe('SQLite: persistent storage.');
+  expect(result.candidates.find(c=>c.id==='basis')!.selectionBasis).toEqual(['related:links:z-topic']);
+}));
+
+test('retired records and historical versions cannot distort current sparse relevance',()=>fixture(s=>{
+  save(s,'a-topic','Kafka');
+  save(s,'b-generic','export report format');
+  const query='Kafka export report format';
+  expect(rows(s.recall(query))[0].id).toBe('b-generic');
+  for(let version=1;version<=8;version++) save(s,'b-generic','export report format','active',version);
+  s.commit('retired',Array.from({length:16},(_,i)=>graphChange(s,`old-${i}`,'export report format',{status:'retired'})),'old corpus');
+  const result=s.recallDetailed(query);
+  expect(rows(result.text).map(r=>r.id)).toEqual(['b-generic','a-topic']);
+  expect(result.candidates.find(c=>c.id==='b-generic')!.version).toBe(9);
+}));
+
+test('sparse relevance retains complementary facts of the same topic instead of diversity pruning',()=>fixture(s=>{
+  s.commit('sparse',[graphChange(s,'a-deadline','Kafka timeout: increase deadline.'),
+    graphChange(s,'b-cancel','Kafka timeout: keep cancellation.'),
+    ...Array.from({length:8},(_,i)=>graphChange(s,`z-noise-${i}`,`Report export formatting rule ${i}.`))],'corpus');
+  expect(rows(s.recall('Kafka timeout report',900)).map(r=>r.id)).toEqual(['a-deadline','b-cancel']);
 }));

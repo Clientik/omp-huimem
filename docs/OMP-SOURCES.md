@@ -1,6 +1,6 @@
 # omp-huimem: OMP package and publication
 
-Checked 2026-09-08 against official upstream main and locally captured source commit `1adcef9762b065c0cef15703fd3e78ecaaa52a3b`. Installed OMP reported 18.1.5 in prior testing. Source compatibility is not proof of a successful installation on this machine.
+Integration rechecked 2026-10-21 against the packaged OMP extension/loading/plugin-manager, compaction, session and environment documentation; the installed executable reports **18.11.0**. Earlier 2026-09-08 findings used source commit `1adcef9762b065c0cef15703fd3e78ecaaa52a3b`. Documentation review and runtime acceptance are separate evidence; see VALIDATION.md.
 
 ## Recommended distribution
 
@@ -9,7 +9,7 @@ Use a native OMP package at the root of the GitHub repository. Commit the compil
 ```json
 {
   "name": "omp-huimem",
-  "version": "0.6.6",
+  "version": "0.7.0",
   "type": "module",
   "files": ["dist", "skills", "starter", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "licenses"],
   "omp": { "extensions": ["./dist/index.js"] }
@@ -21,7 +21,7 @@ Manifest `omp` is used before legacy `pi`; the loader resolves declared extensio
 After publishing the repository and a matching tag:
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.6.6
+omp plugin install github:Clientik/omp-huimem#v0.7.0
 omp plugin list --json
 omp plugin doctor
 ```
@@ -35,6 +35,45 @@ Native npm/git installation uses the user plugin root. CLI `--scope project` app
 `omp plugin link PATH` uses `fs.promises.symlink` in the user plugin root. Our previous Windows link test failed with EPERM. That does not establish failure of GitHub installation: the latter runs Bun install through a distinct path and still requires a real acceptance test. Do not alter Windows privileges or silently substitute project scope. The previous local bundle can also be loaded with the separately tested explicit extension path for development. [Manager link implementation](https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/src/extensibility/plugins/manager.ts).
 
 Marketplace distribution is an optional future route if native project-scoped installation becomes necessary; it adds a catalog, registry and cached-package links. It is unnecessary for the requested first GitHub release. [Official marketplace documentation](https://github.com/can1357/oh-my-pi/blob/main/docs/marketplace.md).
+
+## 0.7.0 integration decisions
+
+- Factory load only registers tools, commands and hooks. No database, permissions file or
+  profile directory is created during installer validation. Each factory owns its live handles;
+  imported modules do not hold a shared mutable memory session.
+- Schemas use injected `pi.zod`; tool execution keeps the native
+  `(id, params, signal, onUpdate, ctx)` shape. Nullable unused page/task/hash fields allow
+  strict provider schemas without inventing an address or target.
+- `context` replaces only this extension's temporary custom block, not stored messages.
+  Project and explicitly enabled scoped records share one bounded allocation.
+- `ctx.agent.kind` is authoritative; older hosts lacking it retain the session-file fallback.
+  Native custom/agent-attributed messages are not user evidence. `input` is not used as
+  the sole capture source because print/programmatic inputs do not necessarily emit it.
+- `session_start`, switch/branch/tree boundaries and shutdown close handles/reset transient
+  state. Native session ID, not transcript filename, owns session scope. Resume keeps that ID.
+- Compaction adds provenance guidance to native summarization and probes real storage;
+  it does not replace the compactor or schedule a save loop at session_stop.
+- `/huimem learn` intentionally sends an agent-attributed custom message to the main agent.
+  Synthetic-only turns need explicit run initialization, not a fabricated user episode.
+  `sendMessage` returns void; idle-only waiting races startup in print mode. A public
+  agent_start/agent_end completion barrier keeps the intentional command alive, released
+  on lifecycle reset. No timer/LLM worker or private runtime mutation is added.
+  Notifications use `pi.logger`, not raw stdout.
+- Personal permission resolves through public `getAgentDir()`, preserving OMP profiles and
+  environment routing. The host-only module is loaded lazily because standalone core/tests
+  have no coding-agent package; the build externalizes `@oh-my-pi/pi-coding-agent`.
+  Embedders/tests may inject `agentDir`; the model cannot choose that root through a tool.
+- Primary schema 2/table allowlist remains unchanged for 0.6.10 rollback. History FTS is
+  a separate derived sidecar; personal/session bases do not mix into the project database.
+
+Primary references: [extension authoring](https://github.com/can1357/oh-my-pi/blob/main/docs/extensions.md),
+[extension loading](https://github.com/can1357/oh-my-pi/blob/main/docs/extension-loading.md),
+[plugin installer](https://github.com/can1357/oh-my-pi/blob/main/docs/plugin-manager-installer-plumbing.md),
+[compaction](https://github.com/can1357/oh-my-pi/blob/main/docs/compaction.md),
+[environment routing](https://github.com/can1357/oh-my-pi/blob/main/docs/environment-variables.md).
+Main-branch documentation may describe more than the installed host; actual source/bundle,
+native command and same-model checks are recorded separately in VALIDATION.md.
+
 
 ## Existing skill redistribution
 

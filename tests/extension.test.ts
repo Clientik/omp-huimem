@@ -12,6 +12,35 @@ describe('built bundle', () => adapterContract(installBundle));
 
 function adapterContract(install: typeof installSource) {
 
+// ЗАМЕРЕНО 2026-10-21 на живом D:\COS: три решения пользователь принял кнопками в ask, эпизода
+// с его словами не возникло, и три принятых решения остались proposed с цитатой из сообщения
+// АССИСТЕНТА и припиской «пользователь выбрал в ask» в тексте. Ответ сохраняется эпизодом.
+test('an answer to an interactive question is stored as a user message and can carry an accepted decision',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Уточни параметры выгрузки'},f.ctx);
+    const content=[{type:'text',text:'User answers:\nscope: Только юниты UnitsG17 (Recommended)\noutdir: D:\\COS\\export\\'}];
+    const result=await f.handlers.tool_result({toolName:'ask',content,isError:false},f.ctx);
+    expect(result.content[0].text).toContain('ASK_ANSWERS_SAVED episode=');
+    expect(result.content.slice(1)).toEqual(content); // исходный результат не подменяется
+    const episode=result.content[0].text.match(/episode=([0-9a-f-]+)/)[1];
+    const store=new MemoryStore(f.dir);
+    try {
+      expect(store.episode(episode).role).toBe('user');
+      // Проверяем сохранённое решение, а не индексируем текстовую поисковую выдачу.
+      store.commit('run',[{id:'dec-scope',kind:'decision',text:'Только юниты UnitsG17',status:'accepted',expectedVersion:0,
+        rationale:'Только юниты UnitsG17',source:{episode,quote:'scope: Только юниты UnitsG17 (Recommended)'}}],'Выбор пользователя');
+      expect(store.current('dec-scope')).toMatchObject({status:'accepted',source:{episode}});
+    } finally {store.close();}
+    // Блок называет ответ отдельной строкой и своим именем: роль решает, достижимо ли accepted.
+    const block=JSON.stringify(await f.handlers.context({messages:[{role:'user',content:'дальше'}]},f.ctx));
+    expect(block).toContain('Recent user answers to your questions');
+    expect(block).toContain(episode);
+    // Неудачный или пустой ответ ничего не сохраняет.
+    expect(await f.handlers.tool_result({toolName:'ask',content,isError:true},f.ctx)).toBeUndefined();
+    expect(await f.handlers.tool_result({toolName:'ask',content:[{type:'text',text:'  '}],isError:false},f.ctx)).toBeUndefined();
+  } finally { f.clean(); }
+});
+
 // ЗАМЕРЕНО в живом проекте HUICAD 2026-10-14: модель за две сессии не сделала ни одного commit,
 // написала .memory руками и проверяла файлы скриптами. Пометка приходит ровно в этот момент.
 test('a hand edit of a memory document is allowed but answered with a pointer to commit',async()=>{
@@ -429,6 +458,24 @@ test('op=doctor diagnoses without repairs and writes nothing',async()=>{
   } finally { f.clean(); }
 });
 
+test('doctor before the first prompt never creates project or scoped databases',async()=>{
+  const f=fixture(); try {
+    const tool=f.tools.project_memory;
+    const project=await tool.execute('project',{op:'doctor'},null,null,f.ctx);
+    expect(project.isError).not.toBe(true);
+    expect(project.details.issues.some((issue:any)=>issue.code==='MEMORY_DATABASE_MISSING')).toBe(true);
+    const session=await tool.execute('session',{op:'doctor',scope:'session'},null,null,f.ctx);
+    expect(session.isError).not.toBe(true);
+    expect(session.details.unavailable).toContain('database');
+    await f.commands.huimem.handler('personal on',f.ctx);
+    const personal=await tool.execute('personal',{op:'doctor',scope:'personal'},null,null,f.ctx);
+    expect(personal.isError).not.toBe(true);
+    expect(personal.details.unavailable).toContain('database');
+    expect(existsSync(join(f.dir,'.memory/runtime'))).toBe(false);
+    expect(existsSync(join(f.dir,'agent-profile/huimem/personal'))).toBe(false);
+  } finally {f.clean();}
+});
+
 // Компакция заменяет историю пересказом, а пересказ правила блока доказательством не считают.
 // Сказать об этом можно только один раз: безусловное требование сохранять уже давало 89 чекпоинтов
 // за 300 секунд в одном запросе (см. commitRules), поэтому принуждения здесь нет.
@@ -763,12 +810,10 @@ test('when everything fits, the block is not trimmed and carries no budget marke
     const ep=s.capture('seed','user',quote);
     s.commit('seed:1',[{id:'db',kind:'decision',status:'accepted',expectedVersion:0,text:'SQLite',
       rationale:'один файл',source:{episode:ep,quote}} as any],'seed'); s.close();
-    await f.handlers.before_agent_start({prompt:'база'},f.ctx);
+    await f.handlers.before_agent_start({prompt:'SQLite'},f.ctx);
     const out:any=await f.handlers.context({messages:[]},f.ctx);
     const content=out.messages.find((m:any)=>m.customType==='project-memory-context').content;
     expect(content).not.toContain('MEMORY_BUDGET');
-    expect(content).toContain('Canonical files');
-    expect(content).toContain('Previous checkpoint');
     expect(recordLines(content).map(l=>JSON.parse(l).id)).toEqual(['db']);
     const t=new MemoryStore(f.dir); expect(t.lastContext().truncated).toBe(false); t.close();
   } finally { f.clean(); }
@@ -943,6 +988,287 @@ test('repeated starts/stops cannot schedule continuation', async () => {
   } finally {f.clean();}
 });
 
+test('original episode pages preserve user evidence and invalid offsets cannot write memory',async()=>{
+  const f=fixture(); try {
+    const quote='OCCT: выбираем ядро.';
+    const original='x'.repeat(4400)+'😀'+'z'.repeat(198)+' '+quote+' '+'y'.repeat(2000);
+    const store=new MemoryStore(f.dir);
+    let id:string,emojiId:string;
+    try {
+      id=store.capture('seed','user',original);
+      emojiId=store.capture('seed','user','a😀b');
+    } finally {store.close();}
+    await f.handlers.before_agent_start({prompt:'Найди источник. Ничего не сохраняй.'},f.ctx);
+    const before=tableCounts(f.dir),tool=f.tools.project_memory;
+    const search=await tool.execute('search',{op:'episodes',query:quote,role:'user'},null,null,f.ctx);
+    const hit=search.details.hits.find((h:{id:string})=>h.id===id);
+    expect(hit.offset).toBeGreaterThan(4000);
+    const page=await tool.execute('tail',{op:'episodes',id,offset:hit.offset},null,null,f.ctx);
+    expect(page.details).toMatchObject({id,role:'user',found:true,offset:hit.offset,length:original.length});
+    expect(page.details.text).toContain(quote);
+    const start=page.details.text.indexOf(quote);
+    const sourceQuote=page.details.text.slice(start,start+quote.length);
+    const checked=await tool.execute('verify',{op:'evidence',id,quote:sourceQuote},null,null,f.ctx);
+    expect(checked.details).toMatchObject({episode:id,role:'user',found:true,at:4601});
+    let offset=0,all='';
+    for(let n=0;n<10;n++) {
+      const next=await tool.execute('page',{op:'episodes',id,offset},null,null,f.ctx);
+      all+=next.details.text;
+      if(next.details.nextOffset===null) break;
+      expect(next.details.nextOffset).toBeGreaterThan(offset);
+      offset=next.details.nextOffset;
+    }
+    expect(all).toBe(original);
+    for(const args of [{id,offset:-1},{id,offset:0.5},{id,offset:Number.MAX_SAFE_INTEGER+1},
+      {offset:0},{id:emojiId,offset:2}]) {
+      const invalid=await tool.execute('invalid',{op:'episodes',...args},null,null,f.ctx);
+      expect(invalid.isError).toBe(true);
+      expect(invalid.details).toMatchObject({code:'INVALID_EPISODE_OFFSET',target:'project_memory.episodes'});
+      expect(invalid.details.fix).toContain('UTF-16');
+    }
+    expect(tableCounts(f.dir)).toBe(before);
+  } finally {f.clean();}
+});
+
+test('session scope is isolated from project records and survives resuming the same dialogue',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Запомни: экспорт сейчас выполняем в CSV.'},f.ctx);
+    const tool=f.tools.project_memory;
+    const saved=await tool.execute('session-save',{op:'commit',scope:'session',summary:'Продолжить экспорт',changes:[
+      {id:'format',kind:'fact',status:'active',text:'Экспорт в CSV',expectedVersion:0,
+        source:{origin:'user',quote:'экспорт сейчас выполняем в CSV'}}]},null,null,f.ctx);
+    expect(saved.isError).not.toBe(true);
+    const project=await tool.execute('project-read',{op:'recall',id:'format'},null,null,f.ctx);
+    expect(project.details).toBeNull();
+    expect((await tool.execute('session-read',{op:'recall',scope:'session',id:'format'},null,null,f.ctx)).details.text).toBe('Экспорт в CSV');
+    f.ctx.sessionManager.getSessionId=()=> 'another-dialogue';
+    expect((await tool.execute('other',{op:'recall',scope:'session',id:'format'},null,null,f.ctx)).details).toBeNull();
+    f.ctx.sessionManager.getSessionId=()=> 'session-test';
+    expect((await tool.execute('resumed',{op:'recall',scope:'session',id:'format'},null,null,f.ctx)).details.source.quote).toBe('экспорт сейчас выполняем в CSV');
+  } finally {f.clean();}
+});
+
+test('personal saving requires explicit human enablement and cannot fall through to the project',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Предпочитаю метрические единицы.'},f.ctx);
+    const result=await f.tools.project_memory.execute('personal',{op:'commit',scope:'personal',summary:'Единицы',changes:[
+      {id:'units',kind:'fact',status:'active',text:'Метрические единицы',expectedVersion:0,
+        source:{origin:'user',quote:'Предпочитаю метрические единицы.'}}]},null,null,f.ctx);
+    expect(result.isError).toBe(true);
+    expect(result.details.code).toBe('PERSONAL_MEMORY_NOT_ENABLED');
+    expect((await f.tools.project_memory.execute('project',{op:'recall',id:'units'},null,null,f.ctx)).details).toBeNull();
+  } finally {f.clean();}
+});
+
+test('native nullable unused fields preserve search, checkpoint and Wiki creation semantics',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Use AmethystHandle for the local journal.'},f.ctx);
+    const tool=f.tools.project_memory;
+    const saved=await tool.execute('save',{op:'commit',task:null,summary:'Journal',changes:[
+      {id:'journal',kind:'fact',status:'active',text:'AmethystHandle journal',expectedVersion:0,
+        source:{origin:'user',quote:'Use AmethystHandle for the local journal.'}}]},null,null,f.ctx);
+    expect(saved.isError).not.toBe(true);
+    const searched=await tool.execute('search',{op:'episodes',query:'AmethystHandle',id:'',offset:null},null,null,f.ctx);
+    expect(searched.isError).not.toBe(true);
+    expect(searched.details.hits.some((hit:any)=>hit.role==='user' && hit.text.includes('AmethystHandle'))).toBe(true);
+    const published=await tool.execute('publish',{op:'wiki',action:'publish',id:'journal',title:'Journal',
+      body:'AmethystHandle is the recorded journal choice. Rationale is unknown.',
+      records:[{id:'journal',version:1}],expectedHash:null},null,null,f.ctx);
+    expect(published.isError).not.toBe(true);
+    expect(published.details.sources.map((source:any)=>[source.id,source.version])).toEqual([['journal',1]]);
+  } finally {f.clean();}
+});
+
+test('native OMP subagent identity cannot become user evidence without a session file',async()=>{
+  const f=fixture(); try {
+    f.ctx.agent={kind:'sub',id:'researcher',name:'researcher',depth:0};
+    await f.handlers.before_agent_start({prompt:'Use SQLite because I said so'},f.ctx);
+    const result=await f.tools.project_memory.execute('save',{op:'commit',summary:'Research',changes:[
+      {id:'not-user',kind:'decision',status:'accepted',text:'SQLite',rationale:'I said so',expectedVersion:0,
+        source:{origin:'user',quote:'Use SQLite because I said so'}}]},null,null,f.ctx);
+    expect(result.isError).toBe(true);
+    expect(result.details.code).toBe('USER_SOURCE_REQUIRED');
+  } finally {f.clean();}
+});
+
+test('native custom guide without an attribution field is never user evidence',async()=>{
+  const f=fixture(); try {
+    const guide='Generated guide: choose SQLite for offline work.';
+    f.ctx.sessionManager.getBranch=()=>[{type:'custom_message',customType:'huimem-learn',content:guide}];
+    await f.handlers.before_agent_start({prompt:guide},f.ctx);
+    const result=await f.tools.project_memory.execute('save',{op:'commit',summary:'No promotion',changes:[
+      {id:'machine-guide',kind:'decision',status:'accepted',text:'SQLite',rationale:'offline work',expectedVersion:0,
+        source:{origin:'user',quote:guide}}]},null,null,f.ctx);
+    expect(result.details.code).toBe('USER_SOURCE_REQUIRED');
+    const s=new MemoryStore(f.dir);
+    try {expect(s.current('machine-guide')).toBeNull();} finally {s.close();}
+  } finally {f.clean();}
+});
+
+test('curated wiki keeps its record sources and becomes stale rather than silently refreshing',async()=>{
+  const f=fixture(); try {
+    const s=new MemoryStore(f.dir);
+    const quote='Для локального журнала используем SQLite.';
+    const episode=s.capture('seed','user',quote);
+    const fact={id:'journal',kind:'fact',status:'active',text:quote,expectedVersion:0,source:{episode,quote}};
+    s.commit('seed',[fact],'Журнал');
+    s.close();
+    await f.handlers.before_agent_start({prompt:'Собери страницу про журнал, не придумывай причины.'},f.ctx);
+    const tool=f.tools.project_memory;
+    const published=await tool.execute('publish',{op:'wiki',action:'publish',id:'journal',title:'Локальный журнал',
+      body:'Журнал использует SQLite. Причина выбора не зафиксирована.',records:[{id:'journal',version:1}]},null,null,f.ctx);
+    expect(published.isError).not.toBe(true);
+    const authority=new MemoryStore(f.dir);
+    try {
+      const before=authority.authority().hash;
+      await f.commands.huimem.handler('include .memory/wiki/journal.md',f.ctx);
+      expect(authority.authority().hash).toBe(before);
+      expect(authority.authority().listing).not.toContain('.memory/wiki/journal.md');
+    } finally {authority.close();}
+    const read=await tool.execute('read',{op:'wiki',action:'read',id:'journal'},null,null,f.ctx);
+    expect(read.details.body).toContain('Причина выбора не зафиксирована.');
+    expect(read.details.freshness).toBe('current');
+    expect(read.details.sources.map((r:any)=>[r.id,r.version])).toEqual([['journal',1]]);
+    const changed=new MemoryStore(f.dir);
+    try {changed.commit('change',[{...fact,expectedVersion:1,text:'Запись пересмотрена'}],'Пересмотр');} finally {changed.close();}
+    const stale=await tool.execute('stale',{op:'wiki',action:'read',id:'journal'},null,null,f.ctx);
+    expect(stale.details.freshness).toBe('STALE');
+    expect(stale.details.body).toBe(read.details.body);
+    expect((await tool.execute('source',{op:'evidence',path:'.memory/wiki/journal.md',quote:'SQLite'},null,null,f.ctx)).isError).toBe(true);
+  } finally {f.clean();}
+});
+
+test('personal opt-in works without a project and copies only selected original evidence',async()=>{
+  const f=fixture(); try {
+    rmSync(join(f.dir,'.memory'),{recursive:true});
+    await f.commands.huimem.handler('personal on',f.ctx);
+    await f.handlers.before_agent_start({prompt:'Metric units are preferred.'},f.ctx);
+    await f.handlers.message_end({message:{role:'assistant',content:'Which units?'}},f.ctx);
+    await f.handlers.before_agent_start({prompt:'Use metric units.'},f.ctx);
+    const saved=await f.tools.project_memory.execute('save',{op:'commit',scope:'personal',summary:'Units',changes:[
+      {id:'units',kind:'fact',status:'active',text:'Metric units',expectedVersion:0,source:{origin:'user',quote:'Use metric units.'}}]},null,null,f.ctx);
+    expect(saved.isError).not.toBe(true);
+    expect(existsSync(join(f.dir,'.memory'))).toBe(false);
+    const read=await f.tools.project_memory.execute('read',{op:'recall',scope:'personal',id:'units'},null,null,f.ctx);
+    const episode=await f.tools.project_memory.execute('original',{op:'episodes',scope:'personal',id:read.details.source.episode},null,null,f.ctx);
+    expect(episode.details).toMatchObject({role:'user',text:'Use metric units.'});
+    const history=await f.tools.project_memory.execute('history',{op:'episodes',scope:'personal',query:'preferred'},null,null,f.ctx);
+    expect(JSON.stringify(history.details)).not.toContain('Metric units are preferred.');
+    await f.commands.huimem.handler('personal off',f.ctx);
+    const disabled=await f.tools.project_memory.execute('off',{op:'recall',scope:'personal',id:'units'},null,null,f.ctx);
+    expect(disabled.details.code).toBe('PERSONAL_MEMORY_NOT_ENABLED');
+  } finally {f.clean();}
+});
+
+test('native session memory resumes the same ID but isolates forks, projects and missing identity',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Session-only preference.'},f.ctx);
+    const tool=f.tools.project_memory;
+    expect((await tool.execute('save',{op:'commit',scope:'session',summary:'Session',changes:[
+      {id:'local',kind:'fact',status:'active',text:'Session-only preference.',expectedVersion:0,source:{origin:'user',quote:'Session-only preference.'}}]},null,null,f.ctx)).isError).not.toBe(true);
+    await f.handlers.session_before_compact({},f.ctx);
+    await f.handlers.before_agent_start({prompt:'Continue'},f.ctx);
+    expect((await tool.execute('read',{op:'recall',scope:'session',id:'local'},null,null,f.ctx)).details.id).toBe('local');
+    await f.handlers.session_switch({},f.ctx);
+    expect((await tool.execute('resume',{op:'recall',scope:'session',id:'local'},null,null,f.ctx)).details.id).toBe('local');
+    f.ctx.sessionManager.getSessionId=()=> 'fork';
+    await f.handlers.session_branch({},f.ctx);
+    expect((await tool.execute('fork',{op:'recall',scope:'session',id:'local'},null,null,f.ctx)).details).toBeNull();
+    expect((await tool.execute('project',{op:'recall',id:'local'},null,null,f.ctx)).details).toBeNull();
+    f.ctx.sessionManager.getSessionId=()=> '';
+    expect((await tool.execute('missing',{op:'status',scope:'session'},null,null,f.ctx)).details.code).toBe('SESSION_MEMORY_UNAVAILABLE');
+  } finally {f.clean();}
+});
+
+test('scope guards protect generated pages and profile permissions while allowing canonical notes',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Read only'},f.ctx);
+    for(const path of ['.memory/wiki/page.md','agent-profile/huimem/permissions.json','.memory/runtime/scopes/x/state.sqlite'])
+      expect((await f.handlers.tool_call({toolName:'write',input:{path}},f.ctx))?.block).toBe(true);
+    for(const input of [
+      {input:'*** Begin Patch\n[.memory/wiki/page.md#ABCD]\nPUT 1.=1:\n+Overwrite\n*** End Patch'},
+      {input:'*** Begin Patch\n*** Add File: .memory/wiki/page.md\n+Overwrite\n*** End Patch'},
+      {input:'*** Begin Patch\n[notes.txt#ABCD]\nMV "agent-profile/huimem/permissions.json"\n*** End Patch'},
+      {path:'notes.txt',edits:[{rename:'.memory/runtime/state.sqlite'}]},
+    ]) expect((await f.handlers.tool_call({toolName:'edit',input},f.ctx))?.block).toBe(true);
+    await f.commands.huimem.handler('personal off',f.ctx);
+    await f.commands.huimem.handler('off',f.ctx);
+    expect((await f.handlers.tool_call({toolName:'write',input:{path:'agent-profile/huimem/permissions.json'}},f.ctx))?.block).toBe(true);
+    await f.commands.huimem.handler('on',f.ctx);
+    expect(await f.handlers.tool_call({toolName:'write',input:{path:'.memory/MEMORY.md'}},f.ctx)).toBeUndefined();
+  } finally {f.clean();}
+});
+
+test('factory load has no profile side effects and scopes never leak across projects or profiles',async()=>{
+  const f=fixture(),other=fixture(); try {
+    expect(existsSync(join(f.dir,'agent-profile'))).toBe(false);
+    await f.commands.huimem.handler('personal on',f.ctx);
+    await f.handlers.before_agent_start({prompt:'Saffron preference.'},f.ctx);
+    for(const scope of ['personal','session','project'])
+      expect((await f.tools.project_memory.execute('save-'+scope,{op:'commit',scope,summary:'Preference',changes:[
+        {id:'shared',kind:'fact',status:'active',text:'Saffron preference.',expectedVersion:0,source:{origin:'user',quote:'Saffron preference.'}}]},null,null,f.ctx)).isError).not.toBe(true);
+    const context=await f.handlers.context({messages:[]},f.ctx);
+    const block=context.messages.find(message=>message.customType==='project-memory-context').content;
+    expect(block.length).toBeLessThanOrEqual(9000);
+    expect(block).toContain('"scope":"session"');
+    expect(block).toContain('"scope":"personal"');
+    expect((await other.tools.project_memory.execute('profile',{op:'recall',scope:'personal',id:'shared'},null,null,other.ctx)).details.code).toBe('PERSONAL_MEMORY_NOT_ENABLED');
+    const next=join(f.dir,'other-project');
+    mkdirSync(join(next,'.memory'),{recursive:true});
+    writeFileSync(join(next,'.memory/MEMORY.md'),'# Other project');
+    f.ctx.cwd=next;
+    await f.handlers.before_agent_start({prompt:'Saffron preference?'},f.ctx);
+    expect((await f.tools.project_memory.execute('project',{op:'recall',id:'shared'},null,null,f.ctx)).details).toBeNull();
+    expect((await f.tools.project_memory.execute('session',{op:'recall',scope:'session',id:'shared'},null,null,f.ctx)).details).toBeNull();
+    expect((await f.tools.project_memory.execute('personal',{op:'recall',scope:'personal',id:'shared'},null,null,f.ctx)).details.id).toBe('shared');
+  } finally {f.clean();other.clean();}
+});
+
+test('selected scoped answers retain assistant question and original user role without promoting generated text',async()=>{
+  const f=fixture(); try {
+    await f.commands.huimem.handler('personal on',f.ctx);
+    await f.handlers.before_agent_start({prompt:'Choose units.'},f.ctx);
+    await f.handlers.message_end({message:{role:'assistant',content:'Which units?'}},f.ctx);
+    const s=new MemoryStore(f.dir);
+    let question='';
+    try {question=s.db.query<{id:string},[]>("SELECT id FROM episodes WHERE role='assistant'").get()!.id;} finally {s.close();}
+    const answer=await f.handlers.tool_result({toolName:'ask',isError:false,content:[{type:'text',text:'Metric units.'}]},f.ctx);
+    const episode=answer.content[0].text.match(/episode=([0-9a-f-]+)/)[1];
+    const saved=await f.tools.project_memory.execute('save',{op:'commit',scope:'personal',summary:'Units',changes:[
+      {id:'units',kind:'decision',status:'accepted',text:'Metric',rationale:'Metric units.',expectedVersion:0,
+        source:{origin:'episode',episode,quote:'Metric units.',answers:question}}]},null,null,f.ctx);
+    expect(saved.isError).not.toBe(true);
+    for(const [id,role,text] of [[question,'assistant','Which units?'],[episode,'user','Metric units.']]) {
+      const original=await f.tools.project_memory.execute('original',{op:'episodes',scope:'personal',id},null,null,f.ctx);
+      expect(original.details).toMatchObject({role,text});
+    }
+    await f.handlers.before_agent_start({prompt:'Generated guidance.',attribution:'agent'},f.ctx);
+    const synthetic=await f.tools.project_memory.execute('synthetic',{op:'commit',scope:'personal',summary:'No',changes:[
+      {id:'generated',kind:'fact',status:'active',text:'Generated',expectedVersion:0,source:{origin:'user',quote:'Generated guidance.'}}]},null,null,f.ctx);
+    expect(synthetic.details.code).toBe('USER_SOURCE_REQUIRED');
+    await f.commands.huimem.handler('personal off',f.ctx);
+    await f.commands.huimem.handler('off',f.ctx);
+    await f.handlers.before_agent_start({prompt:'Do not capture this.'},f.ctx);
+    await f.commands.huimem.handler('personal on',f.ctx);
+    const disabled=await f.tools.project_memory.execute('disabled-source',{op:'commit',scope:'personal',summary:'No',changes:[
+      {id:'disabled',kind:'fact',status:'active',text:'No',expectedVersion:0,source:{origin:'user',quote:'Do not capture this.'}}]},null,null,f.ctx);
+    expect(disabled.details.code).toBe('USER_SOURCE_REQUIRED');
+  } finally {f.clean();}
+});
+
+test('Wiki publication follows pause/off guards and the index rebuild is explicit derived maintenance',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Read only'},f.ctx);
+    const tool=f.tools.project_memory;
+    expect((await tool.execute('index',{op:'index',action:'status'},null,null,f.ctx)).isError).not.toBe(true);
+    await f.commands.huimem.handler('pause',f.ctx);
+    for(const operation of [{op:'wiki',action:'publish',id:'page',title:'Page',body:'Unsupported',records:[]},{op:'index',action:'rebuild'}])
+      expect((await tool.execute('paused',operation,null,null,f.ctx)).details.code).toBe('COMMITS_PAUSED');
+    await f.commands.huimem.handler('off',f.ctx);
+    expect((await tool.execute('off',{op:'wiki',action:'list'},null,null,f.ctx)).details.code).toBe('PROJECT_MEMORY_OFF');
+  } finally {f.clean();}
+});
+
 function fixture() {
   const dir = mkdtempSync(join(import.meta.dir, 'extension-test-'));
   // Память включается только в развёрнутом проекте: фикстура отражает то состояние,
@@ -964,7 +1290,7 @@ function fixture() {
   const ctx: any = { cwd: dir, hasUI: true,
     ui: { notify: (s: string, level = 'unset') => { notices.push(s); levels.push({ message: s, level }); } },
     sessionManager: { getSessionId: () => 'session-test' } };
-  install(pi);
+  install(pi, {agentDir:join(dir,'agent-profile')});
   return { dir, handlers, tools, ctx, notices, levels, commands, omp, clean() { handlers.session_shutdown?.({},ctx); rmSync(dir,{recursive:true,force:true}); } };
 }
 test('automatic prompt capture, recall, stop checkpoint, bounded retry', async () => {

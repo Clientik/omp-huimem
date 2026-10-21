@@ -1,6 +1,6 @@
 {
   "name": "omp-huimem",
-  "version": "0.6.10",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "Project-local memory for oh-my-pi. File authority, versioned evidence, no background LLM.",
@@ -18,7 +18,7 @@
     ]
   },
   "scripts": {
-    "build": "bun build ./src/extensions/project-memory.ts --target=bun --format=esm --outfile ./dist/index.js",
+    "build": "bun build ./src/extensions/project-memory.ts --target=bun --format=esm --external @oh-my-pi/pi-coding-agent --outfile ./dist/index.js",
     "test": "bun run build && bun test ./tests",
     "check": "bun run test && bun run scripts/check-package.ts"
   },

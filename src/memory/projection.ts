@@ -58,13 +58,18 @@ export function projectionStatus(db:Database,root:string) {
 }
 export function syncProjection(db:Database,root:string):ProjectionStatus {
   try {
+    const initial=db.query('SELECT body,last_hash FROM projection WHERE id=1').get() as Row|null;
+    const observed=status(initial,root);
+    if(!initial || observed.state==='conflict' || observed.error
+      || (observed.state==='synced' && initial.last_hash===hash(initial.body))) return observed;
     // Serialize cooperating OMP processes through the SQLite writer lock.
     return db.transaction(()=>{
       const row=db.query('SELECT body,last_hash FROM projection WHERE id=1').get() as Row|null;
       const st=status(row,root);
       if(!row || st.state==='conflict' || st.error) return st;
       if(st.state==='synced') {
-        db.query('UPDATE projection SET last_hash=? WHERE id=1').run(hash(row.body));
+        const digest=hash(row.body);
+        if(row.last_hash!==digest) db.query('UPDATE projection SET last_hash=? WHERE id=1').run(digest);
         return st; // Also recovers a rename completed just before a process exit.
       }
       const path=filePath(root), before=readHash(path);
