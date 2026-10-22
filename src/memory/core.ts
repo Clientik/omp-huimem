@@ -15,6 +15,7 @@ export type RetrievalResult = { text:string; queryHash:string; budget:number|nul
 export type Dependency = { id: string; version?: number } | { path: string; hash?: string };
 export type Change = { id: string; kind: string; text: string; status: string; expectedVersion: number; authorityHash?: string; sourcePolicyHash?: string;
   source: Source; rationale?: string; links?: string[]; dependsOn?: Dependency[] };
+export type CurrentRecord=Change & {version:number;freshness:string;staleReasons?:string[]};
 type CachedRecord = { id:string; version:number; versionCount:number; serialized:string; data:Change;
   recordWords:string[]; quoteWords:string[]; pathWords:string[]; own:string[] };
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -386,7 +387,7 @@ export class MemoryStore {
       ...(ids.length > checked.length ? { omitted: ids.length - checked.length } : {}),
       unconfirmed: checked.filter(r => !('match' in r) || !r.match).map(r => r.id), results: checked };
   }
-  current(id: string): (Change & { version: number; freshness: string; staleReasons?: string[] }) | null {
+  current(id: string): CurrentRecord | null {
     const row = this.latestRow(id);
     if (!row) return null;
     const reasons = this.staleness(row.data, this.authority(), dep => this.latestRow(dep));

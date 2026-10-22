@@ -7,6 +7,7 @@ import {readBasis} from './provenance';
 import {projectionStatus} from './projection';
 import {readSettings,LIMITS} from './settings';
 import {PLUGIN_VERSION,compareVersions} from './version';
+import {learningNext} from './learning';
 
 const settingValue=(value:unknown) => typeof value==='number' && !Number.isFinite(value) ? String(value) : JSON.stringify(value);
 
@@ -70,6 +71,9 @@ export function diagnoseMemory(root:string):DoctorReport {
             'Data stays compatible while the schema matches; upgrade the plugin to get the behaviour that wrote it.');
         },'.memory/runtime/state.sqlite');
         records=attempt('records',()=>store!.inspectRecords());
+        attempt('learning ledger',()=>{
+          learningNext(store!); // Validate the immutable cursor anchor without reserving or writing work.
+        },'.memory/runtime/state.sqlite');
         if(records) attempt('episode evidence',()=>{
           for(const row of records!) {
             if(row.data.status==='retired' || !row.data.source.episode) continue;

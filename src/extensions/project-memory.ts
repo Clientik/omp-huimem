@@ -8,11 +8,12 @@ import { packContext } from '../memory/context-pack';
 import { provenanceNote, readBasis, isAdrRead } from '../memory/provenance';
 import { registerSettingsCommand } from '../ui/huimem-command';
 import { memoryToolError } from '../memory/errors';
-import { diagnoseMemory } from '../memory/doctor';
+import { diagnoseMemory, type DoctorIssue } from '../memory/doctor';
 import { PLUGIN_VERSION, upgradeLine } from '../memory/version';
 import { copyEpisodeEvidence, guardScopePath, isWithinScope, memoryScope, personalRoot, privateScopeDirectory, readPersonalSettings, sessionRoot, setPersonalEnabled } from '../memory/scopes';
 import type { EpisodeEvidence, MemoryScope } from '../memory/scopes';
-import { wikiList, wikiRead, wikiPublish, wikiLint, gitHistory } from '../memory/wiki';
+import { wikiList, wikiRead, wikiPublish, wikiLint, wikiPlan, wikiDiscover, gitHistory } from '../memory/wiki';
+import { learningStatus, learningNext, learningRead, learningComplete } from '../memory/learning';
 
 // Метка времени до минут: полные ISO-метки с миллисекундами стоили модели ~10 токенов каждая, порядок задаёт код.
 const minute = (iso: string) => iso.slice(0, 16).replace('T', ' ');
@@ -309,6 +310,10 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
           : entry.type==='custom_message' && textOf(entry.content)===query);
       const machine=subagent || event.attribution==='agent' || original?.type==='custom_message'
         || (original?.message && (original.message.role!=='user' || original.message.attribution==='agent'));
+      // An explicit curation guide is generated control text, not another source
+      // for the learning queue. A genuine user interruption ends that exclusion.
+      if(curation && !machine) {curation.resolve();curation=undefined;}
+      if(curation && machine) return;
       const episode = captureCurrent(ctx,machine ? 'assistant' : 'user',query);
       if (!machine) sourceEpisode = episode;
     }
@@ -317,6 +322,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
   pi.on('message_end', async (event: any, ctx) => {
     if (!active && !await personalEnabled()) return;
     if (event.message?.role !== 'assistant') return;
+    if(curation) return; // Do not feed generated curation back into its own inbox.
     const text = textOf(event.message.content);
     if (!text.trim()) return;
     try {
@@ -598,20 +604,22 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
     // допустимые kind и status, expectedVersion, dependsOn, origin, authorityHash, правила
     // устаревания. Её собственные слова: «Before saving anything, I'm reading how the plugin
     // validates commits». Контракт теперь здесь, в описании инструмента, а не только в коде.
-    description: 'Local versioned memory with original evidence. Operations: status | recall | episodes | history | evidence | doctor | commit | wiki | index. scope=project (default), personal, or session. No implicit other-project lookup; personal requires the human /huimem personal on command. Session follows the native OMP session ID. A scoped commit copies only its selected original evidence; file paths are relative to that scope evidence root.\n'
-      + 'WIKI: op=wiki action=list|read|publish|lint|history. Derived interpretations are never independent evidence. Publish requires id, title, body, records=[{id,version}] and expectedHash when replacing a page. history uses path and optional limit for on-demand local Git history, not proof of rationale.\n'
+    description: 'Local versioned memory with original evidence. Operations: status | recall | episodes | history | evidence | doctor | commit | wiki | index | learn. scope=project (default), personal, or session. No implicit other-project lookup; personal requires the human /huimem personal on command. Session follows the native OMP session ID. A scoped commit copies only its selected original evidence; file paths are relative to that scope evidence root.\n'
+      + 'LEARN: action=status|next|read|complete. next returns one oldest-first, read-only packet of original sources, up to 12000 UTF-16 units including overlap and 8 sources. contextBefore is already reviewed context, not new coverage. Search existing records before saving; update the same ID for corrections, retain useful verified procedures, never promote assistant guesses. complete requires the exact packet id, outcome=recorded with records=[{id,version}] saved/reused via commit, or outcome=nothing-durable with records=[], and a summary of the deliberate review. Only successful completion advances coverage. Interrupted/failed work stays pending; identical completion is a no-op. read id=<packet> inspects its receipt. Coverage is not evidence, completeness, semantic truth or acceptance. This uses the main agent, not a background model.\n'
+      + 'WIKI: op=wiki action=list|read|publish|lint|history|plan|discover. Derived interpretations are never independent evidence. plan returns uncovered supported records, stale pages, proposals needing review and possible exact-text duplicates; no automatic merge/deletion. discover id=<page> navigates shared source records, outbound links/dependencies and backlinks from the existing record graph, not generated prose. Publish requires id, title, body, records=[{id,version}] and expectedHash when replacing a page. history uses path and optional limit for on-demand local Git history, not proof of rationale.\n'
       + 'INDEX: op=index action=status inspects the rebuildable local search sidecar; action=rebuild rebuilds only derived data from original stored sources, never edits evidence or repairs foreign files.\n'
       + 'COMMIT CONTRACT, one entry per record in changes[]: id — up to 100 of [a-zA-Z0-9_.:/-]; kind and its statuses — fact|procedure|navigation: active|proposed|retired, decision: accepted|proposed|retired, task: todo|doing|done|blocked|retired, question: open|answered|dropped|retired; text up to 3000 characters; expectedVersion — the version this entry replaces, 0 for a new record, so recall the id first; rationale is required for a decision and, when it is accepted, must be an exact excerpt of source.quote.\n'
       + 'SOURCE, exactly one: a current user decision — source={origin:"user",quote:"exact words from the current user message"}, the episode ID is filled by code; a file observation — source={origin:"file",path:"project-relative path",quote:"exact text from the file"}, the hash is computed by code. An accepted decision cannot rest on a file, and a quote from your own message can only support a proposed record. When the user answers a question of yours — "1. Yes", "2. It is the repository" — add source.answers=<ID of your message with the question>, listed in the block as a recent assistant source: the numbered answer alone proves nothing without it.\n'
       + 'A question you are waiting on the user for is a record too: kind=question, status=open, text = the question as you ask it. Its source is the request that left the gap — source={origin:"user",quote:"the exact words you cannot act on"} — because a question you are asking right now is not a saved message yet; a question you asked in an earlier turn can use source={origin:"episode",episode:"<that message ID>",quote:"the question"}. An open question stays in the memory block until it is saved again as answered, with links to the records the answer produced, or dropped. Keep what blocks work there rather than only in prose.\n'
-      + 'dependsOn=[{id}|{path}] names what a claim relies on; code pins their versions and hashes, and then only a change of those marks the record STALE with a reason. Without dependsOn any change of a canonical document does. STALE clears only through a new version saved with current dependencies.\n'
+      + 'dependsOn=[{id}|{path}] names what a claim relies on; code pins their versions and hashes. A dependency change marks the record STALE with a reason. Without dependsOn, file-backed records also track canonical documents; immutable conversation sources do not become stale merely because a document changed. STALE clears only through a new version saved with current dependencies.\n'
       + 'LIMITS: at most 30 changes per commit; summary is required and at most 2000 characters even when changes=[]; task=<task id> ties the summary (the next step) to that task.\n'
       + 'READS: recall query=<text>, or id=<record> (a task also returns its last checkpoint), or id=<record>,<record>,… for up to 10 records in one call — the block names the records it had to omit, so read them by ID instead of guessing; episodes query=<text> with optional role=user|assistant ranks matching windows. Read original pages with episodes id=<id> offset=<hit.offset>, or start at offset=0 and follow nextOffset until null. Offsets are non-negative safe integers in UTF-16 units, require id and must not split a surrogate pair. Pages default to 2400 units and keep the original role; copy source quotes from their verbatim text, not search ellipses. history id=<record>; status; doctor — read-only diagnosis of records, sources, task drift and settings.\n'
       + 'EVIDENCE CHECKS, instead of your own SQL over the memory database: evidence id=<record> re-checks that record against its own source; evidence id=<episode> quote=<text> says whether that message really contains the quote; evidence path=<file> quote=<text> does the same for a file; evidence with neither id nor path re-checks every record and names the unconfirmed ones. No background LLM.',
     parameters: z.object({
-      op: z.enum(['status','recall','episodes','history','evidence','doctor','commit','wiki','index']),
+      op: z.enum(['status','recall','episodes','history','evidence','doctor','commit','wiki','index','learn']),
       scope: z.enum(['project','personal','session']).optional(),
-      action: z.enum(['list','read','publish','lint','history','status','rebuild']).optional(),
+      action: z.enum(['list','read','publish','lint','history','status','rebuild','next','complete','plan','discover']).optional(),
+      outcome: z.enum(['recorded','nothing-durable']).nullable().optional(),
       title: z.string().optional(), body: z.string().optional(), expectedHash: z.string().regex(/^[0-9a-f]{64}$/).nullable().optional(),
       records: z.array(z.object({id:z.string(),version:z.number().int().min(1)})).optional(),
       limit: z.number().int().min(1).optional(),
@@ -634,12 +642,13 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
     }),
     async execute(_id, p: any, _signal, _update, ctx) {
       // Проверяем состояние здесь, а не по флагу: инструмент могут вызвать до первого запроса.
-      if ((p.op === 'commit' || (p.op==='wiki' && p.action==='publish') || (p.op==='index' && p.action==='rebuild')) && commitsPaused(ctx)) {
+      if ((p.op === 'commit' || (p.op==='wiki' && p.action==='publish') || (p.op==='index' && p.action==='rebuild') || (p.op==='learn' && p.action==='complete')) && commitsPaused(ctx)) {
         const message='COMMITS_PAUSED: no records or checkpoint saved. Only the user can resume through /huimem resume.';
         return memoryToolError(message,p.op);
       }
       try {
         const scope=memoryScope(p.scope);
+        if(p.op==='learn' && p.action==='complete' && isSubagent(ctx)) throw new Error('MAIN_AGENT_REQUIRED: only the main agent completes source review');
         // Keep the legacy project-off envelope byte-for-byte; scoped failures use their own codes.
         if (scope==='project' && !deployed(ctx)) return memoryToolError(NOT_ENABLED,p.op);
         if (scope==='project' && !switchedOn(ctx)) return memoryToolError(SWITCHED_OFF,p.op);
@@ -656,7 +665,15 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
               fix:'Save source-backed records in this scope when needed; do not create a database just for diagnosis.'}]};
             else {
               const reader=new MemoryStore(source,{storageRoot:storage,readOnly:true});
-              try {full={scope,status:reader.status(),evidence:reader.verifyRecords(),issues:[]};}
+              try {
+                const issues:DoctorIssue[]=[];
+                full={scope,status:reader.status(),evidence:reader.verifyRecords(),issues};
+                try {learningNext(reader);full.learning=learningStatus(reader);}
+                catch(error) {
+                  const diagnostic=memoryToolError(error,'doctor').details;
+                  issues.push({severity:'error',code:diagnostic.code,target:file,message:diagnostic.message,fix:diagnostic.fix});
+                }
+              }
               finally {reader.close();}
             }
           }
@@ -666,6 +683,15 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
         }
         const s = await scopedStore(ctx,scope); let data;
         switch (p.op) {
+          case 'learn':
+            switch(p.action ?? 'status') {
+              case 'status': data=learningStatus(s);break;
+              case 'next': data=learningNext(s);break;
+              case 'read': data=learningRead(s,p.id ?? '');break;
+              case 'complete': data=learningComplete(s,{id:p.id,outcome:p.outcome,summary:p.summary,records:p.records},_signal);break;
+              default: throw new Error('INVALID_LEARN_ACTION: use status, next, read or complete');
+            }
+            break;
           case 'index':
             if (p.action===undefined || p.action==='status') data=s.searchStatus();
             else if (p.action==='rebuild') data=s.rebuildIndex();
@@ -678,10 +704,12 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
               case 'publish': data=wikiPublish(s,{id:p.id,title:p.title,body:p.body,records:p.records,expectedHash:p.expectedHash ?? undefined}); break;
               case 'lint': data=wikiLint(s); break;
               case 'history': data=await gitHistory(s.root,p.path ?? '',p.limit,_signal); break;
-              default: throw new Error('INVALID_WIKI_ACTION: use list, read, publish, lint or history');
+              case 'plan': data=wikiPlan(s,p.query ?? '',p.limit);break;
+              case 'discover': data=wikiDiscover(s,p.id ?? '',p.limit);break;
+              default: throw new Error('INVALID_WIKI_ACTION: use list, read, publish, lint, history, plan or discover');
             }
             break;
-          case 'status': data = { ...s.status(), ...(scope!=='project' ? {scope} : {}), error: error || null, architecture: scope==='project' ? architectureReport(ctx) : {configured:false}, checkpoint: s.checkpoint(key()), required: scope==='project' ? readSettings(ctx.cwd).required : [] }; break;
+          case 'status': data = { ...s.status(), learning:learningStatus(s), ...(scope!=='project' ? {scope} : {}), error: error || null, architecture: scope==='project' ? architectureReport(ctx) : {configured:false}, checkpoint: s.checkpoint(key()), required: scope==='project' ? readSettings(ctx.cwd).required : [] }; break;
           case 'recall': {
             // Несколько ID за вызов: expectedVersion требует знать текущую версию каждой записи,
             // и за 19 октября это дало 14 поштучных recall id= (audit/huicad-after-0.6.7).
@@ -836,7 +864,16 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
       const finished=Promise.withResolvers<void>(), pending={started:false,resolve:()=>finished.resolve()};
       curation=pending;
       try {
-        pi.sendMessage({customType:'huimem-learn',attribution:'agent',content:'Intentional memory curation requested by the user. Review project_memory recall and evidence, then author a concise Wiki/ADR interpretation only when useful. Use op=wiki action=publish with exact current record versions. Label unknown rationale and proposals; pages are derived, never evidence. Do not create new accepted facts or decisions from this generated guide. Finish normally without scheduling another turn.',display:true},{triggerTurn:true});
+        pi.sendMessage({customType:'huimem-learn',attribution:'agent',content:
+          'Intentional memory learning requested by the user. Use one coherent source → record → Wiki cycle in this ordinary main-agent turn. '
+          + 'First call project_memory op=learn action=next. Review at most ONE packet; its original roles and exact quotes are the evidence, not this generated guide. '
+          + 'Packet sources are already saved episodes: cite source={origin:"episode",episode:<full sources[].id>,quote:<exact excerpt>}. origin="user" has no current user message in this generated curation guide. '
+          + 'Search current records for each durable topic before writing. Prefer updating the same ID for user corrections over adding contradictory copies. Keep useful preferences, facts, constraints, coding/architecture decisions, open questions and checked reusable procedures; skip transient chatter. '
+          + 'Assistant observations stay proposed unless independently checked against original user or file evidence. Never invent rationale, acceptance, alternatives or successful execution. Preserve old versions; do not delete sources or merge distinct claims just for brevity. '
+          + 'Save or reuse source-backed records with op=commit and exact current versions. Then op=learn action=complete with the packet id, a deliberate summary and outcome=recorded plus the resulting records=[{id,version}], or outcome=nothing-durable with records=[] if the packet contains nothing worth retaining. Do not acknowledge an unread/failed packet. '
+          + 'Next inspect op=wiki action=plan and, when useful, discover an existing page before editing. Address one useful stale page or uncovered topic using op=wiki action=publish, exact fresh source versions and expectedHash from read for replacements. Wiki text and coverage receipts never become evidence or accept proposals. '
+          + 'If no packet is pending, existing supported knowledge may still be curated. Finish normally; report remaining work honestly and do not schedule another turn or call another model.',
+          display:true},{triggerTurn:true});
         await finished.promise;
       } finally {if(curation===pending) curation=undefined;}
     },

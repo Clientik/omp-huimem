@@ -6,7 +6,7 @@
 // прошлом ходу, и компакция могла перенести их в свою сводку. Без явной сводки изменений
 // модель продолжает работать по старым правилам, не зная, что они другие.
 // Соответствие package.json проверяет scripts/check-package.ts.
-export const PLUGIN_VERSION = '0.7.0';
+export const PLUGIN_VERSION = '0.8.0';
 
 // Одна строка на версию: только то, что меняет ПОВЕДЕНИЕ модели, уже видевшей прежний блок.
 // Не журнал изменений для человека — его место в README. Длина важна: строка попадает в блок.
@@ -19,6 +19,7 @@ export const UPGRADE_NOTES: Record<string, string> = {
   '0.6.9': 'a question you are asking right now rests on the request that left the gap — source={origin:"user",quote:"the exact words you cannot act on"} — because your own message is not saved yet; origin="episode" needs episode=<ID> and only fits a question you asked in an earlier turn',
   '0.6.10': 'editing .memory documents no longer marks records STALE when their source is a saved message: the words of that message cannot change with a document, so there is nothing to recheck and no need to save them again unchanged. A file source and an explicit dependsOn behave as before. When a quote you need is in an earlier message rather than the current one, find it with episodes query=<text> role=user and cite source={origin:"episode",episode:"<ID>",quote:"<exact words>"}',
   '0.7.0': 'recall also searches exact source quotes and paths, preserving short technical tokens; original episodes use UTF-16 pages (offset with id, omit/null for search). Automatic context omits unrelated accepted decisions; use recall by ID for details. Project remains the default scope; session is isolated by native dialogue ID, personal needs the human /huimem personal on. Wiki pages are derived interpretations with pinned source versions, never evidence or acceptance. History search has a rebuildable local index; unchanged receipts/checkpoints need no repeat save',
+  '0.8.0': 'learn next offers bounded original-source packets; complete acknowledges deliberate review with checked record versions or nothing-durable, without promoting evidence. Interrupted work stays pending and identical completion is a no-op. Wiki plan exposes supported uncovered records, stale pages, proposals and possible duplicates; discover navigates existing record links and backlinks. /huimem learn reviews one packet and a useful Wiki topic in one ordinary main-agent turn; no background model, deletion or competing compaction',
 };
 
 // Сравнение версий по числовым частям: 0.6.10 новее 0.6.9, строковое сравнение этого не даёт.

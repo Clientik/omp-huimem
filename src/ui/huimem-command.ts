@@ -5,6 +5,7 @@ import { apply, audit } from '../memory/adr-audit';
 import { initProject } from '../memory/starter';
 import { diagnoseMemory, formatDoctor } from '../memory/doctor';
 import { PLUGIN_VERSION, upgradeNotes } from '../memory/version';
+import { learningStatus } from '../memory/learning';
 
 // Два способа управления поверх одного ядра run(): экран настроек в интерактивном терминале
 // и подкоманды для RPC, -p и скриптов. Сигнатуры диалогов сверены 2026-09-14 с исходником
@@ -43,7 +44,8 @@ const HELP = [
   '  /huimem pause        block commits in this project for this OMP process',
   '  /huimem resume       allow commits again',
   '  /huimem personal on|off   explicitly allow or disable profile-owned personal memory (not project settings)',
-  '  /huimem learn        ask the main agent to curate source-backed Wiki pages in one ordinary turn',
+  '  /huimem learn        review one source packet and curate useful Wiki knowledge in one ordinary main-agent turn',
+  '  /huimem learn status inspect the review backlog without a model turn',
   '  /huimem              memory state for this project',
   '  /huimem recall <N>   recall budget in characters (' + LIMITS.recallBudget.min + '–' + LIMITS.recallBudget.max + ')',
   '  /huimem limit <N>    injected context limit in characters (' + LIMITS.injectionLimit.min + '–' + LIMITS.injectionLimit.max + ')',
@@ -89,7 +91,15 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       } catch (error) {return say(String(error));}
     }
     if (verb==='learn') {
-      try {await deps.learn(ctx);} catch(error) {return say(String(error));}
+      try {
+        if(value==='status') {
+          if(!deps.deployed(ctx)) return say(deps.notEnabled);
+          if(!deps.switchedOn(ctx)) return say('PROJECT_MEMORY_OFF: use /huimem on before inspecting learning.');
+          return say(JSON.stringify(learningStatus(deps.store(ctx)),null,2));
+        }
+        if(value) return say('Usage: /huimem learn [status]');
+        await deps.learn(ctx);
+      } catch(error) {return say(String(error));}
       return;
     }
     if ((verb==='pause' || verb==='resume') && !deps.deployed(ctx) && await deps.personalEnabled()) {
@@ -335,7 +345,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
 
     // Без аргументов — состояние.
     const on = deps.switchedOn(ctx);
-    let counts = 'unavailable', projection='unavailable';
+    let counts = 'unavailable', projection='unavailable', learning='not read while memory is off';
     // Версия сборки видна всегда, даже при выключенной памяти: именно её сверяют после
     // `omp plugin upgrade`, когда непонятно, подхватил ли открытый чат новый плагин.
     let build = PLUGIN_VERSION;
@@ -352,6 +362,10 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       if (writer && writer !== PLUGIN_VERSION) build += ` · database last written by ${writer}`;
       if (pending) build += ` · upgrade summary from ${pending.from} is delivered to the model on the next message`;
       else if (writer === PLUGIN_VERSION) build += ' · database stamped by this version';
+      try {
+        const progress=learningStatus(s);
+        learning=`${progress.pendingSources} pending source(s) · ${progress.reviewedBatches} reviewed packet(s); no background model`;
+      } catch(error) {learning='ERROR: '+String(error);}
     } catch (e) { counts = 'ERROR: ' + String(e); }
     const a = on ? deps.architecture(ctx) : { configured: false, ok: false, failures: [] };
     const err = deps.health();
@@ -367,6 +381,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
         '',
         `Storage:            ${counts}`,
         `Readable registry:  ${projection}`,
+        `Learning:           ${learning}`,
         `Architecture:       ${a.configured ? (a.ok ? 'configured, no violation' : 'VIOLATIONS: ' + a.failures.join('; ')) : 'not configured'}`,
         `Recall budget:      ${cfg.recallBudget} characters`,
         `Injection limit:    ${cfg.injectionLimit} characters`,

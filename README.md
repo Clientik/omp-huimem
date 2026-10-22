@@ -9,7 +9,7 @@
 
 Keep project knowledge across sessions without running another model. Current facts live in readable files; evidence and revision history live in local SQLite. One OMP extension, no memory server, embeddings service, or background LLM.
 
-> **Preview v0.7.0 · Tested with OMP 18.11.0.** Upstream Pi is not supported. Memory makes context easier to recover and inspect; it does not eliminate hallucinations.
+> **Preview v0.8.0 · Tested with OMP 18.11.0.** Upstream Pi is not supported. Memory makes context easier to recover and inspect; it does not eliminate hallucinations.
 
 ## Why use it?
 
@@ -22,6 +22,30 @@ For developers working with an AI agent who want to stop explaining the same pro
 - **Bounded context.** The extension supplies a memory block of up to 9,000 characters: the rules, a list of the canonical files, and the records that match the question. The agent reads full sources when it needs them.
 
 ## Install
+
+**New in v0.8.0 — one source → record → Wiki learning cycle:**
+
+- **Resumable review.** `project_memory op=learn action=next` offers the oldest unreviewed
+  source packet: up to 12,000 UTF-16 units and eight sources, preserving roles, exact text
+  and offsets. Reading makes no reservation or acknowledgement. Only a validated `complete`
+  advances coverage; cancelled work stays pending and identical acknowledgements do not write.
+- **Deliberate learning, not another model.** `/huimem learn` asks the main agent to review
+  one packet, update existing IDs for corrections, retain useful procedures and curate a useful
+  Wiki topic. `/huimem learn status` inspects progress without a model turn. Required rules
+  remain human-controlled; assistant guesses and review coverage never become accepted facts.
+- **An actionable Wiki workbench.** `op=wiki action=plan` separates supported uncovered
+  records, stale pages, proposals needing review and possible same-text duplicates.
+  `action=discover id=<page>` exposes shared sources, outgoing record links/dependencies and
+  backlinks. Connections come from the existing record graph, not invented entities or prose.
+- **One truth, compatible storage.** Observations use the existing versioned records;
+  reflections use derived Wiki pages. Cursor/receipts occupy namespaced keys in the existing
+  schema-2 database, without another transcript or new tables. The actual 0.6.10 and 0.7.0
+  bundles still read and append after a round-trip upgrade; old Wiki pages keep their format.
+
+The [pinned source audit](docs/RETRIEVAL-RESEARCH.md#unified-cycle-080) explains what was
+taken from Hermes, Observational Memory and LLM Wiki, and what was deliberately excluded.
+No background observer, reflector, dropper, auto-deletion, MCP or memory-model setting.
+The ordinary context budget is unchanged; an explicit review packet is a separate tool read.
 
 **New in v0.7.0 — source-backed retrieval, lower write overhead, and explicit scopes:**
 
@@ -159,7 +183,7 @@ You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model
 **Legacy ADRs:** `/huimem adr-audit` lists ADRs without a basis section that can be moved into the contract, and writes nothing. `/huimem adr-audit apply` inserts the user's quote from the registry as the basis and keeps every original line under an "Interpretation [?]" heading, after a byte-exact backup to `.memory/adr-backup/`. A document is migrated only when exactly one accepted decision names it by path, its rationale is an exact excerpt of the quote, and the quote is re-checked at migration time against the stored message, which must exist and belong to the user; otherwise it is reported as `UNVERIFIED` and nothing is written. v0.5.0 skipped that last check: if you ran `apply` with it on an edited, merged or restored database, compare each migrated basis with the original message. Linked conversation decisions show STALE afterwards. In a preregistered 20-vs-20 test the migrated documents had no outright misattribution, but a reliability gain over unmigrated ones was not statistically proven.
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.7.0
+omp plugin install github:Clientik/omp-huimem#v0.8.0
 ```
 
 > [!IMPORTANT]
@@ -181,7 +205,7 @@ After `init`, ask the agent to use the `initmem` skill to map the actual code. D
 **Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 and again with 18.11.0 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
 ```sh
-git clone --branch v0.7.0 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.8.0 https://github.com/Clientik/omp-huimem.git
 # Run from your working project, using the cloned repository's absolute path:
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```
@@ -202,8 +226,8 @@ stored per project in `.memory/settings.json`.
 project transcript capture or project commits — and `/huimem on` brings it back. Saved records
 and files stay untouched; the state lives in `.memory/settings.json` and survives a restart.
 Personal permission is independent: use `/huimem personal off` to disable that scope too.
-`/huimem pause` blocks record/checkpoint commits, Wiki publication and index rebuild in the
-running process; reads remain available. In RPC and `-p` modes `/huimem` prints the state
+`/huimem pause` blocks record/checkpoint commits, review acknowledgements, Wiki publication
+and index rebuild in the running process; reads remain available. In RPC and `-p` modes `/huimem` prints the state
 instead, and every action stays available as a subcommand (`/huimem help`). `/huimem omp` lists
 the OMP settings that affect memory; the plugin reports them and never rewrites that config.
 `huimem` cannot be selected under `memory.backend`: that list is a closed enum in OMP and
@@ -277,7 +301,7 @@ the main checkout's records.
 | `.memory/PROJECT.md` | Code map and working commands |
 | `.memory/architecture.json` | Explicit, testable architecture restrictions |
 | `.memory/DESIGN.md` | UI design agreements |
-| `.memory/runtime/state.sqlite` | Episodes, evidence versions, and checkpoint summaries |
+| `.memory/runtime/state.sqlite` | Episodes, evidence versions, checkpoints and review cursor/receipts |
 | `.memory/runtime/search.sqlite` | Rebuildable history index; not evidence |
 | `.memory/wiki/` | Derived source-linked Wiki/ADR pages; not canonical evidence |
 | `.memory/runtime/scopes/<session hash>/` | Isolated records for one native dialogue |

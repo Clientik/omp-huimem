@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
-import { MemoryStore, scrub } from './core';
+import { MemoryStore, scrub, type CurrentRecord } from './core';
 
 const DIRECTORY='.memory/wiki';
 const MAX_BODY=12000, MAX_FILE=65536, MAX_SOURCES=20, MAX_SCAN=200, MAX_LIST=50;
@@ -22,6 +22,8 @@ export type WikiSource=WikiRecordRef & {kind:string;status:string;currentVersion
 export type WikiPage={id:string;title:string;body:string;hash:string;freshness:'current'|'STALE';sources:WikiSource[];derived:true;read:string;path:string};
 export type WikiReadResult=Partial<WikiPage> & {id:string;found:boolean;freshness:'current'|'STALE';error?:string};
 export type WikiIssue={id?:string;code:string;detail:string};
+type SourceCheck={record:CurrentRecord|null;evidence?:unknown};
+type SourceChecks=Map<string,SourceCheck>;
 
 function validateID(id:string) {
   if(typeof id!=='string' || !/^[a-z0-9][a-z0-9_-]{0,79}$/.test(id)) fail('WIKI_ID','use a lowercase ASCII slug of at most 80 characters');
@@ -95,8 +97,10 @@ function decode(bytes:string,id:string):{meta:Metadata;body:string} {
     return {meta,body};
   } catch(error) { return fail('WIKI_CORRUPT',`not an intact huimem-owned page; preserve human edits separately (${String(error).slice(0,180)})`); }
 }
-function sourceState(store:MemoryStore,ref:WikiRecordRef,stored?:StoredSource):{view:WikiSource;snapshot?:StoredSource} {
-  const record=store.current(ref.id), evidence=store.verifyRecord(ref.id);
+function sourceState(store:MemoryStore,ref:WikiRecordRef,stored?:StoredSource,checks?:SourceChecks):{view:WikiSource;snapshot?:StoredSource} {
+  const check=checks?.get(ref.id), record=check ? check.record : store.current(ref.id);
+  const evidence=check?.evidence ?? store.verifyRecord(ref.id);
+  if(check) check.evidence=evidence;
   const reasons:string[]=[];
   if(!record) reasons.push('record missing');
   else {
@@ -104,7 +108,7 @@ function sourceState(store:MemoryStore,ref:WikiRecordRef,stored?:StoredSource):{
     if(record.freshness==='STALE') reasons.push(...(record.staleReasons ?? ['record is STALE']));
     if(SOURCE_STATUSES[record.kind]?.includes(record.status)!==true) reasons.push(`unsupported source kind/status ${record.kind}/${record.status}`);
   }
-  const confirmed='match' in evidence && evidence.match===true;
+  const confirmed=!!evidence && typeof evidence==='object' && 'match' in evidence && evidence.match===true;
   if(!confirmed) reasons.push('source evidence is unconfirmed');
   const snapshot=record ? {id:ref.id,version:record.version,kind:record.kind,status:record.status,recordHash:digest(JSON.stringify(record)),evidenceHash:digest(JSON.stringify(evidence))} : undefined;
   if(stored && snapshot && (stored.recordHash!==snapshot.recordHash || stored.evidenceHash!==snapshot.evidenceHash)) reasons.push('source fingerprint changed');
@@ -118,21 +122,22 @@ function verifiedSources(store:MemoryStore,refs:WikiRecordRef[]) {
     return state.snapshot;
   });
 }
-function view(store:MemoryStore,meta:Metadata,body:string):WikiPage {
-  const sources=meta.records.map(ref=>sourceState(store,ref,ref).view);
+function view(store:MemoryStore,meta:Metadata,body:string,checks?:SourceChecks):WikiPage {
+  const sources=meta.records.map(ref=>sourceState(store,ref,ref,checks).view);
   return {id:meta.id,title:meta.title,body,hash:meta.hash,freshness:sources.every(s=>s.valid)?'current':'STALE',sources,derived:true,read:address(meta.id),path:`${DIRECTORY}/${meta.id}.md`};
 }
 
-export function wikiRead(store:MemoryStore,id:string):WikiReadResult {
+function readPage(store:MemoryStore,id:string,checks?:SourceChecks):WikiReadResult {
   validateID(id);
   try {
     const directory=guardedDirectory(store);
     const bytes=directory ? readBytes(resolve(directory,`${id}.md`)) : null;
     if(bytes===null) return {id,found:false,freshness:'STALE'};
     const {meta,body}=decode(bytes,id);
-    return {...view(store,meta,body),found:true};
+    return {...view(store,meta,body,checks),found:true};
   } catch(error) { return {id,found:true,freshness:'STALE',error:String(error).slice(0,400),derived:true,read:address(id),path:`${DIRECTORY}/${id}.md`}; }
 }
+export function wikiRead(store:MemoryStore,id:string):WikiReadResult {return readPage(store,id);}
 function directoryIDs(store:MemoryStore):{ids:string[];truncated:boolean;issues:WikiIssue[]} {
   const directory=guardedDirectory(store);
   if(!directory) return {ids:[],truncated:false,issues:[]};
@@ -181,6 +186,102 @@ export function wikiLint(store:MemoryStore) {
     else if(!page.found || page.freshness==='STALE') issues.push({id,code:'WIKI_STALE',detail:page.sources?.filter(s=>!s.valid).map(s=>`${s.id} v${s.version}: ${s.reasons.join('; ')}`).join('\n').slice(0,1000) ?? 'page disappeared'});
   }
   return {checked:scanned.ids.length,issues:issues.slice(0,100),truncated:scanned.truncated || issues.length>100};
+}
+
+// Workbench projections reuse record versions and edges. No parallel entity
+// store, model-authored authority, Markdown link parser or hidden worker.
+function workbench(store:MemoryStore) {
+  const records=store.inspectRecords(), checks:SourceChecks=new Map(records.map(row=>[row.id,{record:{
+    ...row.data,version:row.version,freshness:row.staleReasons.length ? 'STALE' : 'source unchanged or conversation',
+    ...(row.staleReasons.length ? {staleReasons:row.staleReasons} : {}),
+  }}]));
+  const pages:WikiPage[]=[], issues:WikiIssue[]=[];
+  let truncated=false;
+  try {
+    const scanned=directoryIDs(store);
+    truncated=scanned.truncated;issues.push(...scanned.issues);
+    for(const id of scanned.ids) {
+      const page=readPage(store,id,checks);
+      if(page.error) issues.push({id,code:'WIKI_CORRUPT',detail:page.error});
+      else if(page.found && page.sources && page.title && page.body && page.hash) {
+        // readPage builds the complete in-process WikiPage view on this success branch.
+        const complete=page as WikiPage;
+        pages.push(complete);
+      }
+    }
+  } catch(error) {issues.push({code:'WIKI_PATH',detail:String(error).slice(0,400)});truncated=true;}
+  return {records,checks,pages,issues,truncated};
+}
+function workLimit(limit:number) {
+  if(!Number.isSafeInteger(limit) || limit<1) fail('WIKI_LIMIT','limit must be a positive safe integer');
+  return Math.min(limit,MAX_LIST);
+}
+export function wikiPlan(store:MemoryStore,query='',limit=20) {
+  const cap=workLimit(limit);
+  if(typeof query!=='string' || query.length>1000) fail('WIKI_QUERY','query must be at most 1000 characters');
+  const terms=query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  const matches=(text:string)=>terms.every(term=>text.toLocaleLowerCase().includes(term));
+  const snapshot=workbench(store), covered=new Set<string>();
+  for(const page of snapshot.pages) if(page.freshness==='current')
+    for(const source of page.sources) covered.add(`${source.id}@${source.version}`);
+  const uncovered:unknown[]=[], review:unknown[]=[], groups=new Map<string,WikiRecordRef[]>();
+  for(const row of snapshot.records) {
+    const record=row.data;
+    if(record.status==='retired' || !matches(`${row.id}\n${record.text}`)) continue;
+    const summary={id:row.id,version:row.version,kind:record.kind,status:record.status,preview:record.text.slice(0,240),read:`project_memory op=recall id=${row.id}`};
+    const state=sourceState(store,{id:row.id,version:row.version},undefined,snapshot.checks);
+    if(!state.view.valid) {review.push({...summary,reasons:state.view.reasons});continue;}
+    if(!covered.has(`${row.id}@${row.version}`)) uncovered.push(summary);
+    const key=JSON.stringify([record.kind,record.status,record.text.trim().replace(/\s+/g,' ').toLocaleLowerCase()]);
+    const group=groups.get(key) ?? [];
+    group.push({id:row.id,version:row.version});groups.set(key,group);
+  }
+  const updates=snapshot.pages.filter(page=>page.freshness==='STALE' && matches(`${page.id}\n${page.title}\n${page.sources.map(source=>source.id).join(' ')}`))
+    .map(({id,title,hash,sources,read})=>({id,title,hash,read,sources:sources.filter(source=>!source.valid)}));
+  const duplicates=[...groups.values()].filter(group=>group.length>1)
+    .map(records=>({records,reason:'Same kind, status and normalized text; compare sources before any deliberate merge. No deletion or semantic equivalence is implied.'}));
+  return {derived:true,coverageIsNotEvidence:true,sourceCoverageComplete:!snapshot.truncated && snapshot.issues.length===0,
+    scanned:{records:snapshot.records.length,pages:snapshot.pages.length},
+    counts:{uncovered:uncovered.length,updates:updates.length,review:review.length,duplicates:duplicates.length},
+    uncovered:uncovered.slice(0,cap),updates:updates.slice(0,cap),review:review.slice(0,cap),duplicates:duplicates.slice(0,cap),issues:snapshot.issues.slice(0,100),
+    truncated:snapshot.truncated || snapshot.issues.length>100 || [uncovered,updates,review,duplicates].some(items=>items.length>cap)};
+}
+type WikiEdge={kind:'shared-source'|'links'|'dependsOn';direction:'shared'|'incoming'|'outgoing';from:string;to:string};
+export function wikiDiscover(store:MemoryStore,id:string,limit=20) {
+  validateID(id);
+  const cap=workLimit(limit), snapshot=workbench(store), seed=snapshot.pages.find(page=>page.id===id);
+  if(!seed) {
+    const issue=snapshot.issues.find(issue=>issue.id===id);
+    return {id,found:!!issue,...(issue ? {error:issue.detail,freshness:'STALE'} : {}),derived:true,
+      issues:snapshot.issues.slice(0,100),truncated:snapshot.truncated || snapshot.issues.length>100};
+  }
+  const sourceIDs=new Set(seed.sources.map(source=>source.id));
+  const related:{id:string;title:string;freshness:WikiPage['freshness'];read:string;via:WikiEdge[]}[]=[];
+  const edges=(page:WikiPage)=>{
+    const result:{kind:'links'|'dependsOn';from:string;to:string}[]=[];
+    for(const source of page.sources) {
+      if(!source.valid) continue; // An old page cannot acquire edges from a newer record version.
+      const record=snapshot.checks.get(source.id)?.record;
+      if(!record || record.version!==source.version) continue;
+      for(const to of record.links ?? []) result.push({kind:'links',from:source.id,to});
+      for(const dependency of record.dependsOn ?? []) if('id' in dependency) result.push({kind:'dependsOn',from:source.id,to:dependency.id});
+    }
+    return result;
+  };
+  const outgoing=edges(seed);
+  for(const page of snapshot.pages) {
+    if(page.id===id) continue;
+    const targets=new Set(page.sources.map(source=>source.id)), via:WikiEdge[]=[];
+    for(const source of sourceIDs) if(targets.has(source)) via.push({kind:'shared-source',direction:'shared',from:source,to:source});
+    for(const edge of outgoing) if(targets.has(edge.to)) via.push({...edge,direction:'outgoing'});
+    for(const edge of edges(page)) if(sourceIDs.has(edge.to)) via.push({...edge,direction:'incoming'});
+    if(via.length) {
+      const unique=new Map(via.map(edge=>[JSON.stringify(edge),edge]));
+      related.push({id:page.id,title:page.title,freshness:page.freshness,read:page.read,via:[...unique.values()]});
+    }
+  }
+  return {id,found:true,freshness:seed.freshness,derived:true,connectionsAreNotEvidence:true,
+    related:related.slice(0,cap),issues:snapshot.issues.slice(0,100),truncated:snapshot.truncated || related.length>cap || snapshot.issues.length>100};
 }
 function syncDirectory(path:string) {
   let fd:number|undefined;

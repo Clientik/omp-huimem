@@ -238,3 +238,58 @@ Git вызывается по запросу для истории пути; com
 В 0.7.0 нет MCP, нового сервера, embeddings, автоматического observer/reflector/dream,
 семантического TTL, автоудаления принятых решений или скрытой смены модели.
 Результаты реального плагина, совместимость и ограничения — в [VALIDATION.md](VALIDATION.md).
+
+<a id="unified-cycle-080"></a>
+## Единый цикл Hermes / Observational / LLM Wiki для 0.8.0
+
+Повторный аудит **Git-исходников 22.10.2026**, не пересказ прежних README. Клоны размещены
+в отдельном временном research-каталоге, вне плагина; чужие install/build-скрипты не запускались.
+Проверены лицензии и закреплены commit IDs, поэтому выводы не привязаны к меняющемуся main.
+
+| Upstream и проверенный commit | Реализованный механизм | Перенос в huimem |
+|---|---|---|
+| [pi-hermes-memory](https://github.com/chandra447/pi-hermes-memory/tree/d09bc48564129b06dc4541f6aad50396524b7b60), MIT, Copyright 2025 Chandra Teja | `store/standing-instructions.ts` структурно отделяет user-authored pins от review/consolidation; `handlers/background-review.ts`, `correction-detector.ts`, `auto-consolidate.ts` запускают отдельные модельные стадии | Защищённые обязательные правила остаются существующим human-only `require`. Основной агент намеренно разбирает исправления и процедуры, обновляя прежний ID; второй policy-store и side-channel inference не добавлены. |
+| [pi-observational-memory](https://github.com/elpapi42/pi-observational-memory/tree/022da5e5554d04dfdc876ed7dac4a42c6b83dfd4), MIT, Copyright 2026 pi-observational-memory contributors | `session-ledger/progress.ts` различает source progress и provenance; `fold.ts` восстанавливает observations/reflections и tombstones; `projection.ts` ограничивает fold по исходным границам | Старейший bounded packet с оригинальными ролями/адресами, явный completion и отдельный prefix cursor. Наблюдение — прежняя versioned запись, обобщение — Wiki. Нет фоновых observer/reflector/dropper и замены штатного компактора. |
+| [pi-llm-wiki](https://github.com/zosmaai/pi-llm-wiki/tree/46bd677041ba01f0298e5afc22e6a8b592f5f835), MIT, Copyright 2026 zosmaai | `source-packet.ts` отделяет raw capture от editable Wiki и metadata; `ingest-worker.ts` разделяет synthesis и deterministic persistence; `knowledge-links.ts` строит навигацию/backlinks | Оригиналы остаются в существующих episodes, а не копируются в новый vault. `wiki plan` связывает источники с актуальными страницами и пересмотром; `wiki discover` использует существующие record edges. Нет второго реестра сущностей, MCP, vectors или автоматического ingest-worker. |
+
+### Общий контракт вместо трёх стеков
+
+1. **Оригинал:** единственный эпизод с исходной ролью/ID; исходное проверенное file evidence
+   по-прежнему доступно отдельно. Источник не повышает полномочия при переносе в пакет.
+2. **Разбор:** `learn next` не пишет; token закрепляет scope, prefix и верхнюю границу.
+   Пакет ограничен восемью источниками и 12000 UTF-16 единицами вместе с overlap.
+   `complete` продвигает cursor только после проверки результатов либо явного осмысленного
+   `nothing-durable`. Новый хвост не меняет уже выданный пакет, прерывание не считается успехом.
+3. **Знание:** прежние kind/status/expectedVersion/source. Исправление — следующая версия,
+   а не соседняя копия. Review receipt — факт обработки, не факт предметной области;
+   он не принимает решение и не доказывает семантическую полноту.
+4. **Синтез:** прежний Wiki v1 с точными версиями источников. План показывает непокрытые
+   поддержанные записи, STALE-страницы, предложения и кандидатов одинакового текста.
+   Backlinks выводятся из реестра; generated prose не становится новым графовым основанием.
+5. **Доставка:** прежний automatic retrieval и общий бюджет 9000 UTF-16 единиц. В сравнении
+   реальных bundle 0.7.0/0.8.0 на всех 14 SCENARIOS совпали ID, порядок и размеры блока,
+   включая прежние явно обозначенные пропуски слишком длинного required evidence.
+
+Новый persistent state — namespaced keys прежней `meta`, не новые primary tables,
+не второй transcript и не новая schema. Actual bundles 0.6.10 и 0.7.0 прочитали новые
+версии и дописали данные; после возврата в 0.8.0 сохранены coverage и pending append.
+Точный CLI/модельный прогон и расходы находятся в [VALIDATION.md](VALIDATION.md#release-080).
+
+### Что сознательно не переносится
+
+- Три независимых store/scheduler/компактора, automatic dream/reflect/drop и retry-loop
+  «ещё раз сохрани перед завершением». User-required правила уже имеют защищённый путь.
+- Автоматическое принятие выводов, семантическое TTL и удаление оригиналов/старых версий.
+  Даже реальная цитата подтверждает происхождение, не любую добавленную интерпретацию.
+- Обязательная запись на каждый tool call, usage-hit counters и повторная запись
+  неизменного acknowledgement. Main-agent review запускается явно, не каждый ход.
+- Второй Raw/Wiki/Meta vault, весь upstream MCP/runtime и parser-generated entity graph.
+  Сущности и связи, которых нет в проверенных записях, система не выдумывает.
+
+Режим выбран пользователем: **Qwen ai1 — для тестов, не фоновая модель рабочего плагина**.
+`/huimem learn` использует обычную основную модель OMP, её время/токены зависят от настроек
+харнеса. Этот перенос не доказывает лидерство над двадцатью плагинами, идеальную выборку
+фактов или покрытие всех coding/бытовых задач. Все три проекта — design references;
+их движки/промпты целиком не vendored. Лицензии и атрибуция — в
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md#memory-design-references).
+
