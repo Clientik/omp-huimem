@@ -9,7 +9,7 @@
 
 Keep project knowledge across sessions without running another model. Current facts live in readable files; evidence and revision history live in local SQLite. One OMP extension, no memory server, embeddings service, or background LLM.
 
-> **Preview v0.8.0 · Tested with OMP 18.11.0.** Upstream Pi is not supported. Memory makes context easier to recover and inspect; it does not eliminate hallucinations.
+> **Preview v0.8.1 · Tested with OMP 18.11.0.** Upstream Pi is not supported. Memory makes context easier to recover and inspect; it does not eliminate hallucinations.
 
 ## Why use it?
 
@@ -23,16 +23,19 @@ For developers working with an AI agent who want to stop explaining the same pro
 
 ## Install
 
-**New in v0.8.0 — one source → record → Wiki learning cycle:**
+**One source → record → Wiki learning cycle, introduced in v0.8.0 and refined in v0.8.1:**
 
 - **Resumable review.** `project_memory op=learn action=next` offers the oldest unreviewed
   source packet: up to 12,000 UTF-16 units and eight sources, preserving roles, exact text
   and offsets. Reading makes no reservation or acknowledgement. Only a validated `complete`
   advances coverage; cancelled work stays pending and identical acknowledgements do not write.
-- **Deliberate learning, not another model.** `/huimem learn` asks the main agent to review
-  one packet, update existing IDs for corrections, retain useful procedures and curate a useful
-  Wiki topic. `/huimem learn status` inspects progress without a model turn. Required rules
-  remain human-controlled; assistant guesses and review coverage never become accepted facts.
+- **Deliberate learning, not another model.** `/huimem learn` reads one bounded packet
+  before starting the main agent, supplying exact source IDs, roles and text instead of asking
+  the model to discover them. The runtime keeps the opaque acknowledgement token; the model
+  completes the supplied packet without retyping it. Invalid review state stops before a model
+  turn. The agent updates existing IDs, retains useful procedures and curates a Wiki topic before
+  acknowledging once. `/huimem learn status` uses no model turn. Required rules remain
+  human-controlled; assistant guesses and review coverage never become accepted facts.
 - **An actionable Wiki workbench.** `op=wiki action=plan` separates supported uncovered
   records, stale pages, proposals needing review and possible same-text duplicates.
   `action=discover id=<page>` exposes shared sources, outgoing record links/dependencies and
@@ -45,7 +48,7 @@ For developers working with an AI agent who want to stop explaining the same pro
 The [pinned source audit](docs/RETRIEVAL-RESEARCH.md#unified-cycle-080) explains what was
 taken from Hermes, Observational Memory and LLM Wiki, and what was deliberately excluded.
 No background observer, reflector, dropper, auto-deletion, MCP or memory-model setting.
-The ordinary context budget is unchanged; an explicit review packet is a separate tool read.
+The ordinary context budget is unchanged; the explicit source packet is supplied only for curation.
 
 **New in v0.7.0 — source-backed retrieval, lower write overhead, and explicit scopes:**
 
@@ -183,7 +186,7 @@ You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model
 **Legacy ADRs:** `/huimem adr-audit` lists ADRs without a basis section that can be moved into the contract, and writes nothing. `/huimem adr-audit apply` inserts the user's quote from the registry as the basis and keeps every original line under an "Interpretation [?]" heading, after a byte-exact backup to `.memory/adr-backup/`. A document is migrated only when exactly one accepted decision names it by path, its rationale is an exact excerpt of the quote, and the quote is re-checked at migration time against the stored message, which must exist and belong to the user; otherwise it is reported as `UNVERIFIED` and nothing is written. v0.5.0 skipped that last check: if you ran `apply` with it on an edited, merged or restored database, compare each migrated basis with the original message. Linked conversation decisions show STALE afterwards. In a preregistered 20-vs-20 test the migrated documents had no outright misattribution, but a reliability gain over unmigrated ones was not statistically proven.
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.8.0
+omp plugin install github:Clientik/omp-huimem#v0.8.1
 ```
 
 > [!IMPORTANT]
@@ -205,7 +208,7 @@ After `init`, ask the agent to use the `initmem` skill to map the actual code. D
 **Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 and again with 18.11.0 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
 ```sh
-git clone --branch v0.8.0 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.8.1 https://github.com/Clientik/omp-huimem.git
 # Run from your working project, using the cloned repository's absolute path:
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```

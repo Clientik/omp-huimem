@@ -9,7 +9,7 @@
 
 在不同会话之间保留项目知识，无需运行第二个模型。当前事实保存在可读文件中，证据和版本历史保存在本地 SQLite 中。只需一个 OMP 扩展，无需独立的记忆服务器、向量嵌入服务或后台 LLM。
 
-> **预览版 v0.8.0，已在 OMP 18.11.0 上测试。** 暂不支持原版 Pi。这个插件帮助恢复和检查上下文，但不能消除模型幻觉。
+> **预览版 v0.8.1，已在 OMP 18.11.0 上测试。** 暂不支持原版 Pi。这个插件帮助恢复和检查上下文，但不能消除模型幻觉。
 
 ## 适合谁？
 
@@ -23,14 +23,16 @@
 
 ## 安装
 
-**v0.8.0 新增：统一的「来源 → 版本化记录 → Wiki」学习循环。**
+**统一的「来源 → 版本化记录 → Wiki」学习循环：v0.8.0 引入，v0.8.1 改进。**
 
 - `project_memory op=learn action=next` 只读地提供最早的未审阅来源包：
   最多 12000 个 UTF-16 单位、八个来源，保留角色、原文和地址。
   只有经过验证的 `complete` 才推进覆盖；中断后仍待处理，相同确认不会重复写入。
-- `/huimem learn` 请主代理审阅一个包、用原 ID 修正知识、保留有用流程并整理 Wiki。
-  `/huimem learn status` 无需模型回合即可查看进度。用户控制必需规则；
-  助手推测或「已审阅」不等于已确认的事实。
+- `/huimem learn` 在启动主代理前读取有界来源包，直接提供精确 ID、角色和原文，
+  不再要求模型先查找这些地址或重抄不透明的确认 token；token 由运行时保管。
+  审阅状态损坏时，在模型回合开始前停止。主代理用原 ID 修正知识、保留流程，
+  先整理有用的 Wiki，再确认一次。`/huimem learn status` 无需模型回合。
+  用户控制必需规则，助手推测或「已审阅」不等于已确认事实。
 - `op=wiki action=plan` 列出未被当前页面覆盖的受支持记录、过期页面、待核查提议和
   同文重复候选。`action=discover id=<page>` 从现有记录图中导航共享来源、出站关系和反向链接，
   不从生成的正文中臆造实体。
@@ -40,7 +42,7 @@
 
 [固定 commit 的源码审计](../RETRIEVAL-RESEARCH.md#unified-cycle-080) 说明 Hermes、
 Observational Memory 与 LLM Wiki 的取舍。不添加后台 observer/reflector/dropper、
-自动删除、MCP 或独立记忆模型配置；普通上下文预算不变，显式来源包是单独的工具读取。
+自动删除、MCP 或独立记忆模型配置；普通上下文预算不变，来源包仅在主动整理回合中提供。
 
 **v0.7.0 新增：基于来源的检索、更少的重复写入、明确的记忆作用域。**
 
@@ -168,7 +170,7 @@ Observational Memory 与 LLM Wiki 的取舍。不添加后台 observer/reflector
 **旧 ADR：** `/huimem adr-audit` 列出缺少「依据」部分、可迁移到约定结构的 ADR，不写入任何内容。`/huimem adr-audit apply` 将记录库中用户的原话写入依据部分，并把全部原始行保留在「解释 [?]」标题下，写入前先逐字节备份到 `.memory/adr-backup/`。只有当恰好一条已接受决策按路径明确指向该文档、其理由逐字包含在引文中，并且迁移时会再次将引文与已保存的消息核对（该消息必须存在且属于用户）时才会迁移；否则显示 `UNVERIFIED`，不写入任何内容。v0.5.0 缺少最后这项核对：如果你曾在被修改、合并或恢复过的数据库上用它执行 `apply`，请将每个迁移后的依据与原始消息逐一核对。迁移后，相关的对话决策会显示 STALE。在预先登记的 20 对 20 测试中，迁移后的文档没有出现明确的错误归因，但相对未迁移文档的可靠性提升在统计上未得到证明。
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.8.0
+omp plugin install github:Clientik/omp-huimem#v0.8.1
 ```
 
 > [!IMPORTANT]
@@ -189,7 +191,7 @@ omp plugin install github:Clientik/omp-huimem#v0.8.0
 **安装状态：** 已在 Windows + OMP 18.1.5 与 18.11.0 上完整验证 GitHub 安装流程——插件安装、注册并在实际会话中运行。直接加载同样可用：
 
 ```sh
-git clone --branch v0.8.0 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.8.1 https://github.com/Clientik/omp-huimem.git
 # 在工作项目中运行，使用克隆仓库的绝对路径：
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```

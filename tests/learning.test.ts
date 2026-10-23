@@ -175,6 +175,59 @@ describe('one source-to-knowledge learning lifecycle',()=>{
     } finally {await f.clean();}
   });
 
+  test.each(['invalid-metadata','changed-reviewed-source'] as const)('curation refuses %s before requesting a model turn',async(damage)=>{
+    const f=fixture();try {
+      const original=f.store.capture('old','user','Use SQLite for the local journal.');
+      if(damage==='invalid-metadata') f.store.db.query('INSERT INTO meta VALUES(?,?)').run('learning.v1','{broken');
+      else {
+        const packet=await f.ok({op:'learn',action:'next'});
+        await f.ok({op:'learn',action:'complete',id:packet.id,outcome:'nothing-durable',summary:'Reviewed without retaining a new claim.',records:[]});
+        f.store.db.query('UPDATE episodes SET text=? WHERE id=?').run('Source changed outside huimem.',original);
+      }
+      const metadata=f.store.db.query("SELECT value FROM meta WHERE key='learning.v1'").get();
+      const result=await Promise.race([
+        f.commands.huimem.handler('learn',f.ctx).then(()=>'command-returned'),
+        f.turn.promise.then(()=>'model-turn-requested'),
+      ]);
+      expect(result).toBe('command-returned');
+      expect(f.store.db.query("SELECT value FROM meta WHERE key='learning.v1'").get()).toEqual(metadata);
+      expect(f.store.episode(original).text).toBe(damage==='invalid-metadata' ? 'Use SQLite for the local journal.' : 'Source changed outside huimem.');
+    } finally {await f.clean();}
+  });
+
+  test('implicit completion is bound to the offered project packet, not later appends or another scope',async()=>{
+    const f=fixture();try {
+      const quote='Use SQLite for the local journal.',original=f.store.capture('old','user',quote);
+      const running=f.commands.huimem.handler('learn',f.ctx);await f.turn.promise;
+      await f.handlers.agent_start({},f.ctx);
+      const completion={op:'learn',action:'complete',outcome:'recorded',summary:'Retained the source-backed storage fact.',records:[{id:'storage',version:1}]};
+      expect((await f.call({...completion,scope:'session'})).details.code).toBe('LEARN_INPUT');
+      expect((await f.call({...completion,id:'learn1:1:1:'+'0'.repeat(64)})).details.code).toBe('LEARN_CONFLICT');
+      const later=f.store.capture('other-writer','user','A later source must stay pending.');
+      await f.ok({op:'commit',summary:'Saved storage.',changes:[{id:'storage',kind:'fact',status:'active',expectedVersion:0,text:quote,source:{origin:'episode',episode:original,quote}}]});
+      const saved=await f.ok(completion);
+      expect(saved.receipt.sources.map((source:any)=>source.id)).toEqual([original]);
+      expect((await f.ok({op:'learn',action:'status'}))).toMatchObject({reviewedBatches:1,pendingSources:1});
+      const before=revision(f.store);
+      expect((await f.ok(completion)).unchanged).toBe(true);
+      expect(revision(f.store)).toBe(before);
+      await f.handlers.agent_end({},f.ctx);await running;
+      expect((await f.call(completion)).details.code).toBe('LEARN_INPUT');
+      expect((await f.ok({op:'learn',action:'next'})).sources.map((source:any)=>source.id)).toEqual([later]);
+    } finally {await f.clean();}
+  });
+
+  test('an empty intentional packet cannot invent an implicit acknowledgement',async()=>{
+    const f=fixture();try {
+      const running=f.commands.huimem.handler('learn',f.ctx);await f.turn.promise;
+      await f.handlers.agent_start({},f.ctx);
+      const result=await f.call({op:'learn',action:'complete',outcome:'nothing-durable',summary:'No pending source.',records:[]});
+      expect(result.details.code).toBe('LEARN_INPUT');
+      expect((await f.ok({op:'learn',action:'status'}))).toMatchObject({reviewedBatches:0,pendingSources:0,lastPacket:null});
+      await f.handlers.agent_end({},f.ctx);await running;
+    } finally {await f.clean();}
+  });
+
   test.each([false,true])('explicit curation cannot feed generated text back into learning (before_agent_start=%s)',async(emitBeforeStart)=>{
     const f=fixture();try {
       const original=f.store.capture('old','user','Use SQLite for the local journal.');

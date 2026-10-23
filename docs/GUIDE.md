@@ -132,7 +132,7 @@ FTS находится в отдельном `search.sqlite`; session/personal �
 ### 1. Подключите расширение
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.8.0
+omp plugin install github:Clientik/omp-huimem#v0.8.1
 ```
 
 В OMP 18.11.0 этот способ устанавливает плагин на уровне пользователя: `--scope project` здесь не поддерживается, поэтому расширение загружается во всех проектах, где вы запускаете OMP.
@@ -148,7 +148,7 @@ omp plugin install github:Clientik/omp-huimem#v0.8.0
 Запасной способ — прямая загрузка:
 
 ```sh
-git clone --branch v0.8.0 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.8.1 https://github.com/Clientik/omp-huimem.git
 ```
 
 Перейдите в свой рабочий проект и запустите:
@@ -294,7 +294,7 @@ PROJECT.md, todo.json, architecture.json, DESIGN.md, README.md, adr/README.md), 
 | `/huimem adr-audit` | показать, какие старые ADR можно перенести в контракт; ничего не пишет |
 | `/huimem adr-audit apply` | выполнить перенос с побайтовой резервной копией |
 | `/huimem personal on\|off` | разрешить или выключить личную память в активном профиле OMP; только человеческая команда |
-| `/huimem learn` | попросить основного агента разобрать один пакет источников и полезную Wiki-тему, без фоновой модели |
+| `/huimem learn` | передать основному агенту уже прочитанный пакет источников для разбора и полезной Wiki-темы, без фоновой модели |
 | `/huimem learn status` | посмотреть очередь разбора без модельного хода |
 | `/huimem index` | состояние производного локального FTS-индекса |
 | `/huimem index rebuild` | пересобрать индекс из оригиналов; не чинит и не удаляет чужие/повреждённые файлы |
@@ -349,16 +349,24 @@ reflector, dropper, MCP, сервера и отдельной модели не�
 проверяет адреса, версии, роли и публикацию. Пользовательские правила по-прежнему
 закрепляет человек через `/huimem require`, не модельный extractor.
 
-`/huimem learn` запускает обычный main-agent turn. Руководство задаёт максимум один пакет
-и одну полезную Wiki-тему за этот ход; это инструкция агенту, не аппаратная квота на число
-его инструментальных вызовов. Сам `next` ограничен кодом. Принудительного продолжения нет.
-`/huimem learn status` и строка Learning в `/huimem` показывают очередь без LLM.
+В 0.8.1 `/huimem learn` сначала сам читает пакет через прежний bounded reader, затем
+передаёт его JSON с точными ID, ролями, текстом и смещениями в обычный main-agent turn.
+Модели не нужно угадывать адреса или делать первый `next`. Ошибка metadata/anchor останавливает
+команду до модельного хода. Это чтение не резервирует пакет и не подтверждает обработку.
+Opaque packet token остаётся в runtime: внутри этого намеренного project-turn агент вызывает
+`complete` без `id`, и расширение подставляет ровно выданный token. Привязка исчезает при
+окончании/прерывании хода, не действует для personal/session и не исправляет явно неверный ID.
+Вне `/huimem learn` точный `id` по-прежнему обязателен. Полезная Wiki-работа идёт перед
+финальным подтверждением: готовый receipt нельзя переписывать, добавляя в summary итоги Wiki.
+Руководство по-прежнему задаёт максимум один пакет и одну полезную Wiki-тему, не аппаратную
+квоту на инструментальные вызовы. `next` остаётся доступным для явной работы через API;
+принудительного продолжения нет. `/huimem learn status` и строка Learning показывают очередь без LLM.
 
 | `project_memory op=learn` action | Контракт |
 |---|---|
 | `status` | `pendingSources`, `partialSource`, `reviewedBatches`, `lastPacket`; это прогресс, не проверка истинности |
 | `next` | старейший необработанный пакет, до 12000 UTF-16 единиц вместе с overlap и до 8 источников; роль, исходный текст, hash и адреса `offset`/`endOffset`/`length` |
-| `complete` | точный packet `id`, `summary` 1–2000 символов; `outcome=recorded` и 1–30 текущих `records=[{id,version}]`, либо `outcome=nothing-durable` и `records=[]` |
+| `complete` | точный packet `id` (опускается только внутри намеренного project-turn `/huimem learn`), `summary` 1–2000 символов; `outcome=recorded` и 1–30 текущих `records=[{id,version}]`, либо `outcome=nothing-durable` и `records=[]` |
 | `read` | `id=<packet id>` — прежний review receipt без копии исходной стенограммы |
 
 `next` ничего не резервирует и не пишет. Его token закрепляет scope, исходный prefix,
@@ -409,6 +417,11 @@ review prefix и запускать `/huimem learn` может основной 
 | `history` | `path=<относительный путь>`, optional limit; локальный Git log, не доказанная причина решения |
 | `plan` | query/limit необязательны; поддержанные записи без актуальной страницы, STALE-страницы, review proposals и кандидаты одинакового текста; ничего не объединяет |
 | `discover` | `id=<page>`; общие source records, исходящие `links`/`dependsOn` и backlinks из существующего графа записей |
+
+Wiki `id` — ASCII slug по `[a-z0-9][a-z0-9_-]{0,79}`, например `project-architecture`,
+без префикса `wiki:`. Это другой контракт, чем ID записей: в `records[]` передаются
+исходные ID реестра, в том числе с двоеточиями. Невалидный slug даёт `WIKI_ID`, не тихое
+переименование страницы. В 0.8.1 этот формат указан и в tool description, и в curation-guide.
 
 Страницы `.memory/wiki/<slug>.md` — **производные интерпретации**, не второй реестр:
 не являются evidence, не попадают в canonical set и не принимают proposed-решение.

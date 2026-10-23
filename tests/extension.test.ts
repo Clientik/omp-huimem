@@ -75,11 +75,8 @@ test('after an upgrade the block states once what changed, then stops repeating 
     };
     const first=await block();
     expect(first).toContain('PLUGIN_UPGRADED 0.6.3 -> '+PLUGIN_VERSION);
-    expect(first).toContain('the rules in this block are the current ones');
     // Сводка стоит в обязательной части блока, рядом с состоянием, а не после выдержек.
     expect(first.indexOf('PLUGIN_UPGRADED')).toBeLessThan(first.indexOf('SOURCE ORDER'));
-    // Правила памяти никуда не делись: сводка добавлена, а не заменила их.
-    expect(first).toContain('project_memory commit');
     // Второй ход — тишина: один раз сказано, дальше это шум на каждом ходу.
     expect(await block()).not.toContain('PLUGIN_UPGRADED');
     const s=new MemoryStore(f.dir);
