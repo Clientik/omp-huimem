@@ -9,7 +9,7 @@
 
 Keep project knowledge across sessions without running another model. Current facts live in readable files; evidence and revision history live in local SQLite. One OMP extension, no memory server, embeddings service, or background LLM.
 
-> **Preview v0.8.1 · Tested with OMP 18.11.0.** Upstream Pi is not supported. Memory makes context easier to recover and inspect; it does not eliminate hallucinations.
+> **Preview v0.8.2 · Tested with OMP 18.11.0.** Upstream Pi is not supported. Memory makes context easier to recover and inspect; it does not eliminate hallucinations.
 
 ## Why use it?
 
@@ -22,6 +22,22 @@ For developers working with an AI agent who want to stop explaining the same pro
 - **Bounded context.** The extension supplies a memory block of up to 9,000 characters: the rules, a list of the canonical files, and the records that match the question. The agent reads full sources when it needs them.
 
 ## Install
+
+**New in v0.8.2 — reliable settlement and less repeated work:**
+
+- `/huimem learn` waits for native OMP recovery to settle before releasing its source packet.
+  User interruption still releases the command; unfinished review is not acknowledged.
+- Argument errors remain recoverable and do not mark storage unhealthy just because an ID
+  contains words such as `database`. Native SQLite and filesystem failures still affect health.
+- Wiki read/list/lint reuse source checks within one synchronous SQLite read snapshot.
+  The next operation checks files and versions again; publication keeps its independent guards.
+  There is no TTL or frozen memory truth.
+- A role/time index narrows capture deduplication to the existing time window.
+  Primary schema 2, the eleven tables, original episodes and `WAL/FULL` remain unchanged.
+- New captures redact recognized GitHub/Slack tokens, AWS access-key IDs, private-key blocks
+  and credential-URL passwords in addition to the existing patterns. New records cannot copy
+  secret-bearing quotes from old originals; choose a non-secret exact excerpt instead.
+  Older history is **not** silently rewritten. This is pattern-based filtering, not a secrets vault.
 
 **One source → record → Wiki learning cycle, introduced in v0.8.0 and refined in v0.8.1:**
 
@@ -186,7 +202,7 @@ You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model
 **Legacy ADRs:** `/huimem adr-audit` lists ADRs without a basis section that can be moved into the contract, and writes nothing. `/huimem adr-audit apply` inserts the user's quote from the registry as the basis and keeps every original line under an "Interpretation [?]" heading, after a byte-exact backup to `.memory/adr-backup/`. A document is migrated only when exactly one accepted decision names it by path, its rationale is an exact excerpt of the quote, and the quote is re-checked at migration time against the stored message, which must exist and belong to the user; otherwise it is reported as `UNVERIFIED` and nothing is written. v0.5.0 skipped that last check: if you ran `apply` with it on an edited, merged or restored database, compare each migrated basis with the original message. Linked conversation decisions show STALE afterwards. In a preregistered 20-vs-20 test the migrated documents had no outright misattribution, but a reliability gain over unmigrated ones was not statistically proven.
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.8.1
+omp plugin install github:Clientik/omp-huimem#v0.8.2
 ```
 
 > [!IMPORTANT]
@@ -208,7 +224,7 @@ After `init`, ask the agent to use the `initmem` skill to map the actual code. D
 **Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 and again with 18.11.0 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
 ```sh
-git clone --branch v0.8.1 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.8.2 https://github.com/Clientik/omp-huimem.git
 # Run from your working project, using the cloned repository's absolute path:
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```

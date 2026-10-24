@@ -54,7 +54,12 @@ export function gitBranch(root: string): string | null {
     return head.startsWith('ref: refs/heads/') ? head.slice('ref: refs/heads/'.length) : head.slice(0, 12) || null;
   } catch { return null; }
 }
-export const scrub = (s: string) => s.replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9._-]{16,})\b/g, '[REDACTED]')
+// Match credential values, not environment names, shell advice or Unicode.
+// A private-key paste without its closing fence is redacted through EOF.
+export const scrub = (s: string) => s
+  .replace(/-----BEGIN ((?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY)-----[\s\S]*?(?:-----END \1-----|$)/g, '[REDACTED]')
+  .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9._-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{40,}|xox[baprs]-[A-Za-z0-9_-]{20,}|xapp-[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16})\b/g, '[REDACTED]')
+  .replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s/@]+@/gi, '$1[REDACTED]@')
   .replace(/((?:api[_-]?key|password|secret|token)\s*[:=]\s*)["']?[^\s"',;]+/gi, '$1[REDACTED]');
 export function safePath(root: string, path: string): string {
   if (isAbsolute(path)) throw new Error('PATH: relative project path required');
@@ -132,6 +137,7 @@ export class MemoryStore {
       this.db.exec(`PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS episodes (id TEXT PRIMARY KEY, session TEXT, role TEXT, text TEXT, time TEXT);
+        CREATE INDEX IF NOT EXISTS episodes_role_time ON episodes(role,time DESC);
         CREATE TABLE IF NOT EXISTS versions (id TEXT, version INTEGER, data TEXT NOT NULL, time TEXT,
           PRIMARY KEY(id,version));
         CREATE TABLE IF NOT EXISTS checkpoints (run TEXT PRIMARY KEY, summary TEXT, time TEXT);
@@ -387,10 +393,10 @@ export class MemoryStore {
       ...(ids.length > checked.length ? { omitted: ids.length - checked.length } : {}),
       unconfirmed: checked.filter(r => !('match' in r) || !r.match).map(r => r.id), results: checked };
   }
-  current(id: string): CurrentRecord | null {
+  current(id: string, authority?:()=>{hash:string;policyHash:string}): CurrentRecord | null {
     const row = this.latestRow(id);
     if (!row) return null;
-    const reasons = this.staleness(row.data, this.authority(), dep => this.latestRow(dep));
+    const reasons = this.staleness(row.data, authority?.() ?? this.authority(), dep => this.latestRow(dep));
     return { ...row.data, version: row.version, freshness: reasons.length ? 'STALE' : 'source unchanged or conversation',
       ...(reasons.length ? { staleReasons: reasons } : {}) };
   }
@@ -684,6 +690,7 @@ export class MemoryStore {
     if (c.kind === 'decision' && (!c.rationale || c.rationale.length > 2000)) throw new Error('RATIONALE_REQUIRED');
     const s = c.source;
     if (!s || typeof s.quote !== 'string' || !s.quote.trim() || s.quote.length > 3000 || (!!s.episode === !!s.path)) throw new Error('SOURCE: exactly one source required');
+    if (scrub(s.quote) !== s.quote) throw new Error('SECRET_PATTERN');
     if (s.episode) {
       const e = this.episode(s.episode);
       // ЗАМЕРЕНО 2026-10-19 на модели ai1: отказ предлагал только текущее сообщение, а слова,

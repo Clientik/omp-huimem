@@ -85,7 +85,7 @@ export function memoryToolError(error:unknown,operation?:string,explicitCode?:st
   const message=error instanceof Error ? error.message : legacy;
   const prefix=message.match(/^([A-Z][A-Z0-9_]*)(?=:|$)/)?.[1];
   const native=typeof (error as any)?.code==='string' ? (error as any).code : undefined;
-  const code=explicitCode ?? prefix ?? native ?? 'MEMORY_ERROR';
+  const code=explicitCode ?? native ?? prefix ?? 'MEMORY_ERROR';
   const storage=/^SQLITE/.test(code) || ['EACCES','EPERM','EROFS','ENOSPC','EIO'].includes(code);
   // A malformed or foreign database file is an integrity problem, not a permissions or space problem.
   const integrity=/^SQLITE_(CORRUPT|NOTADB)/.test(code);

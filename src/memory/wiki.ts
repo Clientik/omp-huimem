@@ -23,7 +23,19 @@ export type WikiPage={id:string;title:string;body:string;hash:string;freshness:'
 export type WikiReadResult=Partial<WikiPage> & {id:string;found:boolean;freshness:'current'|'STALE';error?:string};
 export type WikiIssue={id?:string;code:string;detail:string};
 type SourceCheck={record:CurrentRecord|null;evidence?:unknown};
-type SourceChecks=Map<string,SourceCheck>;
+type SourceChecks=Pick<Map<string,SourceCheck>,'get'>;
+// A synchronous read owns this cache. Publication never reuses it across
+// validation phases; the next read checks current files and versions again.
+function readChecks(store:MemoryStore):SourceChecks {
+  const records=new Map<string,SourceCheck>();
+  let authority:ReturnType<MemoryStore['authority']>|undefined;
+  const getAuthority=()=>authority ??= store.authority();
+  return {get(id) {
+    let check=records.get(id);
+    if(!check) {check={record:store.current(id,getAuthority)};records.set(id,check);}
+    return check;
+  }};
+}
 
 function validateID(id:string) {
   if(typeof id!=='string' || !/^[a-z0-9][a-z0-9_-]{0,79}$/.test(id)) fail('WIKI_ID','use a lowercase ASCII slug of at most 80 characters');
@@ -134,10 +146,12 @@ function readPage(store:MemoryStore,id:string,checks?:SourceChecks):WikiReadResu
     const bytes=directory ? readBytes(resolve(directory,`${id}.md`)) : null;
     if(bytes===null) return {id,found:false,freshness:'STALE'};
     const {meta,body}=decode(bytes,id);
-    return {...view(store,meta,body,checks),found:true};
+    return {...view(store,meta,body,checks ?? readChecks(store)),found:true};
   } catch(error) { return {id,found:true,freshness:'STALE',error:String(error).slice(0,400),derived:true,read:address(id),path:`${DIRECTORY}/${id}.md`}; }
 }
-export function wikiRead(store:MemoryStore,id:string):WikiReadResult {return readPage(store,id);}
+export function wikiRead(store:MemoryStore,id:string):WikiReadResult {
+  return store.db.transaction(()=>readPage(store,id)).deferred();
+}
 function directoryIDs(store:MemoryStore):{ids:string[];truncated:boolean;issues:WikiIssue[]} {
   const directory=guardedDirectory(store);
   if(!directory) return {ids:[],truncated:false,issues:[]};
@@ -157,35 +171,40 @@ function directoryIDs(store:MemoryStore):{ids:string[];truncated:boolean;issues:
 export function wikiList(store:MemoryStore,query='',limit=20) {
   if(typeof query!=='string' || query.length>1000) fail('WIKI_QUERY','query must be at most 1000 characters');
   if(!Number.isSafeInteger(limit) || limit<1) fail('WIKI_LIMIT','limit must be a positive safe integer');
-  const cap=Math.min(limit,MAX_LIST), pages:Omit<WikiPage,'body'>[]=[], issues:WikiIssue[]=[];
-  let scanned;
-  try { scanned=directoryIDs(store); }
-  catch(error) { return {pages,issues:[{code:'WIKI_PATH',detail:String(error).slice(0,400)}],truncated:false}; }
-  const terms=query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  let matches=0;
-  for(const id of scanned.ids) {
-    const page=wikiRead(store,id);
-    if(page.error) { issues.push({id,code:'WIKI_CORRUPT',detail:page.error}); continue; }
-    if(!page.found || !page.title || !page.sources) continue;
-    const text=`${id}\n${page.title}\n${page.body}`.toLocaleLowerCase();
-    if(!terms.every(term=>text.includes(term))) continue;
-    matches++;
-    if(pages.length<cap) { const {body:_,found:__,...summary}=page; pages.push(summary as Omit<WikiPage,'body'>); }
-  }
-  return {pages,issues:[...scanned.issues,...issues].slice(0,100),truncated:scanned.truncated || matches>cap};
+  return store.db.transaction(()=>{
+    const cap=Math.min(limit,MAX_LIST), pages:Omit<WikiPage,'body'>[]=[], issues:WikiIssue[]=[];
+    let scanned;
+    try { scanned=directoryIDs(store); }
+    catch(error) { return {pages,issues:[{code:'WIKI_PATH',detail:String(error).slice(0,400)}],truncated:false}; }
+    const terms=query.toLocaleLowerCase().split(/\s+/).filter(Boolean), checks=readChecks(store);
+    let matches=0;
+    for(const id of scanned.ids) {
+      const page=readPage(store,id,checks);
+      if(page.error) { issues.push({id,code:'WIKI_CORRUPT',detail:page.error}); continue; }
+      if(!page.found || !page.title || !page.sources) continue;
+      const text=`${id}\n${page.title}\n${page.body}`.toLocaleLowerCase();
+      if(!terms.every(term=>text.includes(term))) continue;
+      matches++;
+      if(pages.length<cap) { const {body:_,found:__,...summary}=page; pages.push(summary as Omit<WikiPage,'body'>); }
+    }
+    return {pages,issues:[...scanned.issues,...issues].slice(0,100),truncated:scanned.truncated || matches>cap};
+  }).deferred();
 }
 export function wikiLint(store:MemoryStore) {
-  const issues:WikiIssue[]=[];
-  let scanned;
-  try { scanned=directoryIDs(store); }
-  catch(error) { return {checked:0,issues:[{code:'WIKI_PATH',detail:String(error).slice(0,400)}],truncated:false}; }
-  issues.push(...scanned.issues);
-  for(const id of scanned.ids) {
-    const page=wikiRead(store,id);
-    if(page.error) issues.push({id,code:'WIKI_CORRUPT',detail:page.error});
-    else if(!page.found || page.freshness==='STALE') issues.push({id,code:'WIKI_STALE',detail:page.sources?.filter(s=>!s.valid).map(s=>`${s.id} v${s.version}: ${s.reasons.join('; ')}`).join('\n').slice(0,1000) ?? 'page disappeared'});
-  }
-  return {checked:scanned.ids.length,issues:issues.slice(0,100),truncated:scanned.truncated || issues.length>100};
+  return store.db.transaction(()=>{
+    const issues:WikiIssue[]=[];
+    let scanned;
+    try { scanned=directoryIDs(store); }
+    catch(error) { return {checked:0,issues:[{code:'WIKI_PATH',detail:String(error).slice(0,400)}],truncated:false}; }
+    issues.push(...scanned.issues);
+    const checks=readChecks(store);
+    for(const id of scanned.ids) {
+      const page=readPage(store,id,checks);
+      if(page.error) issues.push({id,code:'WIKI_CORRUPT',detail:page.error});
+      else if(!page.found || page.freshness==='STALE') issues.push({id,code:'WIKI_STALE',detail:page.sources?.filter(s=>!s.valid).map(s=>`${s.id} v${s.version}: ${s.reasons.join('; ')}`).join('\n').slice(0,1000) ?? 'page disappeared'});
+    }
+    return {checked:scanned.ids.length,issues:issues.slice(0,100),truncated:scanned.truncated || issues.length>100};
+  }).deferred();
 }
 
 // Workbench projections reuse record versions and edges. No parallel entity

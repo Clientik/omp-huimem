@@ -41,3 +41,11 @@ test('database and schema errors have specific recovery guidance and IDs are exp
   expect(memoryToolError(new Error('UNSUPPORTED_SCHEMA')).details.fix).toContain('compatible');
   expect(memoryToolError(new Error('INVALID_ID')).details.fix).toContain('ASCII');
 });
+
+test.each([
+  ['SQLITE_CONSTRAINT_TRIGGER','INVALID_TASK_SCOPE: a trigger-supplied label'],
+  ['EIO','SOURCE: a filesystem-supplied label'],
+])('a typed native %s code outranks a validation-looking message prefix',(code,message)=>{
+  const error=Object.assign(new Error(message),{code});
+  expect(memoryToolError(error,'commit').details.code).toBe(code);
+});

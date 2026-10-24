@@ -228,6 +228,50 @@ describe('one source-to-knowledge learning lifecycle',()=>{
     } finally {await f.clean();}
   });
 
+  test('native recovery keeps the offered packet bound until the session settles',async()=>{
+    const f=fixture(),settled=Promise.withResolvers<void>();
+    let waits=0;
+    f.ctx.waitForIdle=()=>++waits===1 ? Promise.resolve() : settled.promise;
+    let running:Promise<void>|undefined;
+    try {
+      const original=f.store.capture('old','user','Keep the exact storage decision.');
+      running=f.commands.huimem.handler('learn',f.ctx);
+      await f.turn.promise;
+      await f.handlers.agent_start({},f.ctx);
+      await f.handlers.agent_end({messages:[]},f.ctx);
+      // OMP may schedule recovery after this non-terminal agent_end. Its
+      // continuation must still acknowledge the originally supplied packet.
+      const completion=await f.call({op:'learn',action:'complete',outcome:'nothing-durable',summary:'Reviewed the source during native recovery.',records:[]});
+      expect(completion.details.receipt?.sources.map((source:any)=>source.id)).toEqual([original]);
+      await f.handlers.message_end({message:{role:'assistant',content:'Generated recovery prose is not a new source.'}},f.ctx);
+      expect((await f.ok({op:'learn',action:'next'})).sources).toEqual([]);
+      settled.resolve();await running;
+      expect((await f.call({op:'learn',action:'complete',outcome:'nothing-durable',summary:'Outside the completed turn.',records:[]})).details.code).toBe('LEARN_INPUT');
+    } finally {settled.resolve();await running;await f.clean();}
+  });
+
+  test('a user interruption releases curation even while native settlement is pending',async()=>{
+    const f=fixture(),settled=Promise.withResolvers<void>(),draining=Promise.withResolvers<void>();
+    let waits=0;
+    f.ctx.waitForIdle=()=>{
+      if(++waits===1) return Promise.resolve();
+      draining.resolve();return settled.promise;
+    };
+    let running:Promise<void>|undefined;
+    try {
+      f.store.capture('old','user','A source not yet reviewed.');
+      running=f.commands.huimem.handler('learn',f.ctx);
+      await f.turn.promise;await f.handlers.agent_start({},f.ctx);
+      await f.handlers.agent_end({},f.ctx);
+      await Promise.race([draining.promise,running]);
+      await f.handlers.before_agent_start({prompt:'Stop learning. Inspect the CLI instead.'},f.ctx);
+      await running;
+      expect((await f.ok({op:'learn',action:'status'})).reviewedBatches).toBe(0);
+      expect((await f.ok({op:'learn',action:'next'})).sources.map((source:any)=>source.text)).toEqual([
+        'A source not yet reviewed.','Stop learning. Inspect the CLI instead.',
+      ]);
+    } finally {settled.resolve();await running;await f.clean();}
+  });
   test.each([false,true])('explicit curation cannot feed generated text back into learning (before_agent_start=%s)',async(emitBeforeStart)=>{
     const f=fixture();try {
       const original=f.store.capture('old','user','Use SQLite for the local journal.');

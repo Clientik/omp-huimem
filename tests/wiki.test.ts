@@ -77,6 +77,28 @@ describe('source-backed derived wiki',()=>{
     expect(readFileSync(path,'utf8')).toBe(bytes);
   }));
 
+  test('separate Wiki reads see file changes and external record updates after warm shared-source reads',()=>fixture((store,root)=>{
+    const file=join(root,'design.txt'),original='SQLite stays local.';
+    writeFileSync(file,original);
+    store.commit('source',[{id:'storage',kind:'fact',status:'active',text:original,expectedVersion:0,source:store.fileSource('design.txt',original),dependsOn:[]}],'Storage source');
+    wikiPublish(store,page);
+    wikiPublish(store,{...page,id:'storage-backup',title:'Storage backup'});
+    expect(wikiList(store).pages.map(p=>[p.id,p.freshness])).toEqual([['storage-backup','current'],['storage-guide','current']]);
+    expect(wikiRead(store,page.id).freshness).toBe('current');
+    expect(wikiLint(store).issues).toEqual([]);
+    writeFileSync(file,'The storage implementation changed.');
+    expect(wikiRead(store,page.id).freshness).toBe('STALE');
+    expect(wikiList(store).pages.map(p=>[p.id,p.freshness])).toEqual([['storage-backup','STALE'],['storage-guide','STALE']]);
+    expect(wikiLint(store).issues.map(issue=>issue.id)).toEqual(['storage-backup','storage-guide']);
+    writeFileSync(file,original);
+    expect(wikiList(store).pages.map(p=>p.freshness)).toEqual(['current','current']);
+    const other=new MemoryStore(root);
+    try {record(other,'active',1);} finally {other.close();}
+    expect(wikiRead(store,page.id).sources?.[0].currentVersion).toBe(2);
+    expect(wikiList(store).pages.map(p=>p.freshness)).toEqual(['STALE','STALE']);
+    expect(()=>wikiPublish(store,{...page,body:'Must not publish from an old version.'})).toThrow('WIKI_SOURCE');
+  }));
+
   test('proposals and retired records cannot become curated authority',()=>{
     for(const status of ['proposed','retired']) fixture(store=>{
       record(store,status);

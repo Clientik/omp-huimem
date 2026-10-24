@@ -123,7 +123,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
   const recentEvidence = new Map<string,EpisodeEvidence>();
   let evidenceRoot = '';
   let profileDir: string | undefined = options.agentDir;
-  let curation: {started:boolean;packetID:string|null;resolve:()=>void}|undefined;
+  let curation: {started:boolean;packetID:string|null;resolve:()=>void;cancel:()=>void}|undefined;
   async function agentDir() {
     // Optional host module is absent in standalone API/tests; defer until a live profile is needed.
     if (!profileDir) {
@@ -134,7 +134,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
   }
   async function personalEnabled() { return readPersonalSettings(await agentDir()).enabled; }
   function resetScopes() {
-    curation?.resolve();curation=undefined;
+    curation?.cancel();curation=undefined;
     store?.close(); store=undefined; root='';
     for (const scoped of scopedStores.values()) scoped.close();
     scopedStores.clear(); recentEvidence.clear(); recentSources.length=0; answerSources.length=0;
@@ -312,7 +312,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
         || (original?.message && (original.message.role!=='user' || original.message.attribution==='agent'));
       // An explicit curation guide is generated control text, not another source
       // for the learning queue. A genuine user interruption ends that exclusion.
-      if(curation && !machine) {curation.resolve();curation=undefined;}
+      if(curation && !machine) {curation.cancel();curation=undefined;}
       if(curation && machine) return;
       const episode = captureCurrent(ctx,machine ? 'assistant' : 'user',query);
       if (!machine) sourceEpisode = episode;
@@ -832,8 +832,9 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
         return { content: [{ type: 'text', text: JSON.stringify(data) }], details: data };
       } catch (e: any) {
         // Validation failures are recoverable; storage failure changes health and prevents mutations.
-        if (e.code?.startsWith('SQLITE') || /readonly|disk|database|I\/O/i.test(String(e))) healthFailure(ctx,e);
-        return memoryToolError(e,p.op);
+        const result=memoryToolError(e,p.op), code=result.details.code;
+        if(/^SQLITE(?:_|$)/.test(code) || ['DATABASE_INTEGRITY','EACCES','EPERM','EROFS','ENOSPC','EIO'].includes(code)) healthFailure(ctx,e);
+        return result;
       }
     },
   });
@@ -866,7 +867,8 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
       recentSources.length=0;answerSources.length=0;subagent=false;
       if (policyAtStart===undefined) policyAtStart=policyText(ctx);
       // sendMessage returns void; waitForIdle alone races its asynchronous startup in print mode.
-      const finished=Promise.withResolvers<void>(), pending={started:false,packetID,resolve:()=>finished.resolve()};
+      const finished=Promise.withResolvers<void>(), cancelled=Promise.withResolvers<void>();
+      const pending={started:false,packetID,resolve:()=>finished.resolve(),cancel:()=>cancelled.resolve()};
       curation=pending;
       try {
         pi.sendMessage({customType:'huimem-learn',attribution:'agent',content:
@@ -877,7 +879,10 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
           + '4. LAST, after useful Wiki work: if sources are nonempty, call op=learn action=complete WITHOUT id; runtime already binds the exact supplied packet. Include one deliberate summary and outcome=recorded with records=[{id,version}], or nothing-durable with records=[] when appropriate. Never acknowledge unread or failed work. A completed receipt is immutable: do not repeat it to append Wiki updates, and do not fetch another packet. If sources are empty, do not acknowledge. Finish normally without another turn or model call.\n\n'
           + 'Supplied learning packet (JSON):\n'+JSON.stringify(packet),
           display:true},{triggerTurn:true});
-        await finished.promise;
+        await Promise.race([finished.promise,cancelled.promise]);
+        // agent_end can precede OMP's unexpected-stop recovery. Drain from the
+        // command context, never from the notification handler it would await.
+        if(curation===pending) await Promise.race([ctx.waitForIdle?.(),cancelled.promise]);
       } finally {if(curation===pending) curation=undefined;}
     },
     // Показываем то, что сообщает OMP, и ничего не переключаем: смена модели или усилия из плагина

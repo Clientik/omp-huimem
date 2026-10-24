@@ -200,3 +200,53 @@ test('direct ID recall also signals changed file', () => withStore((s,dir) => {
   s.commit('a',[{id:'source',kind:'fact',status:'active',text:'old',expectedVersion:0,source}],'saved');
   writeFileSync(join(dir,'src.txt'),'new'); expect(s.current('source')?.freshness).toBe('STALE');
 }));
+
+test.each([
+  ['GitHub classic','ghp_'+'A'.repeat(36)],
+  ['GitHub fine-grained','github_pat_'+'A'.repeat(60)],
+  ['Slack','xoxb-'+'1'.repeat(12)+'-'+'2'.repeat(12)+'-'+'a'.repeat(24)],
+  ['AWS access credential','AKIA'+'A'.repeat(16)],
+  ['private key','-----BEGIN PRIVATE KEY-----\n'+'A'.repeat(64)+'\n-----END PRIVATE KEY-----'],
+])('capture redacts a %s value before it can become original evidence',(_name,credential)=>withStore(s=>{
+  const id=s.capture('source','user',`Before ${credential} After`);
+  expect(s.episode(id).text).toBe('Before [REDACTED] After');
+  expect(s.capture('retried','user',`Before ${credential} After`)).toBe(id);
+  expect(s.episodes('',{id}).text).toBe('Before [REDACTED] After');
+}));
+
+test('credential filtering preserves ordinary environment names, security advice and Unicode',()=>withStore(s=>{
+  const original='Configure DATABASE_URL locally. Do not run cat .env in shared logs. Family: 👨‍👩‍👧‍👦. Режим офлайн.';
+  const id=s.capture('source','user',original);
+  expect(s.episode(id).text).toBe(original);
+}));
+
+test('credential URLs hide the password without losing the non-secret host',()=>withStore(s=>{
+  const id=s.capture('source','user','Database: postgres://app:very-private-password@localhost:5432/project');
+  expect(s.episode(id).text).toBe('Database: postgres://app:[REDACTED]@localhost:5432/project');
+}));
+
+test('an incomplete private key paste does not persist its remaining body',()=>withStore(s=>{
+  const id=s.capture('source','user','Before\n-----BEGIN OPENSSH PRIVATE KEY-----\n'+'A'.repeat(80));
+  expect(s.episode(id).text).toBe('Before\n[REDACTED]');
+}));
+
+test('new record fields and file evidence cannot bypass credential filtering',()=>withStore((s,dir)=>{
+  const credential='ghp_'+'A'.repeat(36);
+  const episode=s.capture('source','user','Use the local credential manager.');
+  const change={id:'credential',kind:'fact',status:'active',text:credential,expectedVersion:0,source:{episode,quote:'Use the local credential manager.'}};
+  expect(()=>s.commit('unsafe',[change],'Do not persist the credential.')).toThrow('SECRET_PATTERN');
+  expect(s.current('credential')).toBe(null);
+  writeFileSync(join(dir,'config.txt'),credential);
+  expect(()=>s.fileSource('config.txt',credential)).toThrow('SOURCE');
+}));
+
+test('old originals stay intact but a new record cannot copy a credential-bearing quote',()=>withStore(s=>{
+  const original='Legacy context. ghp_'+'A'.repeat(36);
+  s.db.query('INSERT INTO episodes VALUES (?,?,?,?,?)').run('legacy-secret','old-writer','user',original,'2020-01-01T00:00:00.000Z');
+  const change={id:'legacy-context',kind:'fact',status:'active',text:'Legacy context.',expectedVersion:0,source:{episode:'legacy-secret',quote:original}};
+  expect(()=>s.commit('unsafe',[change],'Keep the original, not the credential.')).toThrow('SECRET_PATTERN');
+  expect(s.episode('legacy-secret').text).toBe(original);
+  s.commit('safe',[{...change,source:{episode:'legacy-secret',quote:'Legacy context.'}}],'Retain a non-secret exact excerpt.');
+  expect(s.current('legacy-context')?.source.quote).toBe('Legacy context.');
+  expect(s.episode('legacy-secret').text).toBe(original);
+}));

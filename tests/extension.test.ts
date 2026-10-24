@@ -1431,6 +1431,35 @@ test('commit task= ties a checkpoint to its task, recall by id returns it, and a
     expect(String(f.notices.at(-1)?.content ?? '')).toContain('"task": "task-invoices"');
   } finally { f.clean(); }
 });
+test('invalid task labels mentioning storage do not poison memory health',async()=>{
+  const f=fixture();try {
+    await f.handlers.before_agent_start({prompt:'Inspect storage without changing the decision.'},f.ctx);
+    const refused=await f.tools.project_memory.execute('invalid',{op:'commit',changes:[],summary:'No task was selected.',task:'Initial database decision.'},null,null,f.ctx);
+    expect(refused.details.code).toBe('INVALID_TASK_SCOPE');
+    const status=await f.tools.project_memory.execute('health',{op:'status'},null,null,f.ctx);
+    expect(status.details.error).toBe(null);
+    const block=await f.handlers.context({messages:[]},f.ctx);
+    expect(block.messages.at(-1).content).not.toContain('MEMORY_ERROR');
+    const saved=await f.tools.project_memory.execute('valid',{op:'commit',changes:[],summary:'No durable decision changed.'},null,null,f.ctx);
+    expect(saved.details.saved).toBe(0);
+  } finally {f.clean();}
+});
+
+test.each(['write refused','INVALID_TASK_SCOPE: misleading trigger label'])('a SQLite failure %s changes health and leaves the checkpoint absent',async(message)=>{
+  const f=fixture();try {
+    await f.handlers.before_agent_start({prompt:'Inspect the local journal.'},f.ctx);
+    const observer=new MemoryStore(f.dir);
+    try {
+      observer.db.exec(`CREATE TRIGGER audit_checkpoint_failure BEFORE INSERT ON checkpoints BEGIN SELECT RAISE(ABORT,'${message}'); END`);
+      const refused=await f.tools.project_memory.execute('failure',{op:'commit',changes:[],summary:'A checkpoint that must not be persisted.'},null,null,f.ctx);
+      expect(refused.isError).toBe(true);
+      expect(String(refused.details.code)).toMatch(/^SQLITE/);
+      const status=await f.tools.project_memory.execute('health',{op:'status'},null,null,f.ctx);
+      expect(status.details.error).toContain('MEMORY_ERROR');
+      expect(observer.latestCheckpoint()).toBe(null);
+    } finally {observer.close();}
+  } finally {f.clean();}
+});
 
 // Экран настроек в интерактивном терминале: сценарий нажатий подаётся вместо пользователя.
 function scriptedUi(f: any, answers: any[]) {

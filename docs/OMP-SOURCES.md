@@ -55,9 +55,12 @@ Marketplace distribution is an optional future route if native project-scoped in
   it does not replace the compactor or schedule a save loop at session_stop.
 - `/huimem learn` intentionally sends an agent-attributed custom message to the main agent.
   Synthetic-only turns need explicit run initialization, not a fabricated user episode.
-  `sendMessage` returns void; idle-only waiting races startup in print mode. A public
-  agent_start/agent_end completion barrier keeps the intentional command alive, released
-  on lifecycle reset. No timer/LLM worker or private runtime mutation is added.
+  `sendMessage` returns void; idle-only waiting races startup in print mode. An
+  agent_start/agent_end gate first observes the triggered turn. Since 0.8.2 the command
+  then calls public `ctx.waitForIdle()` outside event handlers to drain native recovery;
+  the first agent_end is notification, not proof of settlement. Lifecycle reset and user
+  interruption release their own cancellation promise. No timer/LLM worker or private
+  runtime mutation is added.
   Notifications use `pi.logger`, not raw stdout.
 - Personal permission resolves through public `getAgentDir()`, preserving OMP profiles and
   environment routing. The host-only module is loaded lazily because standalone core/tests

@@ -196,7 +196,7 @@ function writeSettings(root, next) {
 }
 
 // src/memory/version.ts
-var PLUGIN_VERSION = "0.8.1";
+var PLUGIN_VERSION = "0.8.2";
 var UPGRADE_NOTES = {
   "0.6.4": "project memory can be switched off per project; publishing .memory/RECORDS.md is part of saving and not a reason to skip commit; durable facts must not stay only in hand-written .memory documents, and those documents are not re-verified with scripts",
   "0.6.5": "an empty registry is now stated in this block instead of looking like a failed search",
@@ -207,7 +207,8 @@ var UPGRADE_NOTES = {
   "0.6.10": 'editing .memory documents no longer marks records STALE when their source is a saved message: the words of that message cannot change with a document, so there is nothing to recheck and no need to save them again unchanged. A file source and an explicit dependsOn behave as before. When a quote you need is in an earlier message rather than the current one, find it with episodes query=<text> role=user and cite source={origin:"episode",episode:"<ID>",quote:"<exact words>"}',
   "0.7.0": "recall also searches exact source quotes and paths, preserving short technical tokens; original episodes use UTF-16 pages (offset with id, omit/null for search). Automatic context omits unrelated accepted decisions; use recall by ID for details. Project remains the default scope; session is isolated by native dialogue ID, personal needs the human /huimem personal on. Wiki pages are derived interpretations with pinned source versions, never evidence or acceptance. History search has a rebuildable local index; unchanged receipts/checkpoints need no repeat save",
   "0.8.0": "learn next offers bounded original-source packets; complete acknowledges deliberate review with checked record versions or nothing-durable, without promoting evidence. Interrupted work stays pending and identical completion is a no-op. Wiki plan exposes supported uncovered records, stale pages, proposals and possible duplicates; discover navigates existing record links and backlinks. /huimem learn reviews one packet and a useful Wiki topic in one ordinary main-agent turn; no background model, deletion or competing compaction",
-  "0.8.1": "/huimem learn preloads bounded original sources; no ID discovery is needed. Finish useful Wiki work, then complete once WITHOUT id in that intentional turn: runtime binds its project packet. Outside it, complete still requires the exact id. Wiki IDs are ASCII slugs without wiki: prefixes. Invalid review state stops before a model turn; failed or interrupted work stays pending"
+  "0.8.1": "/huimem learn preloads bounded original sources; no ID discovery is needed. Finish useful Wiki work, then complete once WITHOUT id in that intentional turn: runtime binds its project packet. Outside it, complete still requires the exact id. Wiki IDs are ASCII slugs without wiki: prefixes. Invalid review state stops before a model turn; failed or interrupted work stays pending",
+  "0.8.2": "/huimem learn keeps its exact project packet through native recovery until the command settles; interruption still leaves unfinished work pending. Validation errors do not imply broken storage. Wiki read checks are scoped to one operation, never a TTL; new reads still detect changed sources. New captures redact recognized credential values; existing source history is not rewritten"
 };
 function compareVersions(a, b) {
   const parts = (v) => v.split(".").map((n) => Number.parseInt(n, 10) || 0);
@@ -404,7 +405,7 @@ function gitBranch(root) {
     return null;
   }
 }
-var scrub = (s) => s.replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9._-]{16,})\b/g, "[REDACTED]").replace(/((?:api[_-]?key|password|secret|token)\s*[:=]\s*)["']?[^\s"',;]+/gi, "$1[REDACTED]");
+var scrub = (s) => s.replace(/-----BEGIN ((?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY)-----[\s\S]*?(?:-----END \1-----|$)/g, "[REDACTED]").replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9._-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{40,}|xox[baprs]-[A-Za-z0-9_-]{20,}|xapp-[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16})\b/g, "[REDACTED]").replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s/@]+@/gi, "$1[REDACTED]@").replace(/((?:api[_-]?key|password|secret|token)\s*[:=]\s*)["']?[^\s"',;]+/gi, "$1[REDACTED]");
 function safePath(root, path) {
   if (isAbsolute2(path))
     throw new Error("PATH: relative project path required");
@@ -510,6 +511,7 @@ class MemoryStore {
       this.db.exec(`PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS episodes (id TEXT PRIMARY KEY, session TEXT, role TEXT, text TEXT, time TEXT);
+        CREATE INDEX IF NOT EXISTS episodes_role_time ON episodes(role,time DESC);
         CREATE TABLE IF NOT EXISTS versions (id TEXT, version INTEGER, data TEXT NOT NULL, time TEXT,
           PRIMARY KEY(id,version));
         CREATE TABLE IF NOT EXISTS checkpoints (run TEXT PRIMARY KEY, summary TEXT, time TEXT);
@@ -837,11 +839,11 @@ class MemoryStore {
       results: checked
     };
   }
-  current(id) {
+  current(id, authority) {
     const row = this.latestRow(id);
     if (!row)
       return null;
-    const reasons = this.staleness(row.data, this.authority(), (dep) => this.latestRow(dep));
+    const reasons = this.staleness(row.data, authority?.() ?? this.authority(), (dep) => this.latestRow(dep));
     return {
       ...row.data,
       version: row.version,
@@ -1182,6 +1184,8 @@ class MemoryStore {
     const s = c.source;
     if (!s || typeof s.quote !== "string" || !s.quote.trim() || s.quote.length > 3000 || !!s.episode === !!s.path)
       throw new Error("SOURCE: exactly one source required");
+    if (scrub(s.quote) !== s.quote)
+      throw new Error("SECRET_PATTERN");
     if (s.episode) {
       const e = this.episode(s.episode);
       if (!e || !e.text.includes(s.quote))
@@ -2387,7 +2391,7 @@ function memoryToolError(error, operation, explicitCode) {
   const message = error instanceof Error ? error.message : legacy;
   const prefix = message.match(/^([A-Z][A-Z0-9_]*)(?=:|$)/)?.[1];
   const native = typeof error?.code === "string" ? error.code : undefined;
-  const code = explicitCode ?? prefix ?? native ?? "MEMORY_ERROR";
+  const code = explicitCode ?? native ?? prefix ?? "MEMORY_ERROR";
   const storage = /^SQLITE/.test(code) || ["EACCES", "EPERM", "EROFS", "ENOSPC", "EIO"].includes(code);
   const integrity = /^SQLITE_(CORRUPT|NOTADB)/.test(code);
   const fix = FIXES[code] ?? (integrity ? FIXES.DATABASE_INTEGRITY : storage ? "Check project storage permissions, available space and memory health with /huimem. Resolve the storage problem before retrying a write." : "Inspect the error and memory state with /huimem. Correct its cause before retrying; do not repeat the unchanged request.");
@@ -3492,6 +3496,19 @@ var fail2 = (code, detail) => {
 };
 var missing = (error) => error.code === "ENOENT";
 var address = (id) => `project_memory op=wiki action=read id=${id}`;
+function readChecks(store) {
+  const records = new Map;
+  let authority;
+  const getAuthority = () => authority ??= store.authority();
+  return { get(id) {
+    let check = records.get(id);
+    if (!check) {
+      check = { record: store.current(id, getAuthority) };
+      records.set(id, check);
+    }
+    return check;
+  } };
+}
 function validateID(id) {
   if (typeof id !== "string" || !/^[a-z0-9][a-z0-9_-]{0,79}$/.test(id))
     fail2("WIKI_ID", "use a lowercase ASCII slug of at most 80 characters");
@@ -3649,13 +3666,13 @@ function readPage(store, id, checks) {
     if (bytes === null)
       return { id, found: false, freshness: "STALE" };
     const { meta, body } = decode(bytes, id);
-    return { ...view(store, meta, body, checks), found: true };
+    return { ...view(store, meta, body, checks ?? readChecks(store)), found: true };
   } catch (error) {
     return { id, found: true, freshness: "STALE", error: String(error).slice(0, 400), derived: true, read: address(id), path: `${DIRECTORY}/${id}.md` };
   }
 }
 function wikiRead(store, id) {
-  return readPage(store, id);
+  return store.db.transaction(() => readPage(store, id)).deferred();
 }
 function directoryIDs(store) {
   const directory = guardedDirectory(store);
@@ -3688,54 +3705,59 @@ function wikiList(store, query = "", limit = 20) {
     fail2("WIKI_QUERY", "query must be at most 1000 characters");
   if (!Number.isSafeInteger(limit) || limit < 1)
     fail2("WIKI_LIMIT", "limit must be a positive safe integer");
-  const cap = Math.min(limit, MAX_LIST), pages = [], issues = [];
-  let scanned;
-  try {
-    scanned = directoryIDs(store);
-  } catch (error) {
-    return { pages, issues: [{ code: "WIKI_PATH", detail: String(error).slice(0, 400) }], truncated: false };
-  }
-  const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  let matches = 0;
-  for (const id of scanned.ids) {
-    const page = wikiRead(store, id);
-    if (page.error) {
-      issues.push({ id, code: "WIKI_CORRUPT", detail: page.error });
-      continue;
+  return store.db.transaction(() => {
+    const cap = Math.min(limit, MAX_LIST), pages = [], issues = [];
+    let scanned;
+    try {
+      scanned = directoryIDs(store);
+    } catch (error) {
+      return { pages, issues: [{ code: "WIKI_PATH", detail: String(error).slice(0, 400) }], truncated: false };
     }
-    if (!page.found || !page.title || !page.sources)
-      continue;
-    const text = `${id}
+    const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean), checks = readChecks(store);
+    let matches = 0;
+    for (const id of scanned.ids) {
+      const page = readPage(store, id, checks);
+      if (page.error) {
+        issues.push({ id, code: "WIKI_CORRUPT", detail: page.error });
+        continue;
+      }
+      if (!page.found || !page.title || !page.sources)
+        continue;
+      const text = `${id}
 ${page.title}
 ${page.body}`.toLocaleLowerCase();
-    if (!terms.every((term) => text.includes(term)))
-      continue;
-    matches++;
-    if (pages.length < cap) {
-      const { body: _, found: __, ...summary } = page;
-      pages.push(summary);
+      if (!terms.every((term) => text.includes(term)))
+        continue;
+      matches++;
+      if (pages.length < cap) {
+        const { body: _, found: __, ...summary } = page;
+        pages.push(summary);
+      }
     }
-  }
-  return { pages, issues: [...scanned.issues, ...issues].slice(0, 100), truncated: scanned.truncated || matches > cap };
+    return { pages, issues: [...scanned.issues, ...issues].slice(0, 100), truncated: scanned.truncated || matches > cap };
+  }).deferred();
 }
 function wikiLint(store) {
-  const issues = [];
-  let scanned;
-  try {
-    scanned = directoryIDs(store);
-  } catch (error) {
-    return { checked: 0, issues: [{ code: "WIKI_PATH", detail: String(error).slice(0, 400) }], truncated: false };
-  }
-  issues.push(...scanned.issues);
-  for (const id of scanned.ids) {
-    const page = wikiRead(store, id);
-    if (page.error)
-      issues.push({ id, code: "WIKI_CORRUPT", detail: page.error });
-    else if (!page.found || page.freshness === "STALE")
-      issues.push({ id, code: "WIKI_STALE", detail: page.sources?.filter((s) => !s.valid).map((s) => `${s.id} v${s.version}: ${s.reasons.join("; ")}`).join(`
+  return store.db.transaction(() => {
+    const issues = [];
+    let scanned;
+    try {
+      scanned = directoryIDs(store);
+    } catch (error) {
+      return { checked: 0, issues: [{ code: "WIKI_PATH", detail: String(error).slice(0, 400) }], truncated: false };
+    }
+    issues.push(...scanned.issues);
+    const checks = readChecks(store);
+    for (const id of scanned.ids) {
+      const page = readPage(store, id, checks);
+      if (page.error)
+        issues.push({ id, code: "WIKI_CORRUPT", detail: page.error });
+      else if (!page.found || page.freshness === "STALE")
+        issues.push({ id, code: "WIKI_STALE", detail: page.sources?.filter((s) => !s.valid).map((s) => `${s.id} v${s.version}: ${s.reasons.join("; ")}`).join(`
 `).slice(0, 1000) ?? "page disappeared" });
-  }
-  return { checked: scanned.ids.length, issues: issues.slice(0, 100), truncated: scanned.truncated || issues.length > 100 };
+    }
+    return { checked: scanned.ids.length, issues: issues.slice(0, 100), truncated: scanned.truncated || issues.length > 100 };
+  }).deferred();
 }
 function workbench(store) {
   const records = store.inspectRecords(), checks = new Map(records.map((row) => [row.id, { record: {
@@ -4140,7 +4162,7 @@ function install(pi, options = {}) {
     return readPersonalSettings(await agentDir()).enabled;
   }
   function resetScopes() {
-    curation?.resolve();
+    curation?.cancel();
     curation = undefined;
     store?.close();
     store = undefined;
@@ -4380,7 +4402,7 @@ function install(pi, options = {}) {
       const original = [...branch].reverse().find((entry) => entry.type === "message" ? textOf(entry.message?.content) === query : entry.type === "custom_message" && textOf(entry.content) === query);
       const machine = subagent || event.attribution === "agent" || original?.type === "custom_message" || original?.message && (original.message.role !== "user" || original.message.attribution === "agent");
       if (curation && !machine) {
-        curation.resolve();
+        curation.cancel();
         curation = undefined;
       }
       if (curation && machine)
@@ -4957,9 +4979,10 @@ LIMITS: at most 30 changes per commit; summary is required and at most 2000 char
         }
         return { content: [{ type: "text", text: JSON.stringify(data) }], details: data };
       } catch (e) {
-        if (e.code?.startsWith("SQLITE") || /readonly|disk|database|I\/O/i.test(String(e)))
+        const result = memoryToolError(e, p.op), code = result.details.code;
+        if (/^SQLITE(?:_|$)/.test(code) || ["DATABASE_INTEGRITY", "EACCES", "EPERM", "EROFS", "ENOSPC", "EIO"].includes(code))
           healthFailure(ctx, e);
-        return memoryToolError(e, p.op);
+        return result;
       }
     }
   });
@@ -5015,7 +5038,8 @@ LIMITS: at most 30 changes per commit; summary is required and at most 2000 char
       subagent = false;
       if (policyAtStart === undefined)
         policyAtStart = policyText(ctx);
-      const finished = Promise.withResolvers(), pending = { started: false, packetID, resolve: () => finished.resolve() };
+      const finished = Promise.withResolvers(), cancelled = Promise.withResolvers();
+      const pending = { started: false, packetID, resolve: () => finished.resolve(), cancel: () => cancelled.resolve() };
       curation = pending;
       try {
         pi.sendMessage({
@@ -5031,7 +5055,9 @@ Supplied learning packet (JSON):
 ` + JSON.stringify(packet2),
           display: true
         }, { triggerTurn: true });
-        await finished.promise;
+        await Promise.race([finished.promise, cancelled.promise]);
+        if (curation === pending)
+          await Promise.race([ctx.waitForIdle?.(), cancelled.promise]);
       } finally {
         if (curation === pending)
           curation = undefined;

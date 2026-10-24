@@ -9,7 +9,7 @@ GitHub release process:
 1. Run `bun run check` and inspect the changes, license notices and package contents.
 2. Commit the source and generated dist/index.js together.
 3. Push the repository and tag the release (annotated); keep releases marked pre-release.
-4. Install with `omp plugin install github:Clientik/omp-huimem#v0.7.0`.
+4. Install with `omp plugin install github:Clientik/omp-huimem#v0.8.2`.
 5. Test installation under an isolated OMP profile/agent directory, not by updating the
    plugin used by the running development session. Native install is user-scoped.
 6. In a disposable project run /huimem init, inspect /huimem and index status, then
@@ -30,7 +30,7 @@ The build keeps `@oh-my-pi/pi-coding-agent` external: it is supplied by the OMP 
 not an npm runtime dependency of this package. Standalone fixtures inject agentDir.
 Factory validation must not create project databases or profile permissions.
 
-For 0.7.0, publish the existing README/i18n release notes and a compact validation asset;
+For each release, publish the existing README/i18n release notes and a compact validation asset;
 never upload authentication files, raw provider traces or private dialogue databases.
 The asset records measured source hashes, timings, context counts, compatibility and
 same-model acceptance outcomes, not an external benchmark ranking.
