@@ -27,6 +27,12 @@ includeWorkspaceTree: false
 
 defaultThinkingLevel: auto
 
+# План при запуске выключен ради памяти. ЗАМЕРЕНО 2026-10-25 на OMP 18.12.6: при свежем запуске
+# расширения грузятся после первого кадра, а план, включённый сразу, запоминает набор инструментов
+# без project_memory и восстанавливает его после approve. В план входите через /plan или Shift+Tab.
+plan:
+  defaultOnStartup: false
+
 edit:
   mode: hashline
 

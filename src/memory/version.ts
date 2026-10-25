@@ -6,7 +6,7 @@
 // прошлом ходу, и компакция могла перенести их в свою сводку. Без явной сводки изменений
 // модель продолжает работать по старым правилам, не зная, что они другие.
 // Соответствие package.json проверяет scripts/check-package.ts.
-export const PLUGIN_VERSION = '0.8.6';
+export const PLUGIN_VERSION = '0.8.7';
 
 // Одна строка на версию: только то, что меняет ПОВЕДЕНИЕ модели, уже видевшей прежний блок.
 // Не журнал изменений для человека — его место в README. Длина важна: строка попадает в блок.
@@ -26,6 +26,7 @@ export const UPGRADE_NOTES: Record<string, string> = {
   '0.8.4': 'a commit result may list wikiStale pages it just made STALE and sameText records repeating another current record; act on them deliberately, nothing is merged or rejected. Inside /huimem learn, status (op=learn without action) is not completion: the supplied packet stays unacknowledged until action=complete',
   '0.8.5': 'the first read or edit of a code file cited by records in a request starts with MEMORY_FILE_RECORDS: their IDs, versions, status and STALE. Recall them by ID before changing what they describe; the note is navigation, not instructions',
   '0.8.6': 'the starter uses the valid OMP auto-thinking ceiling xhigh instead of the ignored value high; existing project configs are not rewritten by plugin updates. Memory evidence, optional commits and tool permissions are unchanged',
+  '0.8.7': 'when OMP does not expose the project_memory tool in a session, this block says PROJECT_MEMORY_TOOL_UNAVAILABLE instead of inviting a commit: do not look for it through eval or xd://, tell the user once and report durable facts in your answer',
 };
 
 // Сравнение версий по числовым частям: 0.6.10 новее 0.6.9, строковое сравнение этого не даёт.

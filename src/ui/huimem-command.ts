@@ -32,6 +32,8 @@ export type CommandDeps = {
   // ЗАМЕРЕНО 2026-10-14 в HUICAD — проектный autoThinkingMaxEffort: high не перекрыл глобальный
   // max, и расхождение пришлось искать по файлам сессий. Метода может не быть в старом OMP.
   thinkingLevel: () => string | undefined;
+  // OMP may leave the hooks running while the session tool set lacks project_memory (seen after plan approval).
+  toolHidden: () => boolean;
   // Native ctx.agent.kind, with the older session-file fallback, is shown for provenance inspection.
   subagent: (ctx: any) => boolean;
 };
@@ -66,6 +68,7 @@ const HELP = [
 
 // Показываем, но не трогаем: это чужой конфиг, его меняет сам OMP.
 const OMP_KEYS: [string, string][] = [
+  ['plan.defaultOnStartup', 'false: plan mode entered at startup, before plugins load, hides project_memory after plan approval'],
   ['memory.backend', "keep 'off': the transcript writer here is this extension"],
   ['providers.fetch', 'trafilatura extracts article text instead of the whole page'],
   ['includeWorkspaceTree', 'false keeps the file tree out of the context'],
@@ -369,20 +372,22 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
     } catch (e) { counts = 'ERROR: ' + String(e); }
     const a = on ? deps.architecture(ctx) : { configured: false, ok: false, failures: [] };
     const err = deps.health();
+    const hidden = on && deps.toolHidden();
     return say(
       [
         'huimem project memory',
         `Plugin:             ${build}`,
         `Effort:             ${deps.thinkingLevel() ?? 'not reported by this OMP build'}`,
         `Memory:             ${on ? 'ON' : 'OFF (/huimem on to switch it back)'}`,
+        ...(hidden ? ['Model tool:         WARNING: the project_memory tool is not available in this session. Open a new OMP window; '
+          + 'set plan.defaultOnStartup: false in .omp/config.yml if it disappears after plan approval (/huimem omp).'] : []),
         `Commits:            ${deps.commitsPaused(ctx) ? 'PAUSED (this process)' : 'enabled'}`,
         `Personal memory:    ${await deps.personalEnabled() ? 'ON (this OMP profile)' : 'OFF (/huimem personal on to opt in)'}`,
         'Requires OMP + a main model. No mnemopi, memory server or additional model required.',
-        '',
         `Storage:            ${counts}`,
         `Readable registry:  ${projection}`,
         `Learning:           ${learning}`,
-        `Architecture:       ${a.configured ? (a.ok ? 'configured, no violation' : 'VIOLATIONS: ' + a.failures.join('; ')) : 'not configured'}`,
+        `Architecture:       ${a.configured ? (a.ok ? 'configured, no violation' : 'VIOLATIONS: ' + a.failures.join('; ')) : 'not configured (optional)'}`,
         `Recall budget:      ${cfg.recallBudget} characters`,
         `Injection limit:    ${cfg.injectionLimit} characters`,
         `Required records:   ${cfg.required.length ? cfg.required.join(', ') : 'none'}`,
@@ -391,7 +396,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
         `Settings file:      ${settingsFileExists ? SETTINGS_PATH : 'none, defaults apply'}`,
         err ? `Health:             ${err}` : 'Health:             no errors',
         '',
-        HELP,
+        'Defaults work without changes. All commands: /huimem help',
       ].join('\n'),
     );
   }
@@ -433,52 +438,90 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       if (!cfg.enabled) { records = 'off'; view = 'off'; }
       else try { const st = deps.store(ctx).status(); records = String(st.records); view = st.projection.state; }
       catch (e) { view = 'ERROR: ' + String(e); }
-      const a = cfg.enabled ? deps.architecture(ctx) : { configured: false, ok: false, failures: [] };
-      const paused = deps.commitsPaused(ctx);
-      const personal=await deps.personalEnabled();
-      // Действие возвращает true, если после него экран закрывается: вывод длинный и его нужно прочитать.
-      const items: [string, string, () => Promise<boolean | void>][] = [
+      const health = deps.health();
+      const hidden = cfg.enabled && deps.toolHidden();
+      // Главный экран — повседневное: включить, проверить, курировать. Всё остальное работает
+      // со значениями по умолчанию и лежит в подменю, ничего не удалено.
+      const items: MenuItem[] = [
         [`Memory: ${cfg.enabled ? 'ON' : 'OFF'}`,
           'Enter switches project memory off or on. Off means no memory block, no recorded messages and no commits; saved records stay.',
           async () => { await run(cfg.enabled ? 'off' : 'on', undefined, ctx, note); }],
-        [`Commits: ${paused ? 'PAUSED' : 'enabled'}`, 'Enter toggles. Pause blocks project_memory commit in this OMP process; a restart clears it.',
-          async () => { await run(paused ? 'resume' : 'pause', undefined, ctx, note); }],
-        [`Personal memory: ${personal ? 'ON' : 'OFF'}`, 'Explicit profile-owned permission. Only selected evidence is copied when saving with scope=personal.',
-          async () => {await run('personal',personal ? 'off' : 'on',ctx,note);}],
+        ['Check memory', hidden ? 'WARNING: project_memory is not available in this session. Shows the cause and the fix.'
+          : 'Inspect sources, required records and task drift; no repairs.',
+          async () => { await run(hidden ? 'omp' : 'doctor', undefined, ctx); return true; }],
         ['Curate Wiki from sources', 'Starts one intentional main-agent turn; summaries never become evidence.',
           async () => {await run('learn',undefined,ctx);return true;}],
-        ['Search index status', 'Inspect the rebuildable local sidecar; /huimem index rebuild explicitly rebuilds it.',
-          async () => {await run('index',undefined,ctx);return true;}],
-        [`Recall budget: ${cfg.recallBudget}`, `Characters of registry records per turn, ${LIMITS.recallBudget.min}–${LIMITS.recallBudget.max}.`,
-          async () => editNumber(ctx, 'recall', 'Recall budget', cfg.recallBudget, LIMITS.recallBudget)],
-        [`Injection limit: ${cfg.injectionLimit}`, `Characters of the whole memory block, ${LIMITS.injectionLimit.min}–${LIMITS.injectionLimit.max}.`,
-          async () => editNumber(ctx, 'limit', 'Injection limit', cfg.injectionLimit, LIMITS.injectionLimit)],
-        [`Required records: ${cfg.required.length ? cfg.required.join(', ') : 'none'}`, 'Records delivered every turn, even when unrelated to the question.',
-          async () => requiredScreen(ctx)],
-        [`Architecture: ${a.configured ? (a.ok ? 'no violation' : 'VIOLATIONS') : 'not configured'}`, 'Show the rules and the check result.',
-          async () => { await run('arch', undefined, ctx); return true; }],
-        [`Readable registry: ${view}`, 'Republish .memory/RECORDS.md from saved records.',
-          async () => { await run('sync', undefined, ctx, note); }],
-        ['Last memory block', 'Diagnostics of the block prepared for the model; not proof it was used.',
-          async () => { await run('context', undefined, ctx); return true; }],
-        ['Memory doctor', 'Inspect sources, required records and task drift; no repairs.',
-          async () => { await run('doctor', undefined, ctx); return true; }],
-        ['Legacy ADR migration', 'Shows the plan first and asks before writing anything.',
-          async () => adrMigration(ctx)],
-        ['OMP settings that affect memory', 'Shown only; the plugin does not change OMP config.',
-          async () => { await run('omp', undefined, ctx); return true; }],
-        ['Reset limits', `Recall ${LIMITS.recallBudget.default}, injection ${LIMITS.injectionLimit.default}. Required records stay.`,
-          async () => { if (await ui.confirm('Reset limits?', `Recall budget ${LIMITS.recallBudget.default}, injection limit ${LIMITS.injectionLimit.default}. Required records are kept.`)) await run('reset', undefined, ctx, note); }],
+        ['Advanced settings', 'Limits, required records, commits pause, personal memory, architecture rules, ADR migration.',
+          async () => advancedScreen(ctx)],
+        ['Diagnostics', 'Search index, readable registry, last memory block, OMP settings that affect memory.',
+          async () => diagnosticsScreen(ctx, view)],
         ['Close', 'Esc also closes.', async () => true],
       ];
-      const health = deps.health();
-      const pick = await ui.select(`huimem · ${ctx.cwd} · ${cfg.enabled ? records + ' records' : 'memory OFF'}${health ? ' · ' + health : ''}`,
-        items.map(([label, description]) => ({ label, description })), { initialIndex: cursor });
-      const index = items.findIndex(([label]) => label === pick);
+      const title = `huimem · ${ctx.cwd} · ${cfg.enabled ? records + ' records' : 'memory OFF'}`
+        + (hidden ? ' · project_memory unavailable' : '') + (health ? ' · ' + health : '');
+      const index = await pickItem(ctx, title, items, cursor);
       if (index < 0) return;
       cursor = index;
       if (await items[index][2]()) return;
     }
+  }
+
+  type MenuItem = [string, string, () => Promise<boolean | void>];
+  async function pickItem(ctx: any, title: string, items: MenuItem[], cursor: number): Promise<number> {
+    const pick = await ctx.ui.select(title, items.map(([label, description]) => ({ label, description })), { initialIndex: cursor });
+    return items.findIndex(([label]) => label === pick);
+  }
+  // Подменю: Back или Esc возвращают на главный экран; длинный отчёт закрывает весь экран,
+  // чтобы его можно было прочитать. Курсор остаётся на последнем пункте.
+  async function subScreen(ctx: any, title: string, build: () => Promise<MenuItem[]>): Promise<boolean> {
+    let cursor = 0;
+    for (;;) {
+      const items = [...await build(), ['Back', 'Return to the main screen.', async () => false] as MenuItem];
+      const index = await pickItem(ctx, title, items, cursor);
+      if (index < 0 || items[index][0] === 'Back') return false;
+      cursor = index;
+      if (await items[index][2]()) return true;
+    }
+  }
+  function advancedScreen(ctx: any) {
+    const note = (text: string) => ctx.ui.notify(text, 'info');
+    return subScreen(ctx, 'Advanced settings · defaults work without changes', async () => {
+      const cfg = readSettings(ctx.cwd);
+      const a = cfg.enabled ? deps.architecture(ctx) : { configured: false, ok: false, failures: [] };
+      const paused = deps.commitsPaused(ctx);
+      const personal = await deps.personalEnabled();
+      return [
+        [`Recall budget: ${cfg.recallBudget}`, `Characters of registry records per turn, ${LIMITS.recallBudget.min}–${LIMITS.recallBudget.max}.`,
+          async () => editNumber(ctx, 'recall', 'Recall budget', cfg.recallBudget, LIMITS.recallBudget)],
+        [`Injection limit: ${cfg.injectionLimit}`, `Characters of the whole memory block, ${LIMITS.injectionLimit.min}–${LIMITS.injectionLimit.max}.`,
+          async () => editNumber(ctx, 'limit', 'Injection limit', cfg.injectionLimit, LIMITS.injectionLimit)],
+        [`Commits: ${paused ? 'PAUSED' : 'enabled'}`, 'Enter toggles. Pause blocks project_memory commit in this OMP process; a restart clears it.',
+          async () => { await run(paused ? 'resume' : 'pause', undefined, ctx, note); }],
+        [`Required records: ${cfg.required.length ? cfg.required.join(', ') : 'none'}`, 'Records delivered every turn, even when unrelated to the question.',
+          async () => requiredScreen(ctx)],
+        [`Personal memory: ${personal ? 'ON' : 'OFF'}`, 'Explicit profile-owned permission. Only selected evidence is copied when saving with scope=personal.',
+          async () => {await run('personal',personal ? 'off' : 'on',ctx,note);}],
+        [`Architecture: ${a.configured ? (a.ok ? 'no violation' : 'VIOLATIONS') : 'not configured (optional)'}`, 'Show the rules and the check result.',
+          async () => { await run('arch', undefined, ctx); return true; }],
+        ['Legacy ADR migration', 'Shows the plan first and asks before writing anything.',
+          async () => adrMigration(ctx)],
+        ['Reset limits', `Recall ${LIMITS.recallBudget.default}, injection ${LIMITS.injectionLimit.default}. Required records stay.`,
+          async () => { if (await ctx.ui.confirm('Reset limits?', `Recall budget ${LIMITS.recallBudget.default}, injection limit ${LIMITS.injectionLimit.default}. Required records are kept.`)) await run('reset', undefined, ctx, note); }],
+      ];
+    });
+  }
+  function diagnosticsScreen(ctx: any, view: string) {
+    const note = (text: string) => ctx.ui.notify(text, 'info');
+    return subScreen(ctx, 'Diagnostics · read-only unless stated', async () => [
+      ['Search index status', 'Inspect the rebuildable local sidecar; /huimem index rebuild explicitly rebuilds it.',
+        async () => {await run('index',undefined,ctx);return true;}],
+      [`Readable registry: ${view}`, 'Republish .memory/RECORDS.md from saved records.',
+        async () => { await run('sync', undefined, ctx, note); }],
+      ['Last memory block', 'Diagnostics of the block prepared for the model; not proof it was used.',
+        async () => { await run('context', undefined, ctx); return true; }],
+      ['OMP settings that affect memory', 'Shown only; the plugin does not change OMP config.',
+        async () => { await run('omp', undefined, ctx); return true; }],
+    ]);
   }
 
   async function editNumber(ctx: any, verb: string, name: string, current: number, limit: { min: number; max: number }) {

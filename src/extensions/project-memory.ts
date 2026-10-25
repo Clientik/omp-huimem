@@ -113,8 +113,16 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
   // История только что свернулась. Признак живёт в процессе, а не в базе: он относится к этому
   // разговору, а не к проекту. Снимается, как только сказан один раз.
   let compacted = false;
-  // Про ненастроенную архитектуру сказано один раз за процесс: это не событие хода.
-  let saidUnconfigured = false;
+  // ЗАМЕРЕНО 2026-10-25 в D:\NAPS, OMP 18.12.6: после approve плана OMP восстановил набор
+  // инструментов, снятый до поздней загрузки расширения, и project_memory из него выпал, а хуки
+  // остались. Блок продолжал звать к commit, и модель восемь раз искала инструмент через eval
+  // и xd://. Набор сообщает OMP; включать инструмент самому плагин не должен: в ограниченной
+  // сессии это обход разрешений. undefined — сборка без getActiveTools, прежнее поведение.
+  const toolHidden = (): boolean => {
+    try {
+      return typeof pi.getActiveTools === 'function' && !pi.getActiveTools().includes('project_memory');
+    } catch { return false; }
+  };
   // Этот процесс — подагент. Определяется на каждом запросе: один экземпляр расширения
   // обслуживает одну сессию, но дешевле проверить, чем полагаться на порядок загрузки.
   let subagent = false;
@@ -418,7 +426,12 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
         // на один запрос, ответа пользователю нет. Ни Claude Code, ни Codex так не
         // делают — там модель решает сама («Claude doesn't save something every
         // session. It decides what's worth remembering»). Теперь это возможность.
-        (saved
+        (toolHidden()
+          ? 'PROJECT_MEMORY_TOOL_UNAVAILABLE: OMP did not expose the project_memory tool in this session, so nothing can be saved or recalled through it. '
+            + 'Do not look for it through eval, xd:// or the plugin source, and do not retry. Tell the user once: open a new OMP window in this project; '
+            + 'if the project config does not set plan.defaultOnStartup: false, entering plan mode at startup hides the tool after plan approval (see /huimem). '
+            + 'Until then report durable facts in your answer. '
+          : saved
           ? 'A checkpoint for this run is already saved. Do not call commit again unless something durable actually changed. '
           : 'project_memory commit is AVAILABLE if something durable changed (decision, fact, task state). It is optional: skip it for trivial exchanges. ') +
         // ПРИЧИНА ПРАВКИ 2026-10-14: в живом проекте HUICAD модель записала «registry commit не использован,
@@ -595,16 +608,11 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
       // агенту сказано «для пустяков коммит пропусти», а потом его же за пропуск
       // и ругают — на каждом «скажи ок» вылезало CHECKPOINT_MISSING.
       const changedSomething = generation > 0;
-      const missing = changedSomething && !commitsPaused(ctx) && !s.checkpoint(key());
-      if (!missing && !(arch.configured && !arch.ok)) {
-        // Ненастроенная проверка — состояние проекта, а не событие конца хода. Говорится
-        // один раз на процесс и уровнем «сведение»: на каждом ходу это был шум со словом Error.
-        if (!arch.configured && !saidUnconfigured) {
-          saidUnconfigured = true;
-          notify(ctx, 'ARCHITECTURE_UNCONFIGURED: architectural conformance is not verified in this project (/huimem arch).', 'info');
-        }
-        return;
-      }
+      const missing = changedSomething && !commitsPaused(ctx) && !toolHidden() && !s.checkpoint(key());
+      // Ненастроенная проверка — обычное состояние нового проекта, а не событие хода:
+      // о нём сообщают /huimem и op=status. Уведомление после первого ответа каждого процесса
+      // было шумом, который из коробки видел каждый пользователь.
+      if (!missing && !(arch.configured && !arch.ok)) return;
       // ПРИНУДИТЕЛЬНОЕ ПРОДОЛЖЕНИЕ УБРАНО. `continue: true` запускал новый ход,
       // тот заново получал указание записать чекпоинт, и цикл не сходился.
       // Отсутствие чекпоинта теперь сообщается, но работу не блокирует:
@@ -949,6 +957,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
     // Показываем то, что сообщает OMP, и ничего не переключаем: смена модели или усилия из плагина
     // памяти была бы незаметным вмешательством в чужую работу. Старые сборки метода не имеют.
     thinkingLevel: () => { try { return typeof pi.getThinkingLevel === 'function' ? pi.getThinkingLevel() : undefined; } catch { return undefined; } },
+    toolHidden,
     subagent: (ctx: any) => isSubagent(ctx),
     setPaused: (ctx: any, value: boolean) => {
       if(value) pausedProjects.add(resolve(ctx.cwd)); else pausedProjects.delete(resolve(ctx.cwd));

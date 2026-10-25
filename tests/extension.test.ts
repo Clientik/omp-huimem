@@ -161,6 +161,31 @@ test('a subagent gets a short block and its brief never becomes user evidence',a
   } finally { f.clean(); }
 });
 
+// ЗАМЕРЕНО 2026-10-25 в D:\NAPS на OMP 18.12.6: после approve плана OMP восстановил набор
+// инструментов без project_memory, а блок продолжал писать «commit is AVAILABLE». Модель восемь
+// раз искала инструмент через eval и xd://, затем записала факты только в документы.
+test('a session without the project_memory tool is told so instead of being invited to commit',async()=>{
+  const f=fixture(); try {
+    const block=async()=>{
+      await f.handlers.before_agent_start({prompt:'Продолжаем этап'},f.ctx);
+      const e=await f.handlers.context({messages:[]},f.ctx);
+      return e?.messages?.find((m:any)=>m.customType==='project-memory-context')?.content as string ?? '';
+    };
+    f.omp.activeTools=['read','write','edit'];
+    const hidden=await block();
+    expect(hidden).toContain('PROJECT_MEMORY_TOOL_UNAVAILABLE');
+    expect(hidden).not.toContain('commit is AVAILABLE');
+    // Ход менял файлы, но сохранить было нечем: напоминание о чекпоинте здесь бессмысленно.
+    await f.handlers.tool_result({toolName:'write',isError:false},f.ctx);
+    await f.handlers.session_stop({},f.ctx);
+    expect(f.notices.map(String).some(x=>x.includes('CHECKPOINT_MISSING'))).toBe(false);
+    await f.commands.huimem.handler('',f.ctx);
+    expect(String(f.notices.at(-1)?.content)).toContain('project_memory tool is not available');
+    f.omp.activeTools=['read','write','project_memory'];
+    expect(await block()).toContain('commit is AVAILABLE');
+  } finally { f.clean(); }
+});
+
 // ЗАМЕРЕНО 2026-10-17: четыре подагента за 385 секунд стёрли журнал вставок целиком, и
 // проверить на живой сессии, дошли ли однократные уведомления 0.6.6, оказалось нечем.
 test('one-shot notices leave a durable trace',async()=>{
@@ -264,12 +289,12 @@ test('a notice carries the level its meaning deserves',async()=>{
   const f=fixture(); try {
     const level=(part:string)=>f.levels.filter(l=>l.message.includes(part)).map(l=>l.level);
     await f.handlers.before_agent_start({prompt:'Работаем'},f.ctx);
-    // Ход без изменений молчит; ненастроенная архитектура — сведение, и один раз на процесс.
+    // Ход без изменений молчит; ненастроенная архитектура — обычное состояние нового проекта,
+    // о нём говорит /huimem, а не каждый новый процесс после первого ответа.
     await f.handlers.session_stop({},f.ctx);
-    expect(level('ARCHITECTURE_UNCONFIGURED')).toEqual(['info']);
     await f.handlers.before_agent_start({prompt:'И ещё раз'},f.ctx);
     await f.handlers.session_stop({},f.ctx);
-    expect(level('ARCHITECTURE_UNCONFIGURED')).toEqual(['info']);
+    expect(level('ARCHITECTURE_UNCONFIGURED')).toEqual([]);
     // Ход что-то менял, чекпоинта нет: это предупреждение и прямо сказано, что это не сбой.
     await f.handlers.tool_result({toolName:'write',isError:false},f.ctx);
     await f.handlers.session_stop({},f.ctx);
@@ -590,7 +615,7 @@ test('/huimem doctor and its menu item report an existing database without chang
     expect(text).toContain('PROJECTION_CONFLICT');
     expect(text).toContain('STALE_RECORD — dep\n  base changed: version 1 -> 2');
     expect(dump()).toBe(before);
-    const screens=scriptedUi(f,[starting('Memory doctor')]);
+    const screens=scriptedUi(f,[starting('Check memory')]);
     await f.commands.huimem.handler('',f.ctx);
     expect(screens).toHaveLength(1);
     expect(String(f.notices.at(-1)?.content)).toStartWith('huimem doctor');
@@ -1349,12 +1374,14 @@ function fixture() {
   const levels: { message: string; level: string }[] = [];
   const chain: any = new Proxy(() => chain, { get: () => chain });
   // Уровень размышления сообщает OMP; в старых сборках метода нет, поэтому он подменяем.
-  const omp: any = { thinking: 'high' as string | undefined, hasMethod: true };
+  const omp: any = { thinking: 'high' as string | undefined, hasMethod: true, activeTools: undefined as string[] | undefined };
   const pi: any = { zod: chain, on: (n: string, fn: any) => handlers[n] = fn,
     registerTool: (t: any) => tools[t.name] = t,
     registerCommand: (n: string, d: any) => commands[n] = d,
     sendMessage: (m: any) => notices.push(m) };
   Object.defineProperty(pi, 'getThinkingLevel', { get: () => omp.hasMethod ? () => omp.thinking : undefined });
+  // Набор инструментов сессии сообщает OMP; undefined — сборка без getActiveTools.
+  Object.defineProperty(pi, 'getActiveTools', { get: () => omp.activeTools ? () => omp.activeTools : undefined });
   const ctx: any = { cwd: dir, hasUI: true,
     ui: { notify: (s: string, level = 'unset') => { notices.push(s); levels.push({ message: s, level }); } },
     sessionManager: { getSessionId: () => 'session-test' } };
@@ -1462,7 +1489,7 @@ test('/huimem shows state, and refuses a project that is not deployed', async ()
     await cmd.handler('', f.ctx);
     const shown = String(f.notices.at(-1)?.content ?? '');
     expect(shown).toContain('huimem');
-    expect(shown).toContain('recall');
+    expect(shown).toContain('/huimem help');
     rmSync(join(f.dir, '.memory/MEMORY.md'));
     await cmd.handler('', f.ctx);
     expect(String(f.notices.at(-1)?.content ?? '')).toContain('PROJECT_MEMORY_NOT_ENABLED');
@@ -1591,11 +1618,13 @@ test('/huimem opens a settings screen in the terminal and applies choices throug
       rationale: 'утечки', source: { episode, quote } } as any], 'seed');
     s.close();
     const screens = scriptedUi(f, [
+      starting('Advanced'),
       starting('Recall budget'), '4500',
       starting('Injection limit'), '99999',
       starting('Commits'),
       starting('Required records'), starting('[ ] security-rule'), 'Back',
       starting('Reset limits'), true,
+      'Back',
       undefined,
     ]);
     await f.commands.huimem.handler('', f.ctx);
@@ -1605,19 +1634,22 @@ test('/huimem opens a settings screen in the terminal and applies choices throug
     expect(saved.required).toEqual(['security-rule']);
     expect(f.notices.some((n: any) => String(n).includes('recallBudget = 4500'))).toBe(true);
     expect(f.notices.some((n: any) => String(n).includes('saved the nearest allowed value: 16000'))).toBe(true);
-    // Экран показывает текущие значения и возвращает курсор на последний пункт.
+    // Главный экран короткий: повседневные действия, остальное — в подменю.
     const main = screens.filter(x => x.title.startsWith('huimem ·'));
-    expect(main[1].labels).toContain('Recall budget: 4500');
-    expect(main[3].labels).toContain('Commits: PAUSED');
-    // Первый пункт — выключатель памяти, поэтому курсор возвращается на строку Commits.
-    expect(main[3].initialIndex).toBe(1);
     expect(main[0].labels[0]).toBe('Memory: ON');
+    expect(main[0].labels.length).toBeLessThanOrEqual(6);
+    expect(main[0].labels.some(l => l.startsWith('Recall budget'))).toBe(false);
+    // Подменю показывает текущие значения и возвращает курсор на последний пункт.
+    const advanced = screens.filter(x => x.title.startsWith('Advanced'));
+    expect(advanced[1].labels).toContain('Recall budget: 4500');
+    expect(advanced[3].labels).toContain('Commits: PAUSED');
+    expect(advanced[3].initialIndex).toBe(advanced[3].labels.indexOf('Commits: PAUSED'));
     expect(screens.find(x => x.title.startsWith('Required records'))!.labels).toContain('[ ] security-rule');
     const denied = await f.tools.project_memory.execute('x', { op: 'commit', changes: [], summary: 'x' }, null, null, f.ctx);
     expect(String(denied.content[0].text)).toContain('COMMITS_PAUSED');
     // Длинные отчёты закрывают экран, чтобы их можно было прочитать.
     const before = f.notices.length;
-    scriptedUi(f, [starting('Architecture')]);
+    scriptedUi(f, [starting('Advanced'), starting('Architecture')]);
     await f.commands.huimem.handler('', f.ctx);
     expect(String(f.notices.at(-1)?.content ?? '')).toContain('.memory/architecture.json');
     expect(f.notices.length).toBe(before + 1);
