@@ -20,7 +20,7 @@ providers:
   # проверено отдельно на заведомо отсутствующем бэкенде, код возврата 0.
   # GitHub и Wikipedia сюда не попадают: у них свои методы (github-raw, wikipedia).
   fetch: trafilatura
-  autoThinkingMaxEffort: high
+  autoThinkingMaxEffort: xhigh
 
 # Дерево файлов не вставляется в контекст: на большом репозитории это чистый расход.
 includeWorkspaceTree: false
