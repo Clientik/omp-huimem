@@ -9,7 +9,7 @@ GitHub release process:
 1. Run `bun run check` and inspect the changes, license notices and package contents.
 2. Commit the source and generated dist/index.js together.
 3. Push the repository and tag the release (annotated); keep releases marked pre-release.
-4. Install with `omp plugin install github:Clientik/omp-huimem#v0.8.4`.
+4. Install with `omp plugin install github:Clientik/omp-huimem#v0.8.5`.
 5. Test installation under an isolated OMP profile/agent directory, not by updating the
    plugin used by the running development session. Native install is user-scoped.
 6. In a disposable project run /huimem init, inspect /huimem and index status, then

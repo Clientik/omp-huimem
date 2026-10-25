@@ -329,4 +329,50 @@ usage-записи на чтении, TTL/FIFO и автоматический �
 Реальные три раунда, совместимость и ограничения интерпретации —
 в [проверке 0.8.2](VALIDATION.md#release-082).
 
+<a id="catalog-085"></a>
+## Весь каталог pi.dev: 39 memory-пакетов, 25.10.2026
+
+[Выдача Pi Packages](https://pi.dev/packages?name=memory) на 25.10.2026 содержит 39 пакетов.
+Первые двадцать — те же, что в матрице 21.10 (порядок немного сменился). Ниже — пакеты 21–39
+и недавно опубликованный `pi-sessions`. Проверены опубликованные npm-архивы указанных версий:
+entrypoint, хранение, захват, выдача, модельные вызовы. Чужие install/build-скрипты не запускались.
+Downloads — неделя 16–22.10.2026 по npm API. Это сравнение механизмов, а не рейтинг качества.
+
+| Пакет | Хранение и захват | Модель/сервер | Происхождение фактов | Решение для huimem |
+|---|---|---|---|---|
+| [@rohirik/pi-ltm](https://github.com/RohiRIK/OpenLtm) 2.21.1 | SQLite + FTS5, общий для Claude Code/OpenCode/Pi; session extraction, janitor | embeddings (llama.cpp), janitor-LLM (Ollama), Bun/MCP-процесс | file anchors и stale, но текст ассистента может стать памятью | нового нет |
+| [@reddb-io/red-skills-memory](https://www.npmjs.com/package/@reddb-io/red-skills-memory) 4.7.3 | Markdown-only или граф RedDB; store-evidence, claim-check | опционально extraction/vector/MCP | самая строгая governed-цитата из всех новых | уже есть: точная цитата обязательна |
+| [open-zk-kb](https://www.npmjs.com/package/open-zk-kb) 1.4.4 | Markdown + SQLite FTS5 + ONNX-векторы | локальные ONNX embeddings, MCP, Bun | hashes, reviewed tokens | fingerprint проекции уже есть (receipts) |
+| [@samfp/pi-memory](https://www.npmjs.com/package/@samfp/pi-memory) 1.6.1 | SQLite lessons/events; консолидация в конце сессии | обязательная LLM-консолидация | confidence ≥ 0.8, без точного источника | не брать |
+| [pi-continual-harness](https://www.npmjs.com/package/pi-continual-harness) 0.20.0 | состояние в ветке Pi + Markdown; ручной `/refine` | опциональный proposer | поле evidence, откат ветки | атомарные типизированные изменения уже есть |
+| [pi-memory-wiki-all-you-need](https://github.com/kht6163/memory-wiki-all-you-need) 0.26.1 | центральный Node/SQLite-сервер, FTS5, очередь ходов | LLM курирует каждый ход; опционально embeddings | ревизии и источник хода, но факты пишет LLM | раздельные stable/per-prompt блоки уже есть |
+| [pi-session-memory](https://www.npmjs.com/package/pi-session-memory) 0.7.18 | SQLite-индекс исходных JSONL, `fetch_session` | опционально локальный Jev | оригиналы канонические | атомарная пересборка индекса — кандидат на потом |
+| [@tpsdev-ai/pi-flair](https://www.npmjs.com/package/@tpsdev-ai/pi-flair) 0.62.0 | внешний сервис Flair/Harper | embeddings, Ed25519, сервер | подписи, но semantic-хранилище | не брать |
+| [@vshulcz/pi-deja](https://www.npmjs.com/package/@vshulcz/pi-deja) 0.23.1 | локальный индекс сессий 40+ агентов; recall на старте, на промпте, при работе с файлом | без LLM | ссылки на исходные сессии | **взято в 0.8.5**: записи, ссылающиеся на файл, при его чтении или правке |
+| [@cad0p/pi-tree-navigator](https://www.npmjs.com/package/@cad0p/pi-tree-navigator) 0.3.0 | вехи и сжатие ветки сессии | модель пишет сводку ветки | — | это управление контекстом, не память |
+| [pi-ext-int-search](https://github.com/axelbaumlisto/pi-web-access) 1.7.0 | поиск по JSONL, Markdown, Claude Recall, git; `rg`/`git` | без LLM для поиска | location/score, но без полномочий | статус деградации у huimem уже есть |
+| [pi-dejavu-memory](https://www.npmjs.com/package/pi-dejavu-memory) 1.4.3 | тонкий MCP-клиент удалённого DejaVu | удалённый сервер | на сервере | не брать |
+| [pi-persistent-intelligence](https://www.npmjs.com/package/pi-persistent-intelligence) 0.17.4 | JSONL/Markdown/FTS; кандидат → review → promotion | опционально qmd, таймеры | классы доверия, review перед promotion | у huimem строже: accepted только из слов пользователя |
+| [@codemem/pi-extension](https://www.npmjs.com/package/@codemem/pi-extension) 0.46.3 | SQLite CodeMem через CLI/viewer; ingestion событий Pi | embeddings по умолчанию | метаданные backend | дедупликация блока уже есть |
+| [@cloudfrog/memory](https://www.npmjs.com/package/@cloudfrog/memory) 1.7.2 | внешний `memory serve` + SQLite; захват prompt/task/compaction | сервер, MCP | категории, без точной цитаты | не брать |
+| [pi-total-recall](https://github.com/samfoy/pi-total-recall) 1.9.1 | три стора: pi-memory + session-search + knowledge-search | LLM-консолидация, опционально embeddings | факты пишет модель | выбор по релевантности уже есть |
+| [@ilya-lesikov/pi-pi](https://www.npmjs.com/package/@ilya-lesikov/pi-pi) 1.15.1 | агентская платформа; поиск по истории | модельные воркеры | записей с источником нет | не память в нашем смысле |
+| [basemind-opencode](https://www.npmjs.com/package/basemind-opencode) 0.31.0 | tree-sitter code-map, RAG по документам, git blame через MCP | MCP, reranker, OCR | content-addressed | OMP уже даёт LSP/grep/git |
+| [@openlines/nmnm-pi](https://www.npmjs.com/package/@openlines/nmnm-pi) 0.4.5 | локальный SQLite; pinned-first блок | без фоновой LLM | source `"pi"` | обязательные записи впереди уже есть |
+| [pi-sessions](https://www.npmjs.com/package/pi-sessions) 0.21.1 | SQLite-индекс сессий, handoff, автозаголовки | handoff через модель; индекс без LLM | ссылки на исходные сессии | атомарная пересборка индекса — кандидат на потом |
+
+**Обновления первых двадцати с 21.10** (сравнение опубликованных архивов): pi-hermes-memory 0.9.11
+вызывает модели через `ctx.modelRegistry` и сохраняет причину отказа provider; pi-blackhole 0.5.16
+выключает observational memory в подагентах и ограничивает кеш JSONL 128 MiB; pi-openviking 0.1.23
+сбрасывает recall только при релевантных изменениях; pi-optchat 0.9.2 — lifecycle-исправления окон.
+bunshin, mem0, henryqw, amaster pi-memory, librarian, goosedump, state-flow, doc-bridge —
+сопровождение без нового механизма памяти. Подагенты huimem уже различает с 0.6.x.
+
+**Вывод.** Из 39 пакетов без фоновой модели работают немногие: pi-deja, nmnm, pi-ext-int-search,
+индексы сессий. Обязательную цитату из сообщения пользователя или файла с проверкой hash кодом
+не требует ни один: red-skills и persistent-intelligence ближе всех, но допускают promotion по
+review, а не по слову пользователя. Почти всё, что можно перенести без LLM, сервера и смены
+схемы, в huimem уже есть. Нового — одно: напоминание о сохранённых записях в момент работы с
+файлом (pi-deja). Оно перенесено в 0.8.5 как навигация, без автоподстановки текста записи.
+
 

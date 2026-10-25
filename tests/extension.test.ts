@@ -1179,6 +1179,32 @@ test('a commit names derived pages it made stale and records it now repeats, wit
   } finally {f.clean();}
 });
 
+test('the first read or edit of a file cited by records names them once per request',async()=>{
+  const f=fixture(); try {
+    mkdirSync(join(f.dir,'src'));
+    writeFileSync(join(f.dir,'src/retry.ts'),'export const RETRIES = 7;');
+    writeFileSync(join(f.dir,'src/other.ts'),'export const OTHER = 1;');
+    const s=new MemoryStore(f.dir);
+    try {s.commit('seed',[{id:'retries',kind:'fact',status:'active',text:'Seven retries',expectedVersion:0,source:s.fileSource('src/retry.ts','RETRIES = 7')}],'Retries');}
+    finally {s.close();}
+    await f.handlers.before_agent_start({prompt:'Tune retries'},f.ctx);
+    const content=[{type:'text',text:'export const RETRIES = 7;'}];
+    const first=await f.handlers.tool_result({toolName:'read',input:{path:'src/retry.ts:1-5'},content,isError:false},f.ctx);
+    expect(first.content[0].text).toContain('MEMORY_FILE_RECORDS src/retry.ts');
+    expect(first.content[0].text).toContain('retries v1 fact/active');
+    expect(first.content.slice(1)).toEqual(content);
+    expect(await f.handlers.tool_result({toolName:'read',input:{path:'src/retry.ts'},content,isError:false},f.ctx)).toBeUndefined();
+    expect(await f.handlers.tool_result({toolName:'read',input:{path:'src/other.ts'},content,isError:false},f.ctx)).toBeUndefined();
+    expect(await f.handlers.tool_result({toolName:'read',input:{path:'src/retry.ts'},content,isError:true},f.ctx)).toBeUndefined();
+    writeFileSync(join(f.dir,'src/retry.ts'),'export const RETRIES = 3;');
+    const edited=await f.handlers.tool_result({toolName:'edit',input:{input:'[src/retry.ts#1A2B]\nPUT 1.=1:\n+export const RETRIES = 3;'},content:[{type:'text',text:'ok'}],isError:false},f.ctx);
+    expect(edited.content[0].text).toContain('retries v1 fact/active STALE');
+    expect(edited.content[0].text).toContain('same ID');
+    await f.handlers.before_agent_start({prompt:'Next request'},f.ctx);
+    expect((await f.handlers.tool_result({toolName:'read',input:{path:'src/retry.ts'},content,isError:false},f.ctx)).content[0].text).toContain('retries v1');
+  } finally {f.clean();}
+});
+
 test('personal opt-in works without a project and copies only selected original evidence',async()=>{
   const f=fixture(); try {
     rmSync(join(f.dir,'.memory'),{recursive:true});

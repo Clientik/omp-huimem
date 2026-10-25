@@ -478,6 +478,24 @@ export class MemoryStore {
       return matches.length ? [{id:r.id,version:r.version,matches:matches.slice(0,5)}] : [];
     });
   }
+  // Navigation, not evidence: current records whose file source or file dependency is `path`.
+  recordsForPath(path: string, limit = 5) {
+    const key = (value: string) => {
+      const rel = relative(this.root, resolve(this.root, value)).replaceAll('\\', '/');
+      return process.platform === 'win32' ? rel.toLowerCase() : rel;
+    };
+    const target = key(path);
+    if (!target || target.startsWith('../') || isAbsolute(target)) return [];
+    const matches = this.snapshotRecords().flatMap(r => {
+      if (r.data.status === 'retired') return [];
+      const via = r.data.source.path && key(r.data.source.path) === target ? 'source' as const
+        : (r.data.dependsOn ?? []).some(d => 'path' in d && key(d.path) === target) ? 'dependsOn' as const : undefined;
+      return via ? [{ id: r.id, version: r.version, kind: r.data.kind, status: r.data.status, via }] : [];
+    }).sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit);
+    if (!matches.length) return [];
+    const authority = this.authority();
+    return matches.map(m => ({ ...m, stale: this.current(m.id, () => authority)?.freshness === 'STALE' }));
+  }
   history(id: string) { return this.db.query('SELECT version,data,time FROM versions WHERE id=? ORDER BY version').all(id); }
   private authorityChanged(c: Change, authority: {hash:string; policyHash:string}) {
     return c.kind==='fact' && c.source.path && c.sourcePolicyHash

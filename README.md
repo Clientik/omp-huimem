@@ -9,7 +9,7 @@
 
 Keep project knowledge across sessions without running another model. Current facts live in readable files; evidence and revision history live in local SQLite. One OMP extension, no memory server, embeddings service, or background LLM.
 
-> **Preview v0.8.4 · Tested with OMP 18.11.0 and 18.12.6.** Upstream Pi is not supported. Memory makes context easier to recover and inspect; it does not eliminate hallucinations.
+> **Preview v0.8.5 · Tested with OMP 18.11.0 and 18.12.6.** Upstream Pi is not supported. Memory makes context easier to recover and inspect; it does not eliminate hallucinations.
 
 ## Why use it?
 
@@ -22,6 +22,16 @@ For developers working with an AI agent who want to stop explaining the same pro
 - **Bounded context.** The extension supplies a memory block of up to 9,000 characters: the rules, a list of the canonical files, and the records that match the question. The agent reads full sources when it needs them.
 
 ## Install
+
+**New in v0.8.5 — what memory says about the file you are touching:**
+
+- The first `read` or edit of a code file in a request starts with `MEMORY_FILE_RECORDS` when
+  current records cite that file as their source or `dependsOn` path: ID, version, kind/status
+  and STALE. Up to five records, once per file and access kind per request; `.memory/` files are
+  left to the memory block. Idea from [@vshulcz/pi-deja](https://www.npmjs.com/package/@vshulcz/pi-deja);
+  this is navigation only, record text is not injected. Measured cost on a copy of a real
+  project: 0.04 ms for an uncited file, 6 ms once for a cited one.
+- [Comparison of all 39 memory packages](docs/RETRIEVAL-RESEARCH.md#catalog-085) on pi.dev.
 
 **New in v0.8.4 — commit follow-ups measured on a local model:**
 
@@ -229,7 +239,7 @@ You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model
 **Legacy ADRs:** `/huimem adr-audit` lists ADRs without a basis section that can be moved into the contract, and writes nothing. `/huimem adr-audit apply` inserts the user's quote from the registry as the basis and keeps every original line under an "Interpretation [?]" heading, after a byte-exact backup to `.memory/adr-backup/`. A document is migrated only when exactly one accepted decision names it by path, its rationale is an exact excerpt of the quote, and the quote is re-checked at migration time against the stored message, which must exist and belong to the user; otherwise it is reported as `UNVERIFIED` and nothing is written. v0.5.0 skipped that last check: if you ran `apply` with it on an edited, merged or restored database, compare each migrated basis with the original message. Linked conversation decisions show STALE afterwards. In a preregistered 20-vs-20 test the migrated documents had no outright misattribution, but a reliability gain over unmigrated ones was not statistically proven.
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.8.4
+omp plugin install github:Clientik/omp-huimem#v0.8.5
 ```
 
 > [!IMPORTANT]
@@ -251,7 +261,7 @@ After `init`, ask the agent to use the `initmem` skill to map the actual code. D
 **Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 and again with 18.11.0 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
 ```sh
-git clone --branch v0.8.4 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.8.5 https://github.com/Clientik/omp-huimem.git
 # Run from your working project, using the cloned repository's absolute path:
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```

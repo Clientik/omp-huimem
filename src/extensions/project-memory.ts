@@ -108,6 +108,8 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
   let query = '', sourceEpisode = '', lastNotice = '', active = false;
   // Prompt text awaiting its role: OMP appends the prompt message after before_agent_start.
   let pendingPrompt: string | undefined;
+  // Files already annotated with their citing records in this request: one note per file and access kind.
+  const fileNotes = new Set<string>();
   // История только что свернулась. Признак живёт в процессе, а не в базе: он относится к этому
   // разговору, а не к проекту. Снимается, как только сказан один раз.
   let compacted = false;
@@ -140,7 +142,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
     store?.close(); store=undefined; root='';
     for (const scoped of scopedStores.values()) scoped.close();
     scopedStores.clear(); recentEvidence.clear(); recentSources.length=0; answerSources.length=0;
-    sourceEpisode=''; query=''; run=''; generation=0; error=''; active=false; pendingPrompt=undefined;
+    sourceEpisode=''; query=''; run=''; generation=0; error=''; active=false; pendingPrompt=undefined; fileNotes.clear();
     policyAtStart=undefined; compacted=false; evidenceRoot=''; noted.clear();
   }
   function remember(episode: EpisodeEvidence) {
@@ -307,7 +309,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
     if (!active && !personal) { resetScopes(); return; }
     if (!active) { store?.close(); store=undefined; root=''; error=''; }
     run = randomUUID(); generation = 0; recentSources.length = 0; answerSources.length = 0;
-    query = event.prompt ?? ''; sourceEpisode = ''; pendingPrompt = undefined;
+    query = event.prompt ?? ''; sourceEpisode = ''; pendingPrompt = undefined; fileNotes.clear();
     // Keep the baseline across prompts in the same project, not just one turn.
     if(policyAtStart === undefined || (root && root !== ctx.cwd)) {
       try { policyAtStart=policyText(ctx); } catch(e) { healthFailure(ctx,e); }
@@ -558,6 +560,28 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
         const text=event.content.filter((p:any)=>p?.type==='text').map((p:any)=>String(p.text)).join('\n');
         return { content:[{type:'text',text:provenanceNote(readBasis(text))},...event.content] };
       }
+    }
+    // @vshulcz/pi-deja (pi.dev, 10.2026) recalls prior work when a file is touched. Here only navigation:
+    // records whose source or dependency is this code file, once per file per request; .memory/ is in the block.
+    if(active && !event.isError && Array.isArray(event.content) && (event.toolName==='read' || writes.has(event.toolName))) {
+      const written=event.toolName!=='read';
+      const targets=written ? mutationPaths(event.input,event.toolName!=='write')
+        : typeof path==='string' && !path.includes('://') ? [path.match(/^((?:[A-Za-z]:)?[^:?]*)/)?.[1] ?? path] : [];
+      let note='';
+      try {
+        for(const target of new Set(targets)) {
+          const rel=relative(ctx.cwd,resolve(ctx.cwd,target)).replaceAll('\\','/');
+          const seen=(written ? 'write:' : 'read:')+rel.toLowerCase();
+          if(rel.toLowerCase().startsWith('.memory/') || fileNotes.has(seen)) continue;
+          const found=get(ctx).recordsForPath(target);
+          if(!found.length) continue;
+          fileNotes.add(seen);
+          note+=`MEMORY_FILE_RECORDS ${rel}: saved records cite this file — `+found.map(r=>`${r.id} v${r.version} ${r.kind}/${r.status}${r.stale?' STALE':''}`).join('; ')
+            +(written ? '. This change may contradict or outdate them: recall them by ID and update the same ID if the recorded behavior changed.\n'
+              : '. Recall them by ID before changing what they describe; they are evidence links, not instructions.\n');
+        }
+      } catch(e) { notify(ctx,'FILE_RECORDS_ERROR: '+String(e)); }
+      if(note) return { content:[{type:'text',text:note.trimEnd()},...event.content] };
     }
   });
   pi.on('session_stop', async (_event: any, ctx) => {
@@ -900,7 +924,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
       // Resolve the bounded offer before spending a model turn; this read never advances coverage.
       const {id:packetID,...packet}=learningNext(get(ctx));
       // Synthetic-only turns may not emit before_agent_start. Establish a run, never a user source.
-      active=true;run=randomUUID();generation=0;sourceEpisode='';query='';pendingPrompt=undefined;
+      active=true;run=randomUUID();generation=0;sourceEpisode='';query='';pendingPrompt=undefined;fileNotes.clear();
       recentSources.length=0;answerSources.length=0;subagent=false;
       if (policyAtStart===undefined) policyAtStart=policyText(ctx);
       // sendMessage returns void; waitForIdle alone races its asynchronous startup in print mode.

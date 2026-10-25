@@ -160,6 +160,26 @@ test('records repeating another current record text are named, retired and other
   s.commit('c', [{ ...fact(s, 'Платежи: Stripe', 1), status: 'retired' }], 'retired');
   expect(s.sameTextRecords(['billing'])).toEqual([]);
 }));
+// @vshulcz/pi-deja (pi.dev, октябрь 2026) напоминает о прошлой работе в момент чтения или правки
+// файла. Здесь — только навигация: какие записи ссылаются на файл как источник или зависимость.
+test('records citing a file are found by its source or dependency path, retired ones are not', () => withStore((s, dir) => {
+  mkdirSync(join(dir, 'src'));
+  writeFileSync(join(dir, 'src/retry.ts'), 'export const RETRIES = 7;');
+  writeFileSync(join(dir, 'src/other.ts'), 'export const OTHER = 1;');
+  const episode = s.capture('s', 'user', 'Keep seven retries.');
+  s.commit('a', [
+    { id: 'retries', kind: 'fact', status: 'active', text: 'Seven retries', expectedVersion: 0, source: s.fileSource('./src/retry.ts', 'RETRIES = 7') },
+    { id: 'policy', kind: 'fact', status: 'active', text: 'Keep seven retries', expectedVersion: 0, source: { episode, quote: 'Keep seven retries.' }, dependsOn: [{ path: 'src/retry.ts' }] },
+    { id: 'old', kind: 'fact', status: 'retired', text: 'Old', expectedVersion: 0, source: s.fileSource('src/retry.ts', 'RETRIES') },
+  ], 'saved');
+  expect(s.recordsForPath('src\\retry.ts')).toEqual([
+    { id: 'policy', version: 1, kind: 'fact', status: 'active', via: 'dependsOn', stale: false },
+    { id: 'retries', version: 1, kind: 'fact', status: 'active', via: 'source', stale: false }]);
+  writeFileSync(join(dir, 'src/retry.ts'), 'export const RETRIES = 3;');
+  expect(s.recordsForPath(join(dir, 'src/retry.ts')).map(r => [r.id, r.stale])).toEqual([['policy', true], ['retries', true]]);
+  expect(s.recordsForPath('src/other.ts')).toEqual([]);
+  expect(s.recordsForPath('../outside.ts')).toEqual([]);
+}));
 test('stale concurrent update rolls back complete batch', () => withStore((s, dir) => {
   const other = new MemoryStore(dir); const a = fact(s); s.commit('a', [a], 'first');
   expect(() => other.commit('b', [{ ...a, id: 'new' }, a], 'conflict')).toThrow('VERSION_CONFLICT');
