@@ -61,6 +61,8 @@ export const scrub = (s: string) => s
   .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9._-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{40,}|xox[baprs]-[A-Za-z0-9_-]{20,}|xapp-[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16})\b/g, '[REDACTED]')
   .replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s/@]+@/gi, '$1[REDACTED]@')
   .replace(/((?:api[_-]?key|password|secret|token)\s*[:=]\s*)["']?[^\s"',;]+/gi, '$1[REDACTED]');
+// One comparison key for "the same statement": trimmed, whitespace-collapsed, case-folded text.
+export const normalizedRecordText = (text: string) => text.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
 export function safePath(root: string, path: string): string {
   if (isAbsolute(path)) throw new Error('PATH: relative project path required');
   const base = realpathSync(root), full = resolve(base, path), rel = relative(base, full);
@@ -462,6 +464,19 @@ export class MemoryStore {
     const rows=this.latestRecords(),authority=this.authority();
     const index=new Map(rows.map(r=>[r.id,{version:r.version,data:r.data}]));
     return rows.map(r=>({...r,staleReasons:this.staleness(r.data,authority,id=>index.get(id) ?? null)}));
+  }
+  // Advisory only: records carry their own evidence, so a repeated statement is named, never merged or rejected.
+  sameTextRecords(ids: string[]) {
+    const rows=this.latestRecords().filter(r=>r.data.status!=='retired');
+    const byKey=new Map<string,{id:string;version:number;status:string}[]>();
+    for(const r of rows) {
+      const key=r.data.kind+'\n'+normalizedRecordText(String(r.data.text ?? ''));
+      byKey.set(key,[...(byKey.get(key) ?? []),{id:r.id,version:r.version,status:r.data.status}]);
+    }
+    return rows.filter(r=>ids.includes(r.id)).flatMap(r=>{
+      const matches=(byKey.get(r.data.kind+'\n'+normalizedRecordText(String(r.data.text ?? ''))) ?? []).filter(m=>m.id!==r.id);
+      return matches.length ? [{id:r.id,version:r.version,matches:matches.slice(0,5)}] : [];
+    });
   }
   history(id: string) { return this.db.query('SELECT version,data,time FROM versions WHERE id=? ORDER BY version').all(id); }
   private authorityChanged(c: Change, authority: {hash:string; policyHash:string}) {

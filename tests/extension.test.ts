@@ -1153,6 +1153,32 @@ test('curated wiki keeps its record sources and becomes stale rather than silent
   } finally {f.clean();}
 });
 
+test('a commit names derived pages it made stale and records it now repeats, without blocking the save',async()=>{
+  const f=fixture(); try {
+    const quote='Use SQLite for the offline journal.';
+    await f.handlers.before_agent_start({prompt:quote},f.ctx);
+    await f.handlers.context({messages:[{role:'user',content:quote}]},f.ctx);
+    const tool=f.tools.project_memory;
+    const first=await tool.execute('save',{op:'commit',summary:'Journal',changes:[
+      {id:'journal',kind:'fact',status:'active',text:'The journal uses SQLite.',expectedVersion:0,source:{origin:'user',quote}}]},null,null,f.ctx);
+    expect(first.isError).not.toBe(true);
+    expect(first.details.wikiStale).toBeUndefined();
+    expect(first.details.sameText).toBeUndefined();
+    expect((await tool.execute('publish',{op:'wiki',action:'publish',id:'journal',title:'Journal',
+      body:'The journal uses SQLite.',records:[{id:'journal',version:1}]},null,null,f.ctx)).isError).not.toBe(true);
+    const changed=await tool.execute('save',{op:'commit',summary:'Journal and copy',changes:[
+      {id:'journal',kind:'fact',status:'active',text:'The offline journal uses SQLite.',expectedVersion:1,source:{origin:'user',quote}},
+      {id:'storage',kind:'fact',status:'active',text:'The offline  journal uses SQLite.',expectedVersion:0,source:{origin:'user',quote}}]},null,null,f.ctx);
+    expect(changed.isError).not.toBe(true);
+    expect(changed.details.saved).toBe(2);
+    expect(changed.details.wikiStale.pages.map((page:any)=>page.id)).toEqual(['journal']);
+    expect(changed.details.wikiStale.note).toContain('wiki action=read');
+    expect(changed.details.sameText.records.map((r:any)=>[r.id,r.matches.map((m:any)=>m.id)])).toEqual([['journal',['storage']],['storage',['journal']]]);
+    const s=new MemoryStore(f.dir);
+    try {expect([s.current('journal')?.version,s.current('storage')?.version]).toEqual([2,1]);} finally {s.close();}
+  } finally {f.clean();}
+});
+
 test('personal opt-in works without a project and copies only selected original evidence',async()=>{
   const f=fixture(); try {
     rmSync(join(f.dir,'.memory'),{recursive:true});

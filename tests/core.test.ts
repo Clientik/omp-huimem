@@ -147,6 +147,19 @@ test('correction supersedes old value but preserves history', () => withStore(s 
   expect(s.recall('Платежи')).toContain('YooKassa');
   expect(s.recall('Платежи')).not.toContain('Stripe'); expect(s.history('payments').length).toBe(2);
 }));
+// pi-hermes-memory bb58c12e (25.10.2026) запрещает замену, дающую дубль соседней записи. Здесь
+// записи несут разные основания, поэтому дубль не отклоняется, а называется: тот же kind и
+// нормализованный текст у другой не retired записи.
+test('records repeating another current record text are named, retired and other kinds are not', () => withStore(s => {
+  s.commit('a', [fact(s)], 'saved');
+  const copy = { ...fact(s, 'Платежи:   STRIPE '), id: 'billing' };
+  const other = { ...fact(s), id: 'payments-question', kind: 'question', status: 'open' };
+  s.commit('b', [copy, other], 'copies');
+  expect(s.sameTextRecords(['billing', 'payments-question', 'missing'])).toEqual([
+    { id: 'billing', version: 1, matches: [{ id: 'payments', version: 1, status: 'active' }] }]);
+  s.commit('c', [{ ...fact(s, 'Платежи: Stripe', 1), status: 'retired' }], 'retired');
+  expect(s.sameTextRecords(['billing'])).toEqual([]);
+}));
 test('stale concurrent update rolls back complete batch', () => withStore((s, dir) => {
   const other = new MemoryStore(dir); const a = fact(s); s.commit('a', [a], 'first');
   expect(() => other.commit('b', [{ ...a, id: 'new' }, a], 'conflict')).toThrow('VERSION_CONFLICT');

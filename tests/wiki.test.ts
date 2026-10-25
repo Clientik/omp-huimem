@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, statSync, mkdirSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryStore } from '../src/memory/core';
-import { wikiPublish, wikiRead, wikiList, wikiLint, gitHistory } from '../src/memory/wiki';
+import { wikiPublish, wikiRead, wikiList, wikiLint, wikiStaleFor, gitHistory } from '../src/memory/wiki';
 
 function fixture(fn:(store:MemoryStore,root:string)=>void) {
   const root=mkdtempSync(join(tmpdir(),'huimem-wiki-')), store=new MemoryStore(root);
@@ -52,6 +52,22 @@ describe('source-backed derived wiki',()=>{
     const changed=wikiPublish(store,{...page,body:'Changed interpretation.',expectedHash:first.hash});
     expect(changed.hash).not.toBe(first.hash);
     expect(()=>wikiPublish(store,{...page,expectedHash:first.hash})).toThrow('WIKI_CONFLICT');
+  }));
+
+  // ЗАМЕРЕНО 2026-10-25 на ai1/qwen38-flash-next (0.8.3, раунд 1): модель вызвала wiki plan до
+  // своего commit и не узнала, что этот commit сделал страницу architecture STALE; разбор завершён
+  // без обновления Wiki. Ответ commit называет такие страницы сам.
+  test('pages made stale by changed records are named, unrelated and missing Wiki stay silent',()=>fixture((store,root)=>{
+    expect(wikiStaleFor(store,['storage'])).toEqual({pages:[],truncated:false});
+    expect(existsSync(join(root,'.memory/wiki'))).toBe(false);
+    record(store); wikiPublish(store,page);
+    expect(wikiStaleFor(store,['storage'])).toEqual({pages:[],truncated:false});
+    record(store,'active',1);
+    const stale=wikiStaleFor(store,['storage']);
+    expect(stale.pages).toHaveLength(1);
+    expect(stale.pages[0]).toMatchObject({id:'storage-guide',read:expect.stringContaining('id=storage-guide')});
+    expect(stale.pages[0].sources).toEqual([expect.objectContaining({id:'storage',version:1,currentVersion:2})]);
+    expect(wikiStaleFor(store,['other'])).toEqual({pages:[],truncated:false});
   }));
 
   test('new record versions mark pages stale, and old pinned versions cannot publish',()=>fixture(store=>{

@@ -217,6 +217,27 @@ describe('one source-to-knowledge learning lifecycle',()=>{
     } finally {await f.clean();}
   });
 
+  // ЗАМЕРЕНО 2026-10-25 на ai1/qwen38-flash-next (0.8.3, раунд 3): в намеренном разборе модель
+  // вызвала op=learn без action, получила status и сообщила «complete … succeeded»; пакет остался
+  // неподтверждённым. Status внутри разбора говорит это прямо и не подтверждает ничего сам.
+  test('status inside intentional curation says the supplied packet is still unacknowledged',async()=>{
+    const f=fixture();try {
+      const quote='Use SQLite for the local journal.',original=f.store.capture('old','user',quote);
+      const running=f.commands.huimem.handler('learn',f.ctx);await f.turn.promise;
+      await f.handlers.agent_start({},f.ctx);
+      const before=revision(f.store);
+      const status=await f.ok({op:'learn'});
+      expect(status).toMatchObject({reviewedBatches:0,lastPacket:null,suppliedPacket:{acknowledged:false}});
+      expect(status.suppliedPacket.next).toContain('action=complete');
+      expect(revision(f.store)).toBe(before);
+      await f.ok({op:'commit',summary:'Saved storage.',changes:[{id:'storage',kind:'fact',status:'active',expectedVersion:0,text:quote,source:{origin:'episode',episode:original,quote}}]});
+      await f.ok({op:'learn',action:'complete',outcome:'recorded',summary:'Retained the source-backed storage fact.',records:[{id:'storage',version:1}]});
+      expect((await f.ok({op:'learn',action:'status'})).suppliedPacket).toBeUndefined();
+      await f.handlers.agent_end({},f.ctx);await running;
+      expect((await f.ok({op:'learn',action:'status'})).suppliedPacket).toBeUndefined();
+    } finally {await f.clean();}
+  });
+
   test('an empty intentional packet cannot invent an implicit acknowledgement',async()=>{
     const f=fixture();try {
       const running=f.commands.huimem.handler('learn',f.ctx);await f.turn.promise;

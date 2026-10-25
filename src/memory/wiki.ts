@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
-import { MemoryStore, scrub, type CurrentRecord } from './core';
+import { MemoryStore, normalizedRecordText, scrub, type CurrentRecord } from './core';
 
 const DIRECTORY='.memory/wiki';
 const MAX_BODY=12000, MAX_FILE=65536, MAX_SOURCES=20, MAX_SCAN=200, MAX_LIST=50;
@@ -206,6 +206,24 @@ export function wikiLint(store:MemoryStore) {
     return {checked:scanned.ids.length,issues:issues.slice(0,100),truncated:scanned.truncated || issues.length>100};
   }).deferred();
 }
+// Pages that cite one of `ids` and are STALE because of it. Reads only when a Wiki directory exists.
+export function wikiStaleFor(store:MemoryStore,ids:string[],limit=10) {
+  const wanted=new Set(ids), pages:{id:string;title:string;hash:string;read:string;sources:{id:string;version:number;currentVersion:number|null;reasons:string[]}[]}[]=[];
+  if(!wanted.size || !guardedDirectory(store)) return {pages,truncated:false};
+  return store.db.transaction(()=>{
+    const scanned=directoryIDs(store), checks=readChecks(store);
+    let matched=0;
+    for(const id of scanned.ids) {
+      const page=readPage(store,id,checks);
+      if(page.error || !page.found || page.freshness!=='STALE' || !page.sources || !page.title || !page.hash || !page.read) continue;
+      const sources=page.sources.filter(source=>wanted.has(source.id) && !source.valid)
+        .map(({id,version,currentVersion,reasons})=>({id,version,currentVersion,reasons}));
+      if(!sources.length) continue;
+      if(++matched<=limit) pages.push({id,title:page.title,hash:page.hash,read:page.read,sources});
+    }
+    return {pages,truncated:scanned.truncated || matched>limit};
+  }).deferred();
+}
 
 // Workbench projections reuse record versions and edges. No parallel entity
 // store, model-authored authority, Markdown link parser or hidden worker.
@@ -251,7 +269,7 @@ export function wikiPlan(store:MemoryStore,query='',limit=20) {
     const state=sourceState(store,{id:row.id,version:row.version},undefined,snapshot.checks);
     if(!state.view.valid) {review.push({...summary,reasons:state.view.reasons});continue;}
     if(!covered.has(`${row.id}@${row.version}`)) uncovered.push(summary);
-    const key=JSON.stringify([record.kind,record.status,record.text.trim().replace(/\s+/g,' ').toLocaleLowerCase()]);
+    const key=JSON.stringify([record.kind,record.status,normalizedRecordText(record.text)]);
     const group=groups.get(key) ?? [];
     group.push({id:row.id,version:row.version});groups.set(key,group);
   }

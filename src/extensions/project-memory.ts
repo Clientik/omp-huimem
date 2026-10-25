@@ -12,7 +12,7 @@ import { diagnoseMemory, type DoctorIssue } from '../memory/doctor';
 import { PLUGIN_VERSION, upgradeLine } from '../memory/version';
 import { copyEpisodeEvidence, guardScopePath, isWithinScope, memoryScope, personalRoot, privateScopeDirectory, readPersonalSettings, sessionRoot, setPersonalEnabled } from '../memory/scopes';
 import type { EpisodeEvidence, MemoryScope } from '../memory/scopes';
-import { wikiList, wikiRead, wikiPublish, wikiLint, wikiPlan, wikiDiscover, gitHistory } from '../memory/wiki';
+import { wikiList, wikiRead, wikiPublish, wikiLint, wikiPlan, wikiDiscover, wikiStaleFor, gitHistory } from '../memory/wiki';
 import { learningStatus, learningNext, learningRead, learningComplete } from '../memory/learning';
 
 // Метка времени до минут: полные ISO-метки с миллисекундами стоили модели ~10 токенов каждая, порядок задаёт код.
@@ -704,7 +704,14 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
         switch (p.op) {
           case 'learn':
             switch(p.action ?? 'status') {
-              case 'status': data=learningStatus(s);break;
+              case 'status': {
+                data=learningStatus(s);
+                // ЗАМЕРЕНО 2026-10-25 на ai1/qwen38-flash-next: op=learn без action внутри разбора вернул
+                // status, а модель сообщила об успешном complete. Status здесь называет то, чего не было.
+                if(scope==='project' && curation?.packetID && data.lastPacket!==curation.packetID)
+                  data={...data,suppliedPacket:{acknowledged:false,next:'This was status, not completion: the supplied packet is not acknowledged. After useful review and Wiki work, call op=learn action=complete WITHOUT id, with outcome, summary and records.'}};
+                break;
+              }
               case 'next': data=learningNext(s);break;
               case 'read': data=learningRead(s,p.id ?? '');break;
               case 'complete': {
@@ -836,6 +843,16 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
             if(data.projection.state==='pending' || data.projection.state==='conflict')
               notify(ctx,'Evidence saved; readable registry '+data.projection.state+'. Do not repeat commit: use /huimem sync. '+(data.projection.error ?? ''));
             if (architecture.configured && !architecture.ok) notify(ctx, 'ARCHITECTURE_FAILED: ' + architecture.failures.join('; '));
+            // ЗАМЕРЕНО 2026-10-25 на ai1/qwen38-flash-next: разбор вызвал wiki plan до своего commit и не
+            // узнал, что commit сделал страницу STALE. Подсказки после сохранения: сбой подсказки не
+            // превращает уже сохранённый commit в ошибку, иначе модель повторила бы его.
+            const ids=changes.map((change: any) => String(change.id));
+            if (ids.length) try {
+              const stale=wikiStaleFor(s,ids);
+              if (stale.pages.length) data.wikiStale={...stale,note:'These derived pages cite records this commit changed and are now STALE. If a page is still useful: wiki action=read id=<page>, then publish it with expectedHash and the current record versions; otherwise leave it STALE.'};
+              const same=s.sameTextRecords(ids);
+              if (same.length) data.sameText={records:same,note:'Another current record of the same kind already has this text. Update that ID instead of keeping two copies unless their sources differ deliberately; nothing was merged or rejected.'};
+            } catch (e) { notify(ctx,'COMMIT_ADVISORY_ERROR: '+String(e)); }
             break;
           }
           default: throw new Error('UNKNOWN_OPERATION');
