@@ -135,14 +135,16 @@ describe('source-backed derived wiki',()=>{
     expect(()=>wikiPublish(store,page)).toThrow('WIKI_CORRUPT');
   }));
 
-  test('an active publication lock rejects concurrent writes without stealing the lock',()=>fixture((store,root)=>{
+  // The publication itself runs under the scope database's immediate writer transaction; a file
+  // left by a crashed publisher must not turn every later publication into WIKI_CONFLICT.
+  test('a leftover lock file from an interrupted publisher does not block publication',()=>fixture((store,root)=>{
     record(store);
     mkdirSync(join(root,'.memory/wiki'));
     const lock=join(root,'.memory/wiki/.storage-guide.lock');
     writeFileSync(lock,'another publisher');
-    expect(()=>wikiPublish(store,page)).toThrow('WIKI_CONFLICT');
+    expect(wikiPublish(store,page).unchanged).toBe(false);
+    expect(existsSync(join(root,'.memory/wiki/storage-guide.md'))).toBe(true);
     expect(readFileSync(lock,'utf8')).toBe('another publisher');
-    expect(existsSync(join(root,'.memory/wiki/storage-guide.md'))).toBe(false);
   }));
   test('rejects traversal, secrets, empty sources, and symlink escape',()=>fixture((store,root)=>{
     record(store);

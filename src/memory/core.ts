@@ -567,6 +567,8 @@ export class MemoryStore {
   // своим смещением, порядок по оценке, фильтр по роли, общее число совпадений названо.
   static readonly EPISODE_CANDIDATES = 500;
   static readonly EPISODE_WINDOW = { min: 200, max: 2000, default: 600 } as const;
+  // Upper bound for an explicit original page size (limit=<UTF-16 units> with id).
+  static readonly EPISODE_PAGE_MAX = 12000;
   // Где открыть окно: там, где внутрь попадает больше всего разных слов запроса. Первое
   // совпадение не годится — в сообщении пользователя ответ часто стоит после приветствия,
   // и окно по первому слову показывало не то место (замерено на эпизоде 10d688cf HUICAD).
@@ -615,7 +617,11 @@ export class MemoryStore {
       if (!row) return { query: '', id: options.id, found: false };
       const offset = Math.min(options.offset ?? 0, row.text.length);
       if (splitsSurrogate(row.text, offset)) throw new Error('INVALID_EPISODE_OFFSET');
-      let end = Math.min(row.text.length, offset + Math.trunc(Math.min(4000, w * 4)));
+      const limit = options.limit;
+      const page = limit !== undefined && Number.isSafeInteger(limit) && limit > 0
+        ? Math.min(MemoryStore.EPISODE_PAGE_MAX, Math.max(MemoryStore.EPISODE_WINDOW.min, limit))
+        : Math.min(4000, w * 4);
+      let end = Math.min(row.text.length, offset + Math.trunc(page));
       if (splitsSurrogate(row.text, end)) end--;
       return { id: row.id, role: row.role, time: row.time, length: row.text.length, found: true,
         offset, nextOffset: end < row.text.length ? end : null,

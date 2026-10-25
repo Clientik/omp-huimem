@@ -99,13 +99,15 @@ function canonicalTarget(path: string): string {
   return resolve(realpathSync(current),...suffix);
 }
 
-// One process-local adapter, no timers, subprocesses, background models or network calls.
+// One process-local adapter: no background timers, models or network calls. The only subprocess is the on-demand `git log` behind wiki action=history (5 s timeout).
 export default function install(pi: ExtensionAPI, options: {agentDir?: string} = {}) {
   const z = pi.zod;
   const pausedProjects = new Set<string>();
   const commitsPaused = (ctx: any) => pausedProjects.has(resolve(ctx.cwd));
   let store: MemoryStore | undefined, root = '', error = '', run = '', generation = 0;
   let query = '', sourceEpisode = '', lastNotice = '', active = false;
+  // Prompt text awaiting its role: OMP appends the prompt message after before_agent_start.
+  let pendingPrompt: string | undefined;
   // История только что свернулась. Признак живёт в процессе, а не в базе: он относится к этому
   // разговору, а не к проекту. Снимается, как только сказан один раз.
   let compacted = false;
@@ -138,7 +140,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
     store?.close(); store=undefined; root='';
     for (const scoped of scopedStores.values()) scoped.close();
     scopedStores.clear(); recentEvidence.clear(); recentSources.length=0; answerSources.length=0;
-    sourceEpisode=''; query=''; run=''; generation=0; error=''; active=false;
+    sourceEpisode=''; query=''; run=''; generation=0; error=''; active=false; pendingPrompt=undefined;
     policyAtStart=undefined; compacted=false; evidenceRoot=''; noted.clear();
   }
   function remember(episode: EpisodeEvidence) {
@@ -159,6 +161,18 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
       return id;
     }
     return remember({id:randomUUID(),session:run || 'unscoped',role,text:scrub(text),time:new Date().toISOString()});
+  }
+  // Records the prompt held by before_agent_start once its message is observable. Only an observed
+  // developer, synthetic or agent-attributed message is generated text; a missing message stays user.
+  function settlePrompt(ctx: Parameters<typeof deployed>[0], messages?: readonly unknown[]) {
+    if (pendingPrompt === undefined) return;
+    const text = pendingPrompt; pendingPrompt = undefined;
+    const message = messages?.findLast((m): m is {role: string; synthetic?: unknown; attribution?: unknown} =>
+      !!m && typeof m === 'object' && 'role' in m && (m.role === 'user' || m.role === 'developer')
+      && 'content' in m && textOf(m.content) === text);
+    const machine = !!message && (message.role !== 'user' || message.synthetic === true || message.attribution === 'agent');
+    const episode = captureCurrent(ctx, machine ? 'assistant' : 'user', text);
+    if (!machine) sourceEpisode = episode;
   }
   async function scopeLocation(ctx: Parameters<typeof deployed>[0], scope: MemoryScope) {
     if (evidenceRoot && evidenceRoot!==resolve(ctx.cwd)) resetScopes();
@@ -293,7 +307,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
     if (!active && !personal) { resetScopes(); return; }
     if (!active) { store?.close(); store=undefined; root=''; error=''; }
     run = randomUUID(); generation = 0; recentSources.length = 0; answerSources.length = 0;
-    query = event.prompt ?? ''; sourceEpisode = '';
+    query = event.prompt ?? ''; sourceEpisode = ''; pendingPrompt = undefined;
     // Keep the baseline across prompts in the same project, not just one turn.
     if(policyAtStart === undefined || (root && root !== ctx.cwd)) {
       try { policyAtStart=policyText(ctx); } catch(e) { healthFailure(ctx,e); }
@@ -308,14 +322,15 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
       const original=[...branch].reverse().find(entry =>
         entry.type==='message' ? textOf(entry.message?.content)===query
           : entry.type==='custom_message' && textOf(entry.content)===query);
-      const machine=subagent || event.attribution==='agent' || original?.type==='custom_message'
+      const machine=subagent || original?.type==='custom_message'
         || (original?.message && (original.message.role!=='user' || original.message.attribution==='agent'));
       // An explicit curation guide is generated control text, not another source
       // for the learning queue. A genuine user interruption ends that exclusion.
       if(curation && !machine) {curation.cancel();curation=undefined;}
       if(curation && machine) return;
-      const episode = captureCurrent(ctx,machine ? 'assistant' : 'user',query);
-      if (!machine) sourceEpisode = episode;
+      // The prompt message is appended after this hook; its role is visible in the first context event.
+      if (machine) captureCurrent(ctx,'assistant',query);
+      else pendingPrompt = query;
     }
     catch (e) { healthFailure(ctx,e); }
   });
@@ -323,6 +338,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
     if (!active && !await personalEnabled()) return;
     if (event.message?.role !== 'assistant') return;
     if(curation) return; // Do not feed generated curation back into its own inbox.
+    try { settlePrompt(ctx); } catch (e) { healthFailure(ctx,e); }
     const text = textOf(event.message.content);
     if (!text.trim()) return;
     try {
@@ -334,6 +350,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
   pi.on('context', async (event: any, ctx) => {
     if (!active) {
       if (!await personalEnabled()) return;
+      try { settlePrompt(ctx, event.messages); } catch (e) { healthFailure(ctx, e); }
       const scoped=await auxiliaryContext(ctx,1200);
       const assistants=[...recentEvidence.values()].filter(episode=>episode.role==='assistant').slice(-4);
       const recent=assistants.length ? 'Recent assistant sources (inferences only; source.answers may name the original question): '+assistants.map(episode=>episode.id).join(', ')+'\n' : '';
@@ -343,6 +360,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
       return {messages:[...event.messages.filter(message => !(message.role==='custom' && message.customType==='project-memory-context')),
         {role:'custom',customType:'project-memory-context',content,display:false,timestamp:Date.now()}]};
     }
+    try { settlePrompt(ctx, event.messages); } catch (e) { healthFailure(ctx, e); }
     let content: string;
     try {
       const s = get(ctx);
@@ -525,6 +543,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
     if(event.toolName==='ask' && !event.isError && Array.isArray(event.content)) {
       const answers=textOf(event.content);
       if(answers.trim()) try {
+        settlePrompt(ctx);
         const episode=captureCurrent(ctx,'user',answers);
         if(!answerSources.includes(episode)) answerSources.push(episode);
         if(answerSources.length>4) answerSources.shift();
@@ -613,7 +632,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
       + 'A question you are waiting on the user for is a record too: kind=question, status=open, text = the question as you ask it. Its source is the request that left the gap — source={origin:"user",quote:"the exact words you cannot act on"} — because a question you are asking right now is not a saved message yet; a question you asked in an earlier turn can use source={origin:"episode",episode:"<that message ID>",quote:"the question"}. An open question stays in the memory block until it is saved again as answered, with links to the records the answer produced, or dropped. Keep what blocks work there rather than only in prose.\n'
       + 'dependsOn=[{id}|{path}] names what a claim relies on; code pins their versions and hashes. A dependency change marks the record STALE with a reason. Without dependsOn, file-backed records also track canonical documents; immutable conversation sources do not become stale merely because a document changed. STALE clears only through a new version saved with current dependencies.\n'
       + 'LIMITS: at most 30 changes per commit; summary is required and at most 2000 characters even when changes=[]; task=<task id> ties the summary (the next step) to that task.\n'
-      + 'READS: recall query=<text>, or id=<record> (a task also returns its last checkpoint), or id=<record>,<record>,… for up to 10 records in one call — the block names the records it had to omit, so read them by ID instead of guessing; episodes query=<text> with optional role=user|assistant ranks matching windows. Read original pages with episodes id=<id> offset=<hit.offset>, or start at offset=0 and follow nextOffset until null. Offsets are non-negative safe integers in UTF-16 units, require id and must not split a surrogate pair. Pages default to 2400 units and keep the original role; copy source quotes from their verbatim text, not search ellipses. history id=<record>; status; doctor — read-only diagnosis of records, sources, task drift and settings.\n'
+      + 'READS: recall query=<text>, or id=<record> (a task also returns its last checkpoint), or id=<record>,<record>,… for up to 10 records in one call — the block names the records it had to omit, so read them by ID instead of guessing; episodes query=<text> with optional role=user|assistant and limit=1-10 ranks matching windows. Read original pages with episodes id=<id> offset=<hit.offset>, or start at offset=0 and follow nextOffset until null. Offsets are non-negative safe integers in UTF-16 units, require id and must not split a surrogate pair. Pages default to 2400 units, or limit=<units> up to 12000 per page, and keep the original role; copy source quotes from their verbatim text, not search ellipses. history id=<record>; status; doctor — read-only diagnosis of records, sources, task drift and settings.\n'
       + 'EVIDENCE CHECKS, instead of your own SQL over the memory database: evidence id=<record> re-checks that record against its own source; evidence id=<episode> quote=<text> says whether that message really contains the quote; evidence path=<file> quote=<text> does the same for a file; evidence with neither id nor path re-checks every record and names the unconfirmed ones. No background LLM.',
     parameters: z.object({
       op: z.enum(['status','recall','episodes','history','evidence','doctor','commit','wiki','index','learn']),
@@ -739,7 +758,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
             break;
           }
           // id/offset — страница оригинала; role — фильтр поиска. Пустой запрос без id даёт обзор.
-          case 'episodes': data = s.episodes(p.query ?? query, { id: p.id, role: p.role, offset: p.offset ?? undefined }); break;
+          case 'episodes': data = s.episodes(p.query ?? query, { id: p.id, role: p.role, limit: p.limit, offset: p.offset ?? undefined }); break;
           case 'history': data = s.history(p.id ?? ''); break;
           // ЗАМЕРЕНО 2026-10-19 (audit/huicad-after-0.6.7): сверять цитаты записей с сохранёнными
           // сообщениями было нечем — op=evidence знал только файлы, — и модель 17 раз открывала
@@ -773,6 +792,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
               const source = change.source;
               if (!source) throw new Error('SOURCE_REQUIRED: use origin=user and exact current user quote, or origin=file with path and exact quote');
               if (source.origin === 'user') {
+                settlePrompt(ctx);
                 if (!sourceEpisode) throw new Error('USER_SOURCE_REQUIRED: no current user message; use an existing user episode');
                 if (source.path || source.hash || source.episode) throw new Error('SOURCE: origin=user needs only quote; code selects current user episode');
                 if (scope!=='project') {
@@ -850,7 +870,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
       setPersonalEnabled(await agentDir(),value);
       if (!value) {
         for (const [key,s] of scopedStores) if(key.startsWith('personal:')) {s.close();scopedStores.delete(key);}
-        if (!active) {recentEvidence.clear();sourceEpisode='';}
+        if (!active) {recentEvidence.clear();sourceEpisode='';pendingPrompt=undefined;}
       }
     },
     learn: async (ctx) => {
@@ -863,7 +883,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
       // Resolve the bounded offer before spending a model turn; this read never advances coverage.
       const {id:packetID,...packet}=learningNext(get(ctx));
       // Synthetic-only turns may not emit before_agent_start. Establish a run, never a user source.
-      active=true;run=randomUUID();generation=0;sourceEpisode='';query='';
+      active=true;run=randomUUID();generation=0;sourceEpisode='';query='';pendingPrompt=undefined;
       recentSources.length=0;answerSources.length=0;subagent=false;
       if (policyAtStart===undefined) policyAtStart=policyText(ctx);
       // sendMessage returns void; waitForIdle alone races its asynchronous startup in print mode.

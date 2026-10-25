@@ -56,7 +56,7 @@ const FIXES: Record<string,string> = {
   WIKI_TITLE: 'Supply a non-empty short page title within the Wiki title limit.',
   WIKI_BODY: 'Supply a non-empty concise body within the Wiki body limit; preserve unsupported claims as unknown rather than inventing evidence.',
   WIKI_SECRET: 'Remove credentials and secret patterns from the title and body before publishing.',
-  WIKI_CONFLICT: 'Read the current page and use its returned hash as expectedHash. Preserve concurrent edits and inspect any existing lock; never delete locks automatically.',
+  WIKI_CONFLICT: 'Read the current page and use its returned hash as expectedHash. Preserve concurrent edits.',
   WIKI_PATH: 'Use Wiki IDs rather than arbitrary output paths; generated pages must stay inside the selected scope Wiki directory without symbolic links.',
   WIKI_CORRUPT: 'Preserve the page and its human edits. Inspect the reported metadata or content corruption outside the agent before republishing; do not overwrite it blindly.',
   WIKI_QUERY: 'Use a bounded plain-text query for Wiki listing.',

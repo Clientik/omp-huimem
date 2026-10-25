@@ -49,6 +49,11 @@ Marketplace distribution is an optional future route if native project-scoped in
 - `ctx.agent.kind` is authoritative; older hosts lacking it retain the session-file fallback.
   Native custom/agent-attributed messages are not user evidence. `input` is not used as
   the sole capture source because print/programmatic inputs do not necessarily emit it.
+  OMP 18.11 calls `before_agent_start` with only `{prompt, images, systemPrompt}` and appends
+  the prompt message afterwards. Since 0.8.3 the prompt is held until the first `context`
+  event (or the first assistant message, ask answer or user-sourced commit) and stored as
+  assistant text when that message has role `developer`, `synthetic: true` or
+  `attribution: "agent"` — OMP plan approval is a `developer` message whose plan the agent wrote.
 - `session_start`, switch/branch/tree boundaries and shutdown close handles/reset transient
   state. Native session ID, not transcript filename, owns session scope. Resume keeps that ID.
 - Compaction adds provenance guidance to native summarization and probes real storage;

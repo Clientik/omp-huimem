@@ -170,6 +170,20 @@ test('episode page size keeps the bounded window contract',()=>withStore(s=>{
   }
 }));
 
+// ЗАМЕРЕНО 2026-10-24 в D:\NAPOLEONI: после сжатия истории задание в 51 KB перечитано 22 вызовами
+// episodes id=… offset=…, потому что limit:12000 молча игнорировался и страница оставалась 2400.
+test('an explicit limit sets the original page size within bounds',()=>withStore(s=>{
+  const original=Array.from({length:30000},(_,i)=>String.fromCharCode(97+i%26)).join(''),id=s.capture('s','user',original);
+  for(const [limit,size] of [[12000,12000],[50000,12000],[5,200],[3000,3000]]) {
+    const page=s.episodes('',{id,offset:0,limit});
+    if(!('text' in page)) throw new Error('Expected source page');
+    expect(page.text).toBe(original.slice(0,size));
+    expect(page.nextOffset).toBe(size);
+  }
+  expect(s.episodes('',{id,offset:24000,limit:12000})).toMatchObject({nextOffset:null,text:original.slice(24000)});
+  expect(s.episodes('',{id})).toMatchObject({nextOffset:2400});
+}));
+
 test('episode search cursors can read original pages when window boundaries meet emoji',()=>withStore(s=>{
   const original='x'.repeat(4400)+'😀'+'z'.repeat(198)+' OCCT '+'w'.repeat(393)+'😀'+'y'.repeat(2000);
   const id=s.capture('s','user',original);

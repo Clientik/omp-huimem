@@ -265,6 +265,7 @@ describe('one source-to-knowledge learning lifecycle',()=>{
       await f.handlers.agent_end({},f.ctx);
       await Promise.race([draining.promise,running]);
       await f.handlers.before_agent_start({prompt:'Stop learning. Inspect the CLI instead.'},f.ctx);
+      await f.handlers.context({messages:[]},f.ctx);
       await running;
       expect((await f.ok({op:'learn',action:'status'})).reviewedBatches).toBe(0);
       expect((await f.ok({op:'learn',action:'next'})).sources.map((source:any)=>source.text)).toEqual([

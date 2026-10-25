@@ -285,6 +285,7 @@ test('a storage failure is still an error',async()=>{
     mkdirSync(join(f.dir,'.memory/runtime'),{recursive:true});
     writeFileSync(join(f.dir,'.memory/runtime/state.sqlite'),'corrupt db');
     await f.handlers.before_agent_start({prompt:'Работаем'},f.ctx);
+    await f.handlers.context({messages:[]},f.ctx);
     expect(f.levels.filter(l=>l.message.includes('MEMORY_ERROR')).map(l=>l.level)).toContain('error');
   } finally { f.clean(); }
 });
@@ -404,6 +405,7 @@ test('op=doctor diagnoses without repairs and writes nothing',async()=>{
   const f=fixture(); try {
     writeFileSync(join(f.dir,'.memory/todo.json'),JSON.stringify({tasks:[{id:'only-in-file',status:'todo'}]}));
     await f.handlers.before_agent_start({prompt:'Проверь память'},f.ctx);
+    await f.handlers.context({messages:[]},f.ctx);
     // Слепок читается без открытия хранилища: обычный конструктор сам пишет пробу здоровья,
     // и измерение испортило бы то, что проверяет.
     const {statSync}=await import('node:fs');
@@ -1072,6 +1074,52 @@ test('native custom guide without an attribution field is never user evidence',a
   } finally {f.clean();}
 });
 
+// ЗАМЕРЕНО 2026-10-24 в D:\NAPOLEONI: сообщение OMP «Plan approved. <instruction>… <plan>…» с ролью
+// developer и телом плана, написанным агентом, сохранилось эпизодом role=user. OMP 18.11 добавляет
+// сообщение запроса уже после before_agent_start, поэтому роль видна только в первом context.
+test('harness-generated prompts are stored as assistant text and never back a user source',async()=>{
+  const f=fixture(); try {
+    const shapes=[{role:'developer'},{role:'user',synthetic:true},{role:'user',attribution:'agent'}];
+    for(const [n,shape] of shapes.entries()) {
+      const prompt=`Plan approved.\n\n<plan>Use SQLite ${n}.</plan>`;
+      await f.handlers.before_agent_start({prompt},f.ctx);
+      await f.handlers.context({messages:[{role:'user',content:'earlier request'},{...shape,content:prompt}]},f.ctx);
+      const result=await f.tools.project_memory.execute('save',{op:'commit',summary:'No promotion',changes:[
+        {id:'db'+n,kind:'decision',status:'accepted',text:'SQLite',rationale:`Use SQLite ${n}.`,expectedVersion:0,
+          source:{origin:'user',quote:`Use SQLite ${n}.`}}]},null,null,f.ctx);
+      expect(result.details.code).toBe('USER_SOURCE_REQUIRED');
+      const s=new MemoryStore(f.dir);
+      try {expect(s.db.query<{role:string},[string]>('SELECT role FROM episodes WHERE text=?').all(prompt).map(row=>row.role)).toEqual(['assistant']);}
+      finally {s.close();}
+    }
+    const prompt='Use PostgreSQL. Reason: transactions.';
+    await f.handlers.before_agent_start({prompt},f.ctx);
+    await f.handlers.context({messages:[{role:'user',content:prompt}]},f.ctx);
+    const saved=await f.tools.project_memory.execute('save',{op:'commit',summary:'Database',changes:[
+      {id:'db',kind:'decision',status:'accepted',text:'PostgreSQL',rationale:'transactions',expectedVersion:0,
+        source:{origin:'user',quote:prompt}}]},null,null,f.ctx);
+    expect(saved.isError).not.toBe(true);
+  } finally {f.clean();}
+});
+
+test('episodes passes limit to page reads and search',async()=>{
+  const f=fixture(); try {
+    const s=new MemoryStore(f.dir);
+    let id='';
+    try {
+      id=s.capture('seed','user',Array.from({length:30000},(_,i)=>String.fromCharCode(97+i%26)).join(''));
+      for(const n of [1,2,3]) s.capture('seed','user',`Kafka topic ${n} carries order events.`);
+    } finally {s.close();}
+    await f.handlers.before_agent_start({prompt:'Read the originals'},f.ctx);
+    const tool=f.tools.project_memory;
+    const page=await tool.execute('page',{op:'episodes',id,offset:0,limit:12000},null,null,f.ctx);
+    expect(page.details.text.length).toBe(12000);
+    expect(page.details.nextOffset).toBe(12000);
+    const found=await tool.execute('search',{op:'episodes',query:'Kafka',limit:1},null,null,f.ctx);
+    expect(found.details.hits.length).toBe(1);
+  } finally {f.clean();}
+});
+
 test('curated wiki keeps its record sources and becomes stale rather than silently refreshing',async()=>{
   const f=fixture(); try {
     const s=new MemoryStore(f.dir);
@@ -1209,7 +1257,8 @@ test('selected scoped answers retain assistant question and original user role w
       const original=await f.tools.project_memory.execute('original',{op:'episodes',scope:'personal',id},null,null,f.ctx);
       expect(original.details).toMatchObject({role,text});
     }
-    await f.handlers.before_agent_start({prompt:'Generated guidance.',attribution:'agent'},f.ctx);
+    await f.handlers.before_agent_start({prompt:'Generated guidance.'},f.ctx);
+    await f.handlers.context({messages:[{role:'developer',content:'Generated guidance.'}]},f.ctx);
     const synthetic=await f.tools.project_memory.execute('synthetic',{op:'commit',scope:'personal',summary:'No',changes:[
       {id:'generated',kind:'fact',status:'active',text:'Generated',expectedVersion:0,source:{origin:'user',quote:'Generated guidance.'}}]},null,null,f.ctx);
     expect(synthetic.details.code).toBe('USER_SOURCE_REQUIRED');

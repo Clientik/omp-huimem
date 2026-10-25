@@ -315,11 +315,9 @@ export function wikiPublish(store:MemoryStore,input:WikiPublishInput):WikiPage &
   inputCheck(input);
   // Verify before creating any output directory, then again under the SQLite writer lock.
   verifiedSources(store,input.records);
-  const directory=guardedDirectory(store,true)!, path=resolve(directory,`${input.id}.md`), lock=resolve(directory,`.${input.id}.lock`);
-  let lockFD:number;
-  try { lockFD=openSync(lock,'wx',0o600); }
-  catch(error) { if((error as NodeJS.ErrnoException).code==='EEXIST') return fail('WIKI_CONFLICT','publication lock exists; another publisher may be active; do not remove it without checking'); throw error; }
+  const directory=guardedDirectory(store,true)!, path=resolve(directory,`${input.id}.md`);
   let temp:string|undefined;
+  // Mutual exclusion is the scope database's immediate writer transaction, shared by every publisher of this Wiki.
   try {
     return store.db.transaction(()=>{
       const records=verifiedSources(store,input.records), encoded=encode(input.id,input.title,input.body,records);
@@ -343,10 +341,7 @@ export function wikiPublish(store:MemoryStore,input:WikiPublishInput):WikiPage &
       const {meta,body}=decode(encoded.bytes,input.id);
       return {...view(store,meta,body),unchanged:false};
     }).immediate();
-  } finally {
-    try { if(temp) unlinkSync(temp); }
-    finally { closeSync(lockFD); unlinkSync(lock); }
-  }
+  } finally { if(temp) unlinkSync(temp); }
 }
 
 export type GitCommit={commit:string;author:string;time:string;subject:string};

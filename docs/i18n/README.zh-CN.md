@@ -9,7 +9,7 @@
 
 在不同会话之间保留项目知识，无需运行第二个模型。当前事实保存在可读文件中，证据和版本历史保存在本地 SQLite 中。只需一个 OMP 扩展，无需独立的记忆服务器、向量嵌入服务或后台 LLM。
 
-> **预览版 v0.8.2，已在 OMP 18.11.0 上测试。** 暂不支持原版 Pi。这个插件帮助恢复和检查上下文，但不能消除模型幻觉。
+> **预览版 v0.8.3，已在 OMP 18.11.0 上测试。** 暂不支持原版 Pi。这个插件帮助恢复和检查上下文，但不能消除模型幻觉。
 
 ## 适合谁？
 
@@ -22,6 +22,18 @@
 - **有上限的上下文。** 自动注入的记忆块最多为 9,000 个字符：规则、规范文件清单，以及与问题相关的记录；需要时由代理读取完整来源。
 
 ## 安装
+
+**v0.8.3：如实记录提示来源，减少分页读取。**
+
+- 由运行环境生成的提示（OMP 计划批准的 `developer` 角色、synthetic 或 agent 归属消息）
+  保存为助手文本，不能作为 `origin=user` 或已接受决策的依据。OMP 18.11 在 `before_agent_start`
+  之后才追加提示消息，因此角色在构建第一次模型请求时确定；看不到该消息时仍按用户处理。
+  旧版本已保存的消息不会被重新标记。
+- `episodes id=<id>` 支持 `limit=<UTF-16 单位>`：每页 200 到 12,000 单位，不再固定 2400。
+  搜索支持 `limit` 为 1–10 条命中。该字段此前已在 schema 中声明但被忽略。
+- Wiki 发布不再创建 `.memory/wiki/.<id>.lock`；崩溃后残留的该文件曾导致永久 `WIKI_CONFLICT`。
+  发布由作用域数据库的 immediate 写事务串行化；0.7.0–0.8.2 残留的锁文件会被忽略，可以删除。
+- Schema 2 与记录格式保持不变。
 
 **v0.8.2：正确等待会话结束，减少重复工作。**
 
@@ -62,7 +74,7 @@ Observational Memory 与 LLM Wiki 的取舍。不添加后台 observer/reflector
   按完整 token 匹配。稀疏 IDF 排序保留不同信息，不用重复引文提高权重。
   最多三个新鲜命中可沿 `dependsOn`/`links` 带入六个一跳依据，不改变证据权威。
 - 原始消息可用 `episodes id=<id> offset=<offset>` 分页；按 `nextOffset` 继续到 `null`。
-  UTF-16 地址不能拆开代理对；默认 2400 单位，最多 4000，保留原文与角色。
+  UTF-16 地址不能拆开代理对；默认 2400 单位，`limit=<单位>` 可设每页 200–12,000，保留原文与角色。
 - **可重建的历史索引。** `.memory/runtime/search.sqlite` 用 FTS5 保存 token，
   不复制第二份对话；原始消息仍在 `state.sqlite`。旧 writer 会触发核对，
   索引失败明确显示 degraded，并完整扫描原始历史。`/huimem index [rebuild]` 用于检查或重建。
@@ -137,7 +149,7 @@ Observational Memory 与 LLM Wiki 的取舍。不添加后台 observer/reflector
 此前模型曾 34 次读取已安装的插件源码来弄清它。`project_memory op=doctor` 让模型用上与 `/huimem doctor`
 相同的只读诊断。片段搜索会打分排序、显示长消息中真正命中的部分、支持 `role=user|assistant`，并可按 id
 分页读取原始片段：`episodes id=<id> offset=<hit.offset>`，随后按 `nextOffset` 继续，直到 `null`。
-偏移量为不拆开代理对的非负安全 UTF-16 整数；默认一页 2400 单位，最多 4000 单位，保留原文与角色。
+偏移量为不拆开代理对的非负安全 UTF-16 整数；默认一页 2400 单位，`limit=<单位>` 可设每页 200–12,000 单位，保留原文与角色。
 规范部分是文件清单而不是文件正文；项目用 `/huimem include` 加入自己的文档。
 `CHECKPOINT_MISSING` 是提醒而非错误，一次性提示写入事件日志，子代理的并发无法将其冲掉（`/huimem context`
 会显示它）。
@@ -182,7 +194,7 @@ Observational Memory 与 LLM Wiki 的取舍。不添加后台 observer/reflector
 **旧 ADR：** `/huimem adr-audit` 列出缺少「依据」部分、可迁移到约定结构的 ADR，不写入任何内容。`/huimem adr-audit apply` 将记录库中用户的原话写入依据部分，并把全部原始行保留在「解释 [?]」标题下，写入前先逐字节备份到 `.memory/adr-backup/`。只有当恰好一条已接受决策按路径明确指向该文档、其理由逐字包含在引文中，并且迁移时会再次将引文与已保存的消息核对（该消息必须存在且属于用户）时才会迁移；否则显示 `UNVERIFIED`，不写入任何内容。v0.5.0 缺少最后这项核对：如果你曾在被修改、合并或恢复过的数据库上用它执行 `apply`，请将每个迁移后的依据与原始消息逐一核对。迁移后，相关的对话决策会显示 STALE。在预先登记的 20 对 20 测试中，迁移后的文档没有出现明确的错误归因，但相对未迁移文档的可靠性提升在统计上未得到证明。
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.8.2
+omp plugin install github:Clientik/omp-huimem#v0.8.3
 ```
 
 > [!IMPORTANT]
@@ -203,7 +215,7 @@ omp plugin install github:Clientik/omp-huimem#v0.8.2
 **安装状态：** 已在 Windows + OMP 18.1.5 与 18.11.0 上完整验证 GitHub 安装流程——插件安装、注册并在实际会话中运行。直接加载同样可用：
 
 ```sh
-git clone --branch v0.8.2 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.8.3 https://github.com/Clientik/omp-huimem.git
 # 在工作项目中运行，使用克隆仓库的绝对路径：
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```
