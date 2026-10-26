@@ -9,7 +9,7 @@
 
 Keep project knowledge across sessions without a second model. Current facts live in readable files; evidence and revision history live in local SQLite. One OMP extension, no memory server, embeddings service, or separate memory model; the optional curator is one side request of the model your session already uses.
 
-> **Preview v0.9.0 · Runtime checked with OMP 18.12.6; earlier releases also tested with 18.11.0.** Upstream Pi is not supported. Memory makes context easier to recover and inspect; it does not eliminate hallucinations.
+> **Preview v0.9.1 · Runtime checked with OMP 18.12.6; earlier releases also tested with 18.11.0.** Upstream Pi is not supported. Memory makes context easier to recover and inspect; it does not eliminate hallucinations.
 
 ## Why use it?
 
@@ -22,6 +22,41 @@ For developers working with an AI agent who want to stop explaining the same pro
 - **Bounded context.** The extension supplies a memory block of up to 9,000 characters: the rules, a list of the canonical files, and the records that match the question. The agent reads full sources when it needs them.
 
 ## Install
+
+**New in v0.9.1 — what was checked, whether it still holds, and how it was fixed:**
+
+- **Passed checks.** A successful `bash` check (`bun test`, `npm run typecheck`, `cargo clippy`,
+  `make check`…) after an edit is recorded with the hashes of the files the run changed by then.
+  The journal says `files unchanged since` or `changed since: <files>; rerun before relying on it`.
+  A later pass of the same command removes its earlier failure, a later failure removes its pass.
+  Reads, git, timed-out and backgrounded commands are not checks. Idea from
+  [MemTrace](https://arxiv.org/abs/2610.04838); navigation only, not evidence or registry records.
+- **After compaction** the block shows the journal of the compacted run even if a checkpoint was
+  saved: the summary may be older than the last observed check.
+- **Procedure from an observed fix.** When the same check failed and then passed and the checked
+  files are unchanged, the curator runs even after a checkpoint and may propose one `procedure`
+  (Symptom; Cause; Fix; Applies when). Its quote must be in the agent's own reply of that request,
+  so it stays `proposed`. Code appends the observed verification and pins the record to the checked
+  file hashes: changing those files makes it STALE. Idea from [REM](https://arxiv.org/abs/2610.27377).
+- **Curator wait fits OMP's 30-second handler budget:** 25 seconds in `-p`/RPC and before
+  compaction (was 45 before compaction). A slower answer is reported and not saved.
+- **A STALE match brings its new basis.** When a matching record is STALE because a record it
+  depends on changed, the block now adds that basis in its current version, marked
+  `relation: "changed basis of STALE <id>: version a -> b"`; other related rows say
+  `basis of <id>` or `linked from <id>`. On a copy of the same project, 0.9.0 answered "CSV, the
+  client requires it" from the stale decision; with this change the model answered JSON from the
+  changed basis. Ideas from [MemDerive](https://arxiv.org/abs/2610.25373) and
+  [QEMem](https://arxiv.org/abs/2610.22668v1).
+- **Tasks due when a file is touched.** A task may carry `when={paths:["src/db/*.ts"]}` (1-5
+  project globs). While it is open, the first read or edit of a matching file in a request starts
+  with `MEMORY_INTENTION_DUE`: code finds the moment, the model decides what to do. A one-off task is
+  then saved as done, a standing rule stays open. Idea from
+  [Prospective Intention Store](https://arxiv.org/abs/2609.01272); no time-based reminders.
+- **The question type breaks ties.** Among matches equal on every earlier signal, "how/steps"
+  prefers procedures, "why" decisions, "what next/status" tasks and open questions (Russian cues
+  too). Before, the ID alphabet decided: with 24 equally matching decisions and facts, 0.9.0 showed
+  no deployment steps; the new build put the procedure first. Idea from
+  [MemoType](https://arxiv.org/abs/2610.11573), without its trained router.
 
 **New in v0.9.0 — memory that does not depend on the model remembering to save:**
 
@@ -285,7 +320,7 @@ You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model
 **Legacy ADRs:** `/huimem adr-audit` lists ADRs without a basis section that can be moved into the contract, and writes nothing. `/huimem adr-audit apply` inserts the user's quote from the registry as the basis and keeps every original line under an "Interpretation [?]" heading, after a byte-exact backup to `.memory/adr-backup/`. A document is migrated only when exactly one accepted decision names it by path, its rationale is an exact excerpt of the quote, and the quote is re-checked at migration time against the stored message, which must exist and belong to the user; otherwise it is reported as `UNVERIFIED` and nothing is written. v0.5.0 skipped that last check: if you ran `apply` with it on an edited, merged or restored database, compare each migrated basis with the original message. Linked conversation decisions show STALE afterwards. In a preregistered 20-vs-20 test the migrated documents had no outright misattribution, but a reliability gain over unmigrated ones was not statistically proven.
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.9.0
+omp plugin install github:Clientik/omp-huimem#v0.9.1
 ```
 
 > [!IMPORTANT]
@@ -307,7 +342,7 @@ After `init`, ask the agent to use the `initmem` skill to map the actual code. D
 **Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 and again with 18.11.0 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
 ```sh
-git clone --branch v0.9.0 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.9.1 https://github.com/Clientik/omp-huimem.git
 # Run from your working project, using the cloned repository's absolute path:
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```

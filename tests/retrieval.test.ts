@@ -404,7 +404,7 @@ test('related evidence caps seeds independently of the six-neighbor limit',()=>f
   expect(rows(result.text).map(r=>r.id)).toEqual(['seed-0','seed-1','seed-2','seed-3','leaf-0','leaf-1','leaf-2']);
 }));
 
-test('related evidence never expands overview, required-only, retired or stale lexical seeds',()=>fixture((s,root)=>{
+test('related evidence never expands overview, required-only, retired or stale file-backed lexical seeds',()=>fixture((s,root)=>{
   save(s,'leaf','Существующее основание.');
   writeFileSync(join(root,'seed.txt'),'CSV');
   s.commit('graph',[graphChange(s,'seed','CSV',{source:s.fileSource('seed.txt','CSV'),links:['leaf']})],'graph');
@@ -428,6 +428,56 @@ test('related evidence cannot revive an old pinned dependency version',()=>fixtu
   expect(rows(result.text).map(r=>[r.id,r.version])).toEqual([['basis',2],['seed',1]]);
   expect(result.candidates.find(c=>c.id==='seed')!.stale).toBe(true);
   expect(result.candidates.every(c=>c.selectionBasis.every(b=>!b.startsWith('related:')))).toBe(true);
+}));
+
+// MemDerive (arXiv 2610.25373): большинство ошибок — нужное промежуточное состояние есть в памяти, но
+// не собрано для вопроса; неявные изменения распространяются через записанные зависимости. QEMem
+// (arXiv 2610.22668): собирать недостающие основания, а не только похожие записи. STALE-совпадение
+// уже называет причину; текущая версия изменившегося основания — то, чего не хватает для ответа.
+test('a STALE match brings the current version of its changed basis and nothing else',()=>fixture(s=>{
+  save(s,'customer-format','Клиент требует CSV.');
+  save(s,'leaf','Посторонняя заметка.');
+  s.commit('graph',[graphChange(s,'export','Экспорт отчёта в CSV.',{dependsOn:[{id:'customer-format'}],links:['leaf']})],'graph');
+  save(s,'customer-format','Клиент перешёл на JSON.','active',1);
+  const result=s.recallDetailed('экспорт отчёта',12000);
+  expect(rows(result.text).map(r=>[r.id,r.version])).toEqual([['export',1],['customer-format',2]]);
+  expect(result.candidates.find(c=>c.id==='export')!.stale).toBe(true);
+  expect(result.candidates.find(c=>c.id==='customer-format')!.selectionBasis).toEqual(['related:staleCause:export']);
+  expect(rows(result.text).find(r=>r.id==='customer-format').relation).toBe('changed basis of STALE export: version 1 -> 2');
+}));
+test('related rows name their evidential role for the matched record',()=>fixture(s=>{
+  s.commit('graph',[graphChange(s,'basis','Основание.'),graphChange(s,'note','Заметка.')],'graph');
+  s.commit('graph',[graphChange(s,'seed','Экспорт CSV.',{dependsOn:[{id:'basis'}],links:['note']})],'graph');
+  const shown=rows(s.recallDetailed('CSV',12000).text);
+  expect(shown.find(r=>r.id==='basis').relation).toBe('basis of seed');
+  expect(shown.find(r=>r.id==='note').relation).toBe('linked from seed');
+  expect(shown.find(r=>r.id==='seed').relation).toBeUndefined();
+}));
+
+// MemoType (arXiv 2610.11573): разные типы памяти отвечают разным вопросам, единая стратегия упирается
+// в предел. ЗАМЕРЕНО 2026-10-26 офлайн на настоящем recallDetailed: при 20 одинаково совпадающих
+// фактах и решениях процедура на «как развернуть сервис», решение на «почему» и задача на «что
+// дальше» с ID в конце алфавита не попадали в блок вовсе — равные совпадения решал алфавит.
+test('among equal matches the question type decides: how — procedure, why — decision, what next — task',()=>fixture(s=>{
+  const cases:[string,string,string,string][]=[
+    ['как развернуть сервис','z-steps','procedure','Развернуть сервис: make deploy, затем /health.'],
+    ['почему выбрали Postgres','z-choice','decision','Выбрали Postgres, нужны транзакции.'],
+    ['что дальше с миграцией','z-orders','task','Миграция: дальше таблица orders.'],
+  ];
+  for(const [query,id,kind,text] of cases) {
+    const status=kind==='task' ? 'todo' : kind==='decision' ? 'accepted' : 'active';
+    const noise=Array.from({length:20},(_,i)=>graphChange(s,`${id}-noise-${i}`.replace('z-','a-'),`${text} Вариант ${i}.`,
+      {kind:i%2 ? 'fact' : (kind==='decision' ? 'procedure' : 'decision'),status:i%2 ? 'active' : (kind==='decision' ? 'active' : 'accepted'),
+        ...(i%2 || kind==='decision' ? {} : {rationale:`${text} Вариант ${i}.`})}));
+    s.commit('t',noise,'noise');
+    s.commit('t',[graphChange(s,id,text,{kind,status,...(kind==='decision' ? {rationale:text} : {})})],'target');
+    const result=s.recallDetailed(query,5200,[],undefined,{automatic:true});
+    expect(rows(result.text)[0].id).toBe(id);
+    expect(result.candidates.find(c=>c.id===id)!.selectionBasis).toContain('question-type');
+  }
+  // Без вопросительного слова прежний порядок: при равенстве — ID.
+  const neutral=rows(s.recallDetailed('развернуть сервис',5200,[],undefined,{automatic:true}).text);
+  expect(neutral[0].id).toBe('a-steps-noise-0');
 }));
 
 test('related evidence stays behind fitting matches and blockers while oversized seeds use skip-fit',()=>fixture(s=>{

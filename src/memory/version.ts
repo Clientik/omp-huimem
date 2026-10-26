@@ -6,7 +6,7 @@
 // прошлом ходу, и компакция могла перенести их в свою сводку. Без явной сводки изменений
 // модель продолжает работать по старым правилам, не зная, что они другие.
 // Соответствие package.json проверяет scripts/check-package.ts.
-export const PLUGIN_VERSION = '0.9.0';
+export const PLUGIN_VERSION = '0.9.1';
 
 // Одна строка на версию: только то, что меняет ПОВЕДЕНИЕ модели, уже видевшей прежний блок.
 // Не журнал изменений для человека — его место в README. Длина важна: строка попадает в блок.
@@ -28,6 +28,7 @@ export const UPGRADE_NOTES: Record<string, string> = {
   '0.8.6': 'the starter uses the valid OMP auto-thinking ceiling xhigh instead of the ignored value high; existing project configs are not rewritten by plugin updates. Memory evidence, optional commits and tool permissions are unchanged',
   '0.8.7': 'when OMP does not expose the project_memory tool in a session, this block says PROJECT_MEMORY_TOOL_UNAVAILABLE instead of inviting a commit: do not look for it through eval or xd://, tell the user once and report durable facts in your answer',
   '0.9.0': 'this block now comes before the user request: act on the request, the block is context. AUTOMATIC WORK JOURNAL lines are navigation recorded by code when no checkpoint was saved; check files before relying on them. CONTEXT_NEARLY_FULL asks for one commit of unsaved durable work before compaction. Records named auto:<slug> are proposed by the memory curator from user quotes checked by code; treat them as proposals, confirm or correct the same ID when the user does',
+  '0.9.1': 'AUTOMATIC WORK JOURNAL also lists passed checks: "files unchanged since" or "changed since …; rerun before relying on it"; right after compaction the journal of that run is shown even with a checkpoint. When a check failed and then passed, the curator may propose one procedure (auto:<slug>, proposed) quoting your own reply; it turns STALE when the checked files change. Related rows carry relation; a STALE match brings the current version of its changed basis. A task may carry when={paths:[globs]}: the first read or edit of a matching file starts with MEMORY_INTENTION_DUE — do it, then save a one-off task as done or keep a standing rule open. Among equal matches the question type decides: how — procedure, why — decision, what next — task',
 };
 
 // Сравнение версий по числовым частям: 0.6.10 новее 0.6.9, строковое сравнение этого не даёт.

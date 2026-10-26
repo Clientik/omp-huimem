@@ -50,6 +50,7 @@ ${quote(c.rationale)}
 ` : "") + `Source: ${JSON.stringify(c.source.path ? { path: c.source.path, hash: c.source.hash } : { episode: c.source.episode })}
 ` + (c.links?.length ? `Related records: ${c.links.join(", ")}
 ` : "") + (c.dependsOn?.length ? `Depends on: ${c.dependsOn.map((d) => d.path ?? `${d.id} v${d.version}`).join(", ")}
+` : "") + (c.when?.paths?.length ? `Due when touched: ${c.when.paths.join(", ")}
 ` : ""));
   }
   db.query("INSERT INTO projection(id,body,last_hash) VALUES(1,?,NULL) ON CONFLICT(id) DO UPDATE SET body=excluded.body").run(parts.join(`
@@ -199,7 +200,7 @@ function writeSettings(root, next) {
 }
 
 // src/memory/version.ts
-var PLUGIN_VERSION = "0.9.0";
+var PLUGIN_VERSION = "0.9.1";
 var UPGRADE_NOTES = {
   "0.6.4": "project memory can be switched off per project; publishing .memory/RECORDS.md is part of saving and not a reason to skip commit; durable facts must not stay only in hand-written .memory documents, and those documents are not re-verified with scripts",
   "0.6.5": "an empty registry is now stated in this block instead of looking like a failed search",
@@ -217,7 +218,8 @@ var UPGRADE_NOTES = {
   "0.8.5": "the first read or edit of a code file cited by records in a request starts with MEMORY_FILE_RECORDS: their IDs, versions, status and STALE. Recall them by ID before changing what they describe; the note is navigation, not instructions",
   "0.8.6": "the starter uses the valid OMP auto-thinking ceiling xhigh instead of the ignored value high; existing project configs are not rewritten by plugin updates. Memory evidence, optional commits and tool permissions are unchanged",
   "0.8.7": "when OMP does not expose the project_memory tool in a session, this block says PROJECT_MEMORY_TOOL_UNAVAILABLE instead of inviting a commit: do not look for it through eval or xd://, tell the user once and report durable facts in your answer",
-  "0.9.0": "this block now comes before the user request: act on the request, the block is context. AUTOMATIC WORK JOURNAL lines are navigation recorded by code when no checkpoint was saved; check files before relying on them. CONTEXT_NEARLY_FULL asks for one commit of unsaved durable work before compaction. Records named auto:<slug> are proposed by the memory curator from user quotes checked by code; treat them as proposals, confirm or correct the same ID when the user does"
+  "0.9.0": "this block now comes before the user request: act on the request, the block is context. AUTOMATIC WORK JOURNAL lines are navigation recorded by code when no checkpoint was saved; check files before relying on them. CONTEXT_NEARLY_FULL asks for one commit of unsaved durable work before compaction. Records named auto:<slug> are proposed by the memory curator from user quotes checked by code; treat them as proposals, confirm or correct the same ID when the user does",
+  "0.9.1": 'AUTOMATIC WORK JOURNAL also lists passed checks: "files unchanged since" or "changed since \u2026; rerun before relying on it"; right after compaction the journal of that run is shown even with a checkpoint. When a check failed and then passed, the curator may propose one procedure (auto:<slug>, proposed) quoting your own reply; it turns STALE when the checked files change. Related rows carry relation; a STALE match brings the current version of its changed basis. A task may carry when={paths:[globs]}: the first read or edit of a matching file starts with MEMORY_INTENTION_DUE \u2014 do it, then save a one-off task as done or keep a standing rule open. Among equal matches the question type decides: how \u2014 procedure, why \u2014 decision, what next \u2014 task'
 };
 function compareVersions(a, b) {
   const parts = (v) => v.split(".").map((n) => Number.parseInt(n, 10) || 0);
@@ -392,6 +394,12 @@ function wordMatchesTerm(term, word) {
 var termsFrom = (tokens) => [...new Set(tokens.filter((t) => !/^\p{L}$/u.test(t)).map((t) => exactTerm(t) ? t : t.slice(0, Math.max(3, t.length - (t.length >= 5 ? 2 : 1)))))];
 var queryTerms = (query) => termsFrom(words(query));
 var AUTO_STOP = new Set(("\u0447\u0442\u043E \u043A\u0430\u043A \u043F\u043E\u0447\u0435\u043C\u0443 \u0437\u0430\u0447\u0435\u043C \u043A\u0430\u043A\u043E\u0439 \u043A\u0430\u043A\u0430\u044F \u043A\u0430\u043A\u0438\u0435 \u043A\u0430\u043A\u0443\u044E \u043A\u0430\u043A\u043E\u0435 \u043A\u043E\u0433\u0434\u0430 \u0433\u0434\u0435 \u043A\u0442\u043E \u043C\u044B \u0432\u044B \u044F \u0442\u044B \u043C\u043D\u0435 \u043D\u0430\u043C \u043D\u0430\u0441 \u043D\u0430\u0448 \u043D\u0430\u0448\u0430 \u043D\u0430\u0448\u0438 \u043C\u043E\u0439 \u043C\u043E\u044F \u043C\u043E\u0438 \u0442\u0432\u043E\u0439 \u0432\u0430\u0448 \u043E \u043E\u0431 \u043E\u0431\u043E \u043F\u0440\u043E \u043D\u0430 \u0432 \u0432\u043E \u0438\u0437 \u043E\u0442 \u0434\u043E \u0434\u043B\u044F \u043F\u043E \u043F\u043E\u0434 \u043F\u0440\u0438 \u0443 \u0438 \u0438\u043B\u0438 \u0430 \u043D\u043E \u0441 \u0441\u043E \u043A \u043A\u043E \u0437\u0430 \u044D\u0442\u043E \u044D\u0442\u043E\u0442 \u044D\u0442\u0430 \u044D\u0442\u0438 \u0442\u043E \u043B\u0438 \u0436\u0435 \u0431\u044B \u043D\u0435 \u043D\u0435\u0442 \u0434\u0430 \u0442\u043E\u043B\u044C\u043A\u043E \u0447\u0442\u0435\u043D\u0438\u0435 \u043D\u0438\u0447\u0435\u0433\u043E \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u0439 " + "what how why when where who which we us our i me my you your a an the of to for from in on at by with and or but is are was were be been do does did can could should would will this that these those it its about only read nothing save please").split(" "));
+var QUESTION_KINDS = [
+  [/(?<!\p{L})(\u043A\u0430\u043A|\u043A\u0430\u043A\u0438\u043C \u043E\u0431\u0440\u0430\u0437\u043E\u043C|\u0438\u043D\u0441\u0442\u0440\u0443\u043A\u0446\u0438\p{L}*|\u0448\u0430\u0433\p{L}*|how|steps?|procedure)(?!\p{L})/iu, ["procedure"]],
+  [/(?<!\p{L})(\u043F\u043E\u0447\u0435\u043C\u0443|\u0437\u0430\u0447\u0435\u043C|\u043E\u0442\u0447\u0435\u0433\u043E|\u043F\u0440\u0438\u0447\u0438\u043D\p{L}*|why|reasons?)(?!\p{L})/iu, ["decision"]],
+  [/(?<!\p{L})(\u0434\u0430\u043B\u044C\u0448\u0435|\u0441\u043B\u0435\u0434\u0443\u044E\u0449\p{L}*|\u043E\u0441\u0442\u0430\u043B\u043E\u0441\u044C|\u0441\u0442\u0430\u0442\u0443\u0441|next|todo|remaining|status)(?!\p{L})/iu, ["task", "question"]]
+];
+var questionKinds = (query) => new Set(QUESTION_KINDS.flatMap(([cue, kinds]) => cue.test(query) ? kinds : []));
 function admittedMatch(term, word, automatic) {
   return wordMatchesTerm(term, word) && (!automatic || exactTerm(term) || word.length - term.length <= 2);
 }
@@ -416,6 +424,34 @@ function gitBranch(root) {
 }
 var scrub = (s) => s.replace(/-----BEGIN ((?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY)-----[\s\S]*?(?:-----END \1-----|$)/g, "[REDACTED]").replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9._-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{40,}|xox[baprs]-[A-Za-z0-9_-]{20,}|xapp-[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16})\b/g, "[REDACTED]").replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s/@]+@/gi, "$1[REDACTED]@").replace(/((?:api[_-]?key|password|secret|token)\s*[:=]\s*)["']?[^\s"',;]+/gi, "$1[REDACTED]");
 var normalizedRecordText = (text) => text.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+function markdownQuote(text, quote2) {
+  if (text.includes(quote2))
+    return quote2;
+  const fold = (s) => {
+    let out = "";
+    const at = [];
+    for (let i = 0;i < s.length; i++) {
+      const ch = s[i];
+      if (ch === "`" || ch === "*" || ch === "_")
+        continue;
+      if (/\s/.test(ch)) {
+        if (!out || out.endsWith(" "))
+          continue;
+        out += " ";
+      } else
+        out += ch;
+      at.push(i);
+    }
+    return { out, at };
+  };
+  const body = fold(text), needle = fold(quote2).out.trim();
+  if (needle.length < 12)
+    return null;
+  const start = body.out.indexOf(needle);
+  if (start < 0)
+    return null;
+  return text.slice(body.at[start], body.at[start + needle.length - 1] + 1);
+}
 function safePath(root, path) {
   if (isAbsolute2(path))
     throw new Error("PATH: relative project path required");
@@ -623,12 +659,11 @@ class MemoryStore {
   events(limit = 20) {
     return this.db.query(`SELECT run,kind,detail,time FROM events ORDER BY seq DESC LIMIT ${Math.min(200, Math.max(1, limit))}`).all();
   }
-  static WORKLOG_LIMITS = { files: 12, commands: 4, text: 160 };
+  static WORKLOG_LIMITS = { files: 12, commands: 4, checks: 3, text: 160 };
   recordWork(run, entry) {
     const clip = (s) => scrub(s).slice(0, MemoryStore.WORKLOG_LIMITS.text);
     this.mutate("metadata", () => this.db.transaction(() => {
-      const row = this.db.query("SELECT detail FROM events WHERE run=? AND kind='worklog' ORDER BY seq DESC LIMIT 1").get(run);
-      const log = row ? JSON.parse(row.detail) : { files: [], commands: [] };
+      const log = this.work(run) ?? { files: [], commands: [] };
       if (entry.todo)
         log.todo = {
           phase: clip(entry.todo.phase),
@@ -640,12 +675,35 @@ class MemoryStore {
         const file = clip(entry.file);
         log.files = [...log.files.filter((f) => f !== file), file].slice(-MemoryStore.WORKLOG_LIMITS.files);
       }
-      if (entry.command)
-        log.commands = [...log.commands, { text: clip(entry.command.text), exitCode: entry.command.exitCode }].slice(-MemoryStore.WORKLOG_LIMITS.commands);
+      if (entry.command) {
+        const text = clip(entry.command.text);
+        if (log.checks)
+          log.checks = log.checks.filter((c) => c.text !== text);
+        log.commands = [...log.commands.filter((c) => c.text !== text), { text, exitCode: entry.command.exitCode }].slice(-MemoryStore.WORKLOG_LIMITS.commands);
+      }
+      if (entry.check !== undefined) {
+        const text = clip(entry.check), failure = log.commands.find((c) => c.text === text);
+        log.commands = log.commands.filter((c) => c.text !== text);
+        if (log.files.length) {
+          const recovered = failure?.exitCode ?? log.checks?.find((c) => c.text === text)?.recovered;
+          log.checks = [
+            ...(log.checks ?? []).filter((c) => c.text !== text),
+            { text, files: Object.fromEntries(log.files.map((f) => [f, this.fileHash(f)])), ...recovered === undefined ? {} : { recovered } }
+          ].slice(-MemoryStore.WORKLOG_LIMITS.checks);
+        } else if (!failure && !entry.todo && !entry.file && !entry.command)
+          return;
+      }
       this.db.query("DELETE FROM events WHERE run=? AND kind='worklog'").run(run);
       this.db.query("INSERT INTO events(run,kind,detail,time) VALUES(?,'worklog',?,?)").run(run, JSON.stringify(log), new Date().toISOString());
       this.db.exec(`DELETE FROM events WHERE seq NOT IN (SELECT seq FROM events ORDER BY seq DESC LIMIT ${MemoryStore.EVENTS_KEPT})`);
     }).immediate());
+  }
+  fileHash(path) {
+    try {
+      return hash2(sourceText(this.root, path));
+    } catch {
+      return null;
+    }
   }
   previousWork(currentRun) {
     const row = this.db.query("SELECT detail,time FROM events WHERE kind='worklog' AND run<>? ORDER BY seq DESC LIMIT 1").get(currentRun);
@@ -655,6 +713,18 @@ class MemoryStore {
     if (checkpoint && checkpoint.time >= row.time)
       return null;
     return { ...JSON.parse(row.detail), time: row.time };
+  }
+  latestWork() {
+    const row = this.db.query("SELECT run,detail,time FROM events WHERE kind='worklog' ORDER BY seq DESC LIMIT 1").get();
+    return row ? { ...JSON.parse(row.detail), run: row.run, time: row.time } : null;
+  }
+  work(run) {
+    const row = this.db.query("SELECT detail FROM events WHERE run=? AND kind='worklog' ORDER BY seq DESC LIMIT 1").get(run);
+    return row ? JSON.parse(row.detail) : null;
+  }
+  changedSinceCheck(log, check) {
+    const paths = [...new Set([...Object.keys(check.files), ...log.files])];
+    return paths.filter((p) => !(p in check.files) || check.files[p] !== this.fileHash(p));
   }
   trim(table, perRun, total) {
     this.db.exec(`DELETE FROM ${table} WHERE seq NOT IN (
@@ -801,6 +871,15 @@ class MemoryStore {
   userEpisodeQuoting(quote2) {
     const row = this.db.query("SELECT id FROM episodes WHERE role='user' AND instr(text,?)>0 ORDER BY time DESC LIMIT 1").get(quote2);
     return row?.id ?? null;
+  }
+  assistantEpisodeQuoting(quote2, since) {
+    const rows = this.db.query("SELECT id,text FROM episodes WHERE role='assistant' AND time>=? ORDER BY time DESC LIMIT 50").all(since);
+    for (const row of rows) {
+      const exact = markdownQuote(row.text, quote2);
+      if (exact)
+        return { id: row.id, quote: exact };
+    }
+    return null;
   }
   fileSource(path, quote2) {
     const text = sourceText(this.root, path);
@@ -992,6 +1071,13 @@ class MemoryStore {
       return [];
     const authority = this.authority();
     return matches.map((m) => ({ ...m, stale: this.current(m.id, () => authority)?.freshness === "STALE" }));
+  }
+  intentionsForPath(path, limit = 3) {
+    const fold = (value) => process.platform === "win32" ? value.toLowerCase() : value;
+    const target = fold(relative2(this.root, resolve4(this.root, path)).replaceAll("\\", "/"));
+    if (!target || target.startsWith("../") || isAbsolute2(target))
+      return [];
+    return this.snapshotRecords().filter((r) => r.data.kind === "task" && ["todo", "doing", "blocked"].includes(r.data.status) && (r.data.when?.paths ?? []).some((p) => new Bun.Glob(fold(p.replaceAll("\\", "/"))).match(target))).sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit).map((r) => ({ id: r.id, version: r.version, status: r.data.status, text: r.data.text }));
   }
   history(id) {
     return this.db.query("SELECT version,data,time FROM versions WHERE id=? ORDER BY version").all(id);
@@ -1301,6 +1387,11 @@ class MemoryStore {
     }
     if (c.links && (!Array.isArray(c.links) || c.links.length > 20 || c.links.some((x) => typeof x !== "string")))
       throw new Error("INVALID_LINKS");
+    if (c.when !== undefined) {
+      const paths = c.when?.paths;
+      if (c.kind !== "task" || !Array.isArray(paths) || !paths.length || paths.length > 5 || paths.some((p) => typeof p !== "string" || !p.trim() || p.length > 200 || isAbsolute2(p) || /(^|[\\/])\.\.([\\/]|$)/.test(p)))
+        throw new Error("INVALID_WHEN: when={paths:[...]} belongs on a task: 1-5 project-relative globs such as src/db/*.ts, without .. or absolute paths");
+    }
     if (c.dependsOn !== undefined) {
       if (!Array.isArray(c.dependsOn) || c.dependsOn.length > 20)
         throw new Error("INVALID_DEPENDENCIES: dependsOn must be an array of at most 20 entries");
@@ -1411,7 +1502,7 @@ class MemoryStore {
       const data = JSON.parse(row.data);
       const recordWords = words(data.text + " " + data.id + " " + (data.rationale ?? ""));
       const quoteWords = words(data.source.quote);
-      const pathWords = words([data.source.path ?? "", ...(data.dependsOn ?? []).flatMap((d) => ("path" in d) ? [d.path] : [])].join(" "));
+      const pathWords = words([data.source.path ?? "", ...(data.dependsOn ?? []).flatMap((d) => ("path" in d) ? [d.path] : []), ...data.when?.paths ?? []].join(" "));
       const parsed = {
         id: row.id,
         version: row.version,
@@ -1474,25 +1565,33 @@ class MemoryStore {
       r.relevance = r.matches.reduce((sum, matched, i) => sum + (matched ? weights[i] : 0), 0);
     const related = new Map;
     const byId = new Map(records.map((r) => [r.c.id, r]));
-    const seeds = records.filter((r) => r.score > 0 && !r.stale && r.c.status !== "retired").sort((a, b) => b.relevance - a.relevance || b.score - a.score || a.c.id.localeCompare(b.c.id)).slice(0, 3);
-    for (const seed of seeds) {
-      const edges = [
-        ["dependsOn", (seed.c.dependsOn ?? []).flatMap((d) => ("id" in d) ? [d.id] : []).sort()],
-        ["links", [...seed.c.links ?? []].sort()]
-      ];
-      for (const [kind, ids] of edges) {
-        for (const id of ids) {
-          if (related.size >= 6)
-            break;
-          const neighbor = byId.get(id);
-          if (!neighbor || neighbor.c.status === "retired" || neighbor.tier < 4 || related.has(id))
-            continue;
-          related.set(id, `related:${kind}:${seed.c.id}`);
-          neighbor.tier = 4;
-        }
+    const relate = (id, kind, seed, role) => {
+      if (related.size >= 6)
+        return;
+      const neighbor = byId.get(id);
+      if (!neighbor || neighbor.c.status === "retired" || neighbor.tier < 4 || related.has(id))
+        return;
+      related.set(id, [`related:${kind}:${seed}`, role]);
+      neighbor.tier = 4;
+    };
+    const ranked = (list) => list.filter((r) => r.score > 0 && r.c.status !== "retired").sort((a, b) => b.relevance - a.relevance || b.score - a.score || a.c.id.localeCompare(b.c.id)).slice(0, 3);
+    for (const seed of ranked(records.filter((r) => r.stale)))
+      for (const d of seed.c.dependsOn ?? []) {
+        if (!("id" in d))
+          continue;
+        const now = byId.get(d.id);
+        if (now && now.version !== d.version)
+          relate(d.id, "staleCause", seed.c.id, `changed basis of STALE ${seed.c.id}: version ${d.version} -> ${now.version}`);
       }
+    for (const seed of ranked(records.filter((r) => !r.stale))) {
+      for (const id of (seed.c.dependsOn ?? []).flatMap((d) => ("id" in d) ? [d.id] : []).sort())
+        relate(id, "dependsOn", seed.c.id, `basis of ${seed.c.id}`);
+      for (const id of [...seed.c.links ?? []].sort())
+        relate(id, "links", seed.c.id, `linked from ${seed.c.id}`);
     }
-    const eligible = records.filter((r) => r.c.status !== "retired" && (r.tier === 0 || r.score > 0 || r.pinned || related.has(r.c.id) || !options.automatic && terms.length === 0)).sort((a, b) => a.tier - b.tier || b.relevance - a.relevance || b.score - a.score || Number(a.stale) - Number(b.stale) || b.exactScore - a.exactScore || a.c.id.localeCompare(b.c.id));
+    const askedKinds = questionKinds(query);
+    const answersQuestion = (r) => r.score > 0 && askedKinds.has(r.c.kind);
+    const eligible = records.filter((r) => r.c.status !== "retired" && (r.tier === 0 || r.score > 0 || r.pinned || related.has(r.c.id) || !options.automatic && terms.length === 0)).sort((a, b) => a.tier - b.tier || b.relevance - a.relevance || b.score - a.score || Number(a.stale) - Number(b.stale) || b.exactScore - a.exactScore || Number(answersQuestion(b)) - Number(answersQuestion(a)) || a.c.id.localeCompare(b.c.id));
     const reasons = new Map;
     for (const r of records)
       reasons.set(r.c.id, r.c.status === "retired" ? "retired" : "no-match");
@@ -1535,9 +1634,11 @@ class MemoryStore {
       freshness: r.stale ? "STALE: recheck source before use" : "source unchanged or conversation",
       ...r.stale && (r.c.dependsOn || r.staleBecause.some((x) => !x.startsWith("canonical"))) ? { staleBecause: r.staleBecause.slice(0, 3) } : {},
       ...r.tier === 0 ? { required: "set by the user; applies even when unrelated to the question" } : {},
+      ...related.has(r.c.id) ? { relation: related.get(r.c.id)[1] } : {},
       ...r.c.kind === "decision" ? {
         sourceRole: r.c.source.episode ? this.episode(r.c.source.episode)?.role ?? "unknown" : "file"
       } : { text: r.c.text },
+      ...r.c.when ? { when: r.c.when } : {},
       rationale: r.c.rationale,
       source,
       links: r.c.links,
@@ -1622,7 +1723,7 @@ class MemoryStore {
       stale: r.stale,
       score: r.score,
       pinned: r.pinned,
-      selectionBasis: [...r.tier === 0 ? ["required"] : [], ...r.score > 0 ? ["query-match", ...r.matchBasis] : [], ...r.pinned ? ["pinned-status"] : [], ...related.has(r.c.id) ? [related.get(r.c.id)] : [], ...terms.length === 0 ? ["empty-query"] : []],
+      selectionBasis: [...r.tier === 0 ? ["required"] : [], ...r.score > 0 ? ["query-match", ...r.matchBasis] : [], ...answersQuestion(r) ? ["question-type"] : [], ...r.pinned ? ["pinned-status"] : [], ...related.has(r.c.id) ? [related.get(r.c.id)[0]] : [], ...terms.length === 0 ? ["empty-query"] : []],
       reason: reasons.get(r.c.id),
       supersededVersions: r.supersededVersions,
       ...options.scope ? { scope: options.scope } : {}
@@ -4287,6 +4388,15 @@ var textOf = (content) => typeof content === "string" ? content : Array.isArray(
 `) : "";
 var reads = new Set(["read", "grep", "find", "glob", "ls", "project_memory"]);
 var writes = new Set(["write", "edit", "apply_patch", "multi_edit"]);
+var CURATOR_WAIT_MS = 25000;
+var CHECK_WORD = /^(?:tests?|checks?|lint|build|verify|typecheck|tsc|pytest|vitest|jest|mocha|ctest|clippy|mypy|ruff|eslint|vet|smoke)(?:[:_-][\w:-]*)?$/i;
+var NOT_CHECK = new Set(["cat", "ls", "dir", "grep", "rg", "find", "echo", "printf", "git", "head", "tail", "type", "less", "more", "sed", "awk", "cd", "mkdir", "rm", "cp", "mv", "touch"]);
+function checkCommand(command) {
+  return command.split(/&&|\|\||[;|\n]/).some((segment) => {
+    const words2 = segment.trim().split(/\s+/).map((w) => w.replace(/^['"]+|['"]+$/g, "")).filter(Boolean);
+    return words2.length > 0 && !NOT_CHECK.has(words2[0].toLowerCase()) && words2.some((w) => CHECK_WORD.test(w));
+  });
+}
 var ENABLE_MARKER = ".memory/MEMORY.md";
 var deployed = (ctx) => existsSync5(resolve13(ctx.cwd, ENABLE_MARKER));
 var NOT_ENABLED = "PROJECT_MEMORY_NOT_ENABLED: no " + ENABLE_MARKER + " in this project. " + "Project memory is off here and no database is created. Ask the user to run /huimem init in the project root to enable it.";
@@ -4607,8 +4717,12 @@ function install(pi, options = {}) {
     if (event.toolName === "bash") {
       const code = event.details?.exitCode;
       const command = event.input?.command;
-      if (typeof command === "string" && typeof code === "number" && code !== 0)
+      if (typeof command !== "string")
+        return;
+      if (typeof code === "number" && code !== 0)
         get(ctx).recordWork(run, { command: { text: command, exitCode: code } });
+      else if (!event.isError && code === undefined && !event.details?.timedOut && !event.details?.async && checkCommand(command))
+        get(ctx).recordWork(run, { check: command });
       return;
     }
     if (!writes.has(event.toolName))
@@ -4619,7 +4733,8 @@ function install(pi, options = {}) {
         get(ctx).recordWork(run, { file: path });
   }
   function workJournal(s) {
-    const log = s.previousWork(run);
+    const latest = compacted ? s.latestWork() : null;
+    const log = latest && latest.files.length + latest.commands.length + (latest.checks?.length ?? 0) ? latest : s.previousWork(run);
     if (!log)
       return "";
     const parts = [];
@@ -4629,23 +4744,45 @@ function install(pi, options = {}) {
       parts.push("Files changed: " + log.files.slice(-8).join(", ") + (log.files.length > 8 ? ` (+${log.files.length - 8} more)` : "") + ".");
     if (log.commands.length)
       parts.push("Failed commands: " + log.commands.map((c) => `\`${c.text}\` exit ${c.exitCode}`).join("; ") + ".");
+    if (log.checks?.length)
+      parts.push("Passed checks: " + log.checks.map((c) => {
+        const changed = s.changedSinceCheck(log, c);
+        return `\`${c.text}\` (${changed.length ? `changed since: ${changed.slice(0, 4).join(", ")}${changed.length > 4 ? ` (+${changed.length - 4} more)` : ""}; rerun before relying on it` : "files unchanged since"})`;
+      }).join("; ") + ".");
     if (!parts.length)
       return "";
-    return ("AUTOMATIC WORK JOURNAL of the previous run, recorded by code from tool calls because no checkpoint was saved after it. Navigation, not evidence: check the current files before relying on it. " + parts.join(" ")).slice(0, 900) + `
+    const head = log === latest ? (latest.run === run ? "WORK JOURNAL of this run before compaction" : "WORK JOURNAL of the run before compaction") + ", recorded by code from tool calls; the summary may be older than these results. " : "AUTOMATIC WORK JOURNAL of the previous run, recorded by code from tool calls because no checkpoint was saved after it. ";
+    return (head + "Navigation, not evidence: check the current files before relying on it. " + parts.join(" ")).slice(0, 900) + `
 `;
   }
   const CURATOR_PROMPT = [
     "HUIMEM MEMORY CURATOR. This is a side request, not a turn of the conversation: do not answer the user and do not call tools.",
     "Find durable project facts and decisions that the USER stated in their own messages in this conversation and that are not saved yet in the memory registry shown in the memory block.",
-    'Return ONLY a JSON array of at most 5 items: [{"id":"short-ascii-slug","kind":"fact"|"decision","text":"one sentence","quote":"exact words"}].',
-    "quote: contiguous words copied character for character from ONE user message, never from your own replies, tool output, files or summaries; at most 300 characters.",
+    'Return ONLY a JSON array of at most 5 such items: [{"id":"short-ascii-slug","kind":"fact"|"decision","text":"one sentence","quote":"exact words"}].',
+    "Their quote: contiguous words copied character for character from ONE user message, never from your own replies, tool output, files or summaries; at most 300 characters.",
     "Skip greetings, one-off commands, questions, temporary plans and anything already saved. If nothing qualifies, return []."
   ].join(`
 `);
+  function observedFix(s, forRun) {
+    const log = forRun ? s.work(forRun) : null;
+    return log?.checks?.findLast((c) => c.recovered !== undefined && !s.changedSinceCheck(log, c).length);
+  }
+  function curatorPrompt(fix) {
+    if (!fix)
+      return CURATOR_PROMPT;
+    return CURATOR_PROMPT + `
+` + [
+      `This request fixed a failing check: \`${fix.text}\` failed with exit ${fix.recovered}, then passed after changes to ${Object.keys(fix.files).join(", ")}.`,
+      'You MAY add ONE more item: {"id":"short-ascii-slug","kind":"procedure","text":"Symptom: ...; Cause: ...; Fix: ...; Applies when: ...","quote":"exact words"}.',
+      "Its quote: contiguous words copied character for character from ONE of YOUR OWN replies in this request that states the cause or the fix; at most 300 characters.",
+      "Do not state a cause your replies did not state; without such words, omit the procedure."
+    ].join(`
+`);
+  }
   let curating;
   let curatedThrough = "";
   const curatorReady = (ctx) => active && !subagent && !commitsPaused(ctx) && typeof ctx.runEphemeralTurn === "function" && !!sourceEpisode && sourceEpisode !== curatedThrough && readSettings(ctx.cwd).curator !== "off";
-  function curatorItems(reply) {
+  function curatorItems(reply, procedure) {
     const start = reply.indexOf("["), end = reply.lastIndexOf("]");
     if (start < 0 || end < start)
       return [];
@@ -4657,53 +4794,63 @@ function install(pi, options = {}) {
     }
     if (!Array.isArray(raw))
       return [];
-    return raw.slice(0, 5).flatMap((x) => {
+    const items = raw.slice(0, 6).flatMap((x) => {
       const kind = x?.kind, text = typeof x?.text === "string" ? x.text.trim() : "", quote2 = typeof x?.quote === "string" ? x.quote.trim() : "";
-      if (kind !== "fact" && kind !== "decision" || !text || !quote2 || text.length > 600 || quote2.length > 400)
+      if (!(kind === "fact" || kind === "decision" || procedure && kind === "procedure") || !text || !quote2 || text.length > 600 || quote2.length > 400)
         return [];
       const slug = String(x.id ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || createHash7("sha256").update(quote2).digest("hex").slice(0, 10);
       return [{ id: "auto:" + slug, kind, text, quote: quote2 }];
     });
+    const facts = items.filter((i) => i.kind !== "procedure").slice(0, 5);
+    return [...facts, ...items.filter((i) => i.kind === "procedure").slice(0, 1)];
   }
   function curate(ctx, reason, signal) {
     if (curating)
       return curating;
     curatedThrough = sourceEpisode;
-    const runAtStart = run;
+    const runAtStart = run, sourceAtStart = sourceEpisode;
     curating = (async () => {
-      const reply = await ctx.runEphemeralTurn({ promptText: CURATOR_PROMPT, minimizeEffort: true, replyMaxBytes: 16384, signal });
-      const s = get(ctx), items = curatorItems(String(reply?.replyText ?? ""));
+      const fix = observedFix(get(ctx), runAtStart);
+      const reply = await ctx.runEphemeralTurn({ promptText: curatorPrompt(fix), minimizeEffort: true, replyMaxBytes: 16384, signal });
+      const s = get(ctx), items = curatorItems(String(reply?.replyText ?? ""), !!fix);
+      const since = s.episode(sourceAtStart)?.time;
       const current = s.latestRecords().filter((r) => r.data.status !== "retired");
       const quotes = new Set(current.map((r) => String(r.data.source?.quote ?? "")));
       const texts = new Set(current.map((r) => r.data.kind + `
 ` + normalizedRecordText(String(r.data.text ?? ""))));
       const saved = [], skipped = [];
       for (const item of items) {
-        const episode = s.userEpisodeQuoting(item.quote);
-        if (!episode || s.current(item.id) || quotes.has(item.quote) || texts.has(item.kind + `
-` + normalizedRecordText(item.text))) {
-          skipped.push(item.id);
+        const userEpisode = item.kind === "procedure" ? null : s.userEpisodeQuoting(item.quote);
+        const found = item.kind === "procedure" ? since ? s.assistantEpisodeQuoting(item.quote, since) : null : userEpisode ? { id: userEpisode, quote: item.quote } : null;
+        const known = !found ? "quote-not-found" : s.current(item.id) ? "id-exists" : quotes.has(found.quote) || texts.has(item.kind + `
+` + normalizedRecordText(item.text)) ? "already-saved" : "";
+        if (known || !found) {
+          skipped.push(`${item.id}:${known}`);
           continue;
         }
+        const verified = item.kind === "procedure" && fix ? {
+          text: `${item.text} Verified by code: \`${fix.text}\` exited ${fix.recovered}, then passed after the fix.`,
+          dependsOn: Object.entries(fix.files).flatMap(([path, hash5]) => hash5 ? [{ path, hash: hash5 }] : []).slice(0, 20)
+        } : { text: item.text };
         try {
           s.commit(runAtStart, [{
             id: item.id,
             kind: item.kind,
             status: "proposed",
-            text: item.text,
             expectedVersion: 0,
-            source: { episode, quote: item.quote },
-            ...item.kind === "decision" ? { rationale: item.quote } : {}
+            ...verified,
+            source: { episode: found.id, quote: found.quote },
+            ...item.kind === "decision" ? { rationale: found.quote } : {}
           }], "curator", { checkpoint: false });
           saved.push(`${item.id} (${item.kind})`);
-          quotes.add(item.quote);
-        } catch {
-          skipped.push(item.id);
+          quotes.add(found.quote);
+        } catch (e) {
+          skipped.push(`${item.id}:${String(e).slice(0, 80)}`);
         }
       }
-      trace(s, ctx, "curator", JSON.stringify({ reason, offered: items.length, saved, skipped }).slice(0, 480));
+      trace(s, ctx, "curator", JSON.stringify({ reason, offered: items.length, fix: fix?.text, saved, skipped }).slice(0, 480));
       if (saved.length)
-        notify(ctx, `huimem curator: proposed ${saved.length} record(s) quoted from your messages: ${saved.join(", ")}. They stay proposed until confirmed; /huimem curator off disables this.`, "info");
+        notify(ctx, `huimem curator: proposed ${saved.length} record(s) with quotes checked by code: ${saved.join(", ")}. They stay proposed until confirmed; /huimem curator off disables this.`, "info");
     })().catch((e) => notify(ctx, "huimem curator failed: " + String(e) + " Nothing was saved by it.", "warning")).finally(() => {
       curating = undefined;
     });
@@ -5060,8 +5207,16 @@ Do not claim memory or work was verified.`;
       try {
         for (const target of new Set(targets)) {
           const rel = relative6(ctx.cwd, resolve13(ctx.cwd, target)).replaceAll("\\", "/");
+          if (rel.toLowerCase().startsWith(".memory/"))
+            continue;
+          const due = get(ctx).intentionsForPath(target).filter((t) => !fileNotes.has("intent:" + t.id));
+          for (const t of due) {
+            fileNotes.add("intent:" + t.id);
+            note += `MEMORY_INTENTION_DUE ${rel}: ${t.id} v${t.version} task/${t.status} \u2014 "${t.text.slice(0, 300)}". This task was saved to be done when such a file is touched. Do it now if this work calls for it; then save a one-off task as done with the same ID, keep a standing rule open; if it no longer applies, update or retire it.
+`;
+          }
           const seen = (written ? "write:" : "read:") + rel.toLowerCase();
-          if (rel.toLowerCase().startsWith(".memory/") || fileNotes.has(seen))
+          if (fileNotes.has(seen))
             continue;
           const found = get(ctx).recordsForPath(target);
           if (!found.length)
@@ -5097,9 +5252,9 @@ Do not claim memory or work was verified.`;
         }
       const changedSomething = generation > 0;
       const unsaved = changedSomething && !commitsPaused(ctx) && !s.checkpoint(key());
-      const curated = unsaved && curatorReady(ctx);
+      const curated = (unsaved || changedSomething && !!observedFix(s, run)) && curatorReady(ctx);
       if (curated) {
-        const pending = curate(ctx, "turn");
+        const pending = curate(ctx, "turn", ctx.hasUI ? undefined : AbortSignal.timeout(CURATOR_WAIT_MS));
         if (!ctx.hasUI)
           await pending;
       }
@@ -5125,7 +5280,7 @@ Do not claim memory or work was verified.`;
     compacted = true;
     nearCompaction = undefined;
     if (curatorReady(ctx))
-      await curate(ctx, "compaction", AbortSignal.timeout(45000));
+      await curate(ctx, "compaction", AbortSignal.timeout(CURATOR_WAIT_MS));
     try {
       get(ctx).probe();
     } catch (e) {
@@ -5155,7 +5310,8 @@ INDEX: op=index action=status inspects the rebuildable local search sidecar; act
 ` + `SOURCE, exactly one: a current user decision \u2014 source={origin:"user",quote:"exact words from the current user message"}, the episode ID is filled by code; a file observation \u2014 source={origin:"file",path:"project-relative path",quote:"exact text from the file"}, the hash is computed by code. An accepted decision cannot rest on a file, and a quote from your own message can only support a proposed record. When the user answers a question of yours \u2014 "1. Yes", "2. It is the repository" \u2014 add source.answers=<ID of your message with the question>, listed in the block as a recent assistant source: the numbered answer alone proves nothing without it.
 ` + `A question you are waiting on the user for is a record too: kind=question, status=open, text = the question as you ask it. Its source is the request that left the gap \u2014 source={origin:"user",quote:"the exact words you cannot act on"} \u2014 because a question you are asking right now is not a saved message yet; a question you asked in an earlier turn can use source={origin:"episode",episode:"<that message ID>",quote:"the question"}. An open question stays in the memory block until it is saved again as answered, with links to the records the answer produced, or dropped. Keep what blocks work there rather than only in prose.
 ` + `dependsOn=[{id}|{path}] names what a claim relies on; code pins their versions and hashes. A dependency change marks the record STALE with a reason. Without dependsOn, file-backed records also track canonical documents; immutable conversation sources do not become stale merely because a document changed. STALE clears only through a new version saved with current dependencies.
-LIMITS: at most 30 changes per commit; summary is required and at most 2000 characters even when changes=[]; task=<task id> ties the summary (the next step) to that task.
+` + `A task to do later, when certain files are touched \u2014 "when you change the schema, add a migration" \u2014 takes when={paths:["src/db/*.ts"]}: 1-5 project-relative globs. While the task is todo, doing or blocked, the first read or edit of a matching file in a request starts with MEMORY_INTENTION_DUE; save a one-off task as done with the same ID once done, keep a standing rule open, or retire it.
+` + `LIMITS: at most 30 changes per commit; summary is required and at most 2000 characters even when changes=[]; task=<task id> ties the summary (the next step) to that task.
 ` + `READS: recall query=<text>, or id=<record> (a task also returns its last checkpoint), or id=<record>,<record>,\u2026 for up to 10 records in one call \u2014 the block names the records it had to omit, so read them by ID instead of guessing; episodes query=<text> with optional role=user|assistant and limit=1-10 ranks matching windows. Read original pages with episodes id=<id> offset=<hit.offset>, or start at offset=0 and follow nextOffset until null. Offsets are non-negative safe integers in UTF-16 units, require id and must not split a surrogate pair. Pages default to 2400 units, or limit=<units> up to 12000 per page, and keep the original role; copy source quotes from their verbatim text, not search ellipses. history id=<record>; status; doctor \u2014 read-only diagnosis of records, sources, task drift and settings.
 ` + "EVIDENCE CHECKS, instead of your own SQL over the memory database: evidence id=<record> re-checks that record against its own source; evidence id=<episode> quote=<text> says whether that message really contains the quote; evidence path=<file> quote=<text> does the same for a file; evidence with neither id nor path re-checks every record and names the unconfirmed ones. These checks are code, not a model call.",
     parameters: z.object({
@@ -5185,6 +5341,7 @@ LIMITS: at most 30 changes per commit; summary is required and at most 2000 char
         rationale: z.string().optional(),
         links: z.array(z.string()).optional(),
         dependsOn: z.array(z.object({ id: z.string().optional(), version: z.number().int().optional(), path: z.string().optional(), hash: z.string().optional() })).optional(),
+        when: z.object({ paths: z.array(z.string()) }).optional(),
         source: z.object({
           origin: z.enum(["user", "file", "episode"]).optional(),
           episode: z.string().optional(),

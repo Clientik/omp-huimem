@@ -235,6 +235,59 @@ test('the next run sees an automatic work journal until the agent saves a checkp
     expect(await memoryBlock(f,'Ещё')).not.toContain('AUTOMATIC WORK JOURNAL');
   } finally { f.clean(); }
 });
+// Идея MemTrace (arXiv 2610.04838): после смены контекста старый провал принимают за нерешённый, а
+// старую успешную проверку — за действующую, хотя код уже менялся. Журнал различает «было проверено»
+// и «остаётся проверенным» по хешам файлов этого запуска; это навигация, не доказательство.
+test('a passing check supersedes its failure and says whether its files changed since',async()=>{
+  const f=fixture(); try {
+    writeFileSync(join(f.dir,'.memory/settings.json'),JSON.stringify({curator:'off'}));
+    mkdirSync(join(f.dir,'src'),{recursive:true});
+    writeFileSync(join(f.dir,'src/a.ts'),'export const a = 1;\n');
+    await memoryBlock(f,'Чиним тесты');
+    const text=[{type:'text',text:'ok'}];
+    await f.handlers.tool_result({toolName:'edit',input:{path:'src/a.ts'},isError:false,content:text,details:{path:'src/a.ts'}},f.ctx);
+    await f.handlers.tool_result({toolName:'bash',input:{command:'bun test'},isError:true,content:text,details:{exitCode:1}},f.ctx);
+    writeFileSync(join(f.dir,'src/a.ts'),'export const a = 2;\n');
+    await f.handlers.tool_result({toolName:'edit',input:{path:'src/a.ts'},isError:false,content:text,details:{path:'src/a.ts'}},f.ctx);
+    await f.handlers.tool_result({toolName:'bash',input:{command:'bun test'},isError:false,content:text,details:{}},f.ctx);
+    // Чтение и запуск в фоне — не проверки: первое ничего не проверяет, у второго ещё нет итога.
+    await f.handlers.tool_result({toolName:'bash',input:{command:'cat tests/a.test.ts'},isError:false,content:text,details:{}},f.ctx);
+    await f.handlers.tool_result({toolName:'bash',input:{command:'bun run build'},isError:false,content:text,
+      details:{async:{state:'running',jobId:'bg_1',type:'bash'}}},f.ctx);
+    await f.handlers.session_stop({},f.ctx);
+    const next=await memoryBlock(f,'Продолжай');
+    expect(next).toContain('Passed checks: `bun test` (files unchanged since)');
+    expect(next).not.toContain('`bun test` exit 1');
+    expect(next).not.toContain('cat tests');
+    expect(next).not.toContain('bun run build');
+    // Файл изменили после проверки (пользователь или другой запуск): проверка больше не действует.
+    writeFileSync(join(f.dir,'src/a.ts'),'export const a = 3;\n');
+    const later=await memoryBlock(f,'Ещё раз');
+    expect(later).toContain('`bun test` (changed since: src/a.ts; rerun before relying on it)');
+  } finally { f.clean(); }
+});
+test('after compaction the journal of the compacted run is shown even with a checkpoint',async()=>{
+  const f=fixture(); try {
+    writeFileSync(join(f.dir,'.memory/settings.json'),JSON.stringify({curator:'off'}));
+    mkdirSync(join(f.dir,'src'),{recursive:true});
+    writeFileSync(join(f.dir,'src/a.ts'),'export const a = 1;\n');
+    writeFileSync(join(f.dir,'src/b.ts'),'export const b = 1;\n');
+    await memoryBlock(f,'Работаем');
+    const text=[{type:'text',text:'ok'}];
+    await f.handlers.tool_result({toolName:'edit',input:{path:'src/a.ts'},isError:false,content:text,details:{path:'src/a.ts'}},f.ctx);
+    await f.handlers.tool_result({toolName:'bash',input:{command:'bun run check'},isError:false,content:text,details:{}},f.ctx);
+    await f.tools.project_memory.execute('id',{op:'commit',changes:[],summary:'Проверка зелёная'},null,null,f.ctx);
+    // Файл, впервые тронутый после проверки, ею не покрыт.
+    writeFileSync(join(f.dir,'src/b.ts'),'export const b = 2;\n');
+    await f.handlers.tool_result({toolName:'edit',input:{path:'src/b.ts'},isError:false,content:text,details:{path:'src/b.ts'}},f.ctx);
+    const before=JSON.stringify(await f.handlers.context({messages:[]},f.ctx));
+    expect(before).not.toContain('WORK JOURNAL');
+    await f.handlers.session_before_compact({},f.ctx);
+    const after=JSON.stringify(await f.handlers.context({messages:[]},f.ctx));
+    expect(after).toContain('WORK JOURNAL of this run before compaction');
+    expect(after).toContain('`bun run check` (changed since: src/b.ts; rerun before relying on it)');
+  } finally { f.clean(); }
+});
 
 // Минус «сохранение только после сжатия». HISTORY_COMPACTED говорит о сжатии, когда ход
 // разговора уже пересказан. Здесь — до него: один раз за цикл сжатия, пока агент не сохранил.
@@ -330,6 +383,73 @@ test('the curator runs before compaction and can be switched off by the user',as
     await f.handlers.session_before_compact({},f.ctx);
     expect(calls).toBe(before);
     expect(f.notices.map(String).some(x=>x.includes('CHECKPOINT_MISSING'))).toBe(true);
+  } finally { f.clean(); }
+});
+
+// Идея REM (arXiv 2610.27377): завершённое исправление сохраняется короткой процедурой «симптом,
+// причина, исправление, когда применимо». Здесь только для наблюдённого исправления — та же проверка
+// упала и потом прошла, — а успех подтверждает код, не слова модели. Причину называет сам агент в
+// своём ответе, поэтому запись — proposed с источником-ответом и закреплена на проверенных файлах.
+test('a fixed check lets the curator propose a procedure pinned to the verified files',async()=>{
+  const f=fixture(); try {
+    mkdirSync(join(f.dir,'src'),{recursive:true});
+    writeFileSync(join(f.dir,'src/a.ts'),'export const a = 1;\n');
+    const calls:any[]=[];
+    f.ctx.runEphemeralTurn=async(options:any)=>{calls.push(options);return {assistantMessage:{},replyText:JSON.stringify([
+      {id:'Export Value',kind:'procedure',text:'Symptom: bun test expects a = 2. Cause: wrong export value. Fix: set a = 2 in src/a.ts. Applies when: tests read src/a.ts.',
+        quote:'причина — неверное значение экспорта a'},
+      {id:'invented',kind:'procedure',text:'Symptom: x. Fix: y.',quote:'этого никто не говорил'},
+    ])};};
+    await memoryBlock(f,'Почини тесты');
+    const text=[{type:'text',text:'ok'}];
+    await f.handlers.tool_result({toolName:'bash',input:{command:'bun test'},isError:true,content:text,details:{exitCode:1}},f.ctx);
+    // ЗАМЕРЕНО 2026-10-26 на ai1/qwen38-flash-next: ответ агента в Markdown, а цитата куратора — без
+    // обратных кавычек и звёздочек. Сохраняется точный отрезок ответа, разметка остаётся внутри.
+    await f.handlers.message_end({message:{role:'assistant',content:'Тест ждёт 2, **причина** — неверное значение экспорта `a`. Исправляю.'}},f.ctx);
+    writeFileSync(join(f.dir,'src/a.ts'),'export const a = 2;\n');
+    await f.handlers.tool_result({toolName:'edit',input:{path:'src/a.ts'},isError:false,content:text,details:{path:'src/a.ts'}},f.ctx);
+    await f.handlers.tool_result({toolName:'bash',input:{command:'bun test'},isError:false,content:text,details:{}},f.ctx);
+    // Агент сохранил чекпоинт сам; исправление всё равно стоит предложить как процедуру.
+    await f.tools.project_memory.execute('id',{op:'commit',changes:[],summary:'Тесты зелёные'},null,null,f.ctx);
+    f.ctx.hasUI=false;
+    await f.handlers.session_stop({},f.ctx);
+    expect(calls[0].promptText).toContain('`bun test` failed with exit 1');
+    const s=new MemoryStore(f.dir);
+    try {
+      const record=s.current('auto:export-value')!;
+      expect(record).toMatchObject({kind:'procedure',status:'proposed'});
+      expect(record.freshness).not.toBe('STALE');
+      expect(record.text).toContain('Verified by code: `bun test` exited 1, then passed after the fix.');
+      expect(record.dependsOn).toEqual([{path:'src/a.ts',hash:expect.any(String)}]);
+      expect(s.verifyRecord('auto:export-value')).toMatchObject({role:'assistant',match:true});
+      expect(record.source.quote).toBe('причина** — неверное значение экспорта `a');
+      expect(s.current('auto:invented')).toBeNull();
+    } finally { s.close(); }
+    // Проверенный код изменился — процедура требует проверки, а не повторяется как действующая.
+    writeFileSync(join(f.dir,'src/a.ts'),'export const a = 3;\n');
+    const later=new MemoryStore(f.dir);
+    try { expect(later.current('auto:export-value')!.freshness).toBe('STALE'); } finally { later.close(); }
+  } finally { f.clean(); }
+});
+test('without an observed fix the curator is not asked for procedures and ignores them',async()=>{
+  const f=fixture(); try {
+    mkdirSync(join(f.dir,'src'),{recursive:true});
+    writeFileSync(join(f.dir,'src/a.ts'),'export const a = 1;\n');
+    const calls:any[]=[];
+    f.ctx.runEphemeralTurn=async(options:any)=>{calls.push(options);return {assistantMessage:{},replyText:JSON.stringify([
+      {id:'guess',kind:'procedure',text:'Symptom: none. Fix: none.',quote:'Готово, тесты проходят'}])};};
+    await memoryBlock(f,'Поправь a');
+    const text=[{type:'text',text:'ok'}];
+    await f.handlers.tool_result({toolName:'edit',input:{path:'src/a.ts'},isError:false,content:text,details:{path:'src/a.ts'}},f.ctx);
+    await f.handlers.tool_result({toolName:'bash',input:{command:'bun test'},isError:false,content:text,details:{}},f.ctx);
+    await f.handlers.message_end({message:{role:'assistant',content:'Готово, тесты проходят.'}},f.ctx);
+    // Без интерфейса конец хода ждёт куратора (как в -p), поэтому таймер не нужен.
+    f.ctx.hasUI=false;
+    await f.handlers.session_stop({},f.ctx);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].promptText).not.toContain('procedure');
+    const s=new MemoryStore(f.dir);
+    try { expect(s.current('auto:guess')).toBeNull(); } finally { s.close(); }
   } finally { f.clean(); }
 });
 
@@ -1374,6 +1494,40 @@ test('the first read or edit of a file cited by records names them once per requ
     expect(edited.content[0].text).toContain('same ID');
     await f.handlers.before_agent_start({prompt:'Next request'},f.ctx);
     expect((await f.handlers.tool_result({toolName:'read',input:{path:'src/retry.ts'},content,isError:false},f.ctx)).content[0].text).toContain('retries v1');
+  } finally {f.clean();}
+});
+
+// Prospective Intention Store (arXiv 2609.01272): отложенное намерение — запись (условие, действие,
+// статус), условие проверяет код, решает модель. Здесь условие — работа с файлом по шаблону пути;
+// напоминание приходит в результате чтения или правки, а не в каждом блоке памяти.
+test('a task with a file trigger is due when a matching file is read or edited',async()=>{
+  const f=fixture(); try {
+    mkdirSync(join(f.dir,'src/db'),{recursive:true});
+    writeFileSync(join(f.dir,'src/db/schema.ts'),'export const users = {};');
+    writeFileSync(join(f.dir,'src/other.ts'),'export const OTHER = 1;');
+    await f.handlers.before_agent_start({prompt:'Когда меняешь схему в src/db, добавляй миграцию.'},f.ctx);
+    const commit=(change:any)=>f.tools.project_memory.execute('id',{op:'commit',summary:'Намерение',changes:[change]},null,null,f.ctx);
+    const base={id:'migrate-after-schema',kind:'task',status:'todo',text:'После правки схемы добавить миграцию в migrations/.',
+      expectedVersion:0,source:{origin:'user',quote:'Когда меняешь схему в src/db, добавляй миграцию.'}};
+    // Условие — только у задачи и только внутри проекта.
+    expect(String((await commit({...base,kind:'fact',status:'active',when:{paths:['src/db/*.ts']}})).content[0].text)).toContain('INVALID_WHEN');
+    expect(String((await commit({...base,when:{paths:['../outside/*.ts']}})).content[0].text)).toContain('INVALID_WHEN');
+    expect((await commit({...base,when:{paths:['src/db/*.ts']}})).isError).not.toBe(true);
+    const block=await memoryBlock(f,'Добавь поле email');
+    expect(block).toContain('"when":{"paths":["src/db/*.ts"]}');
+    const content=[{type:'text',text:'ok'}];
+    const edited=await f.handlers.tool_result({toolName:'edit',input:{path:'src/db/schema.ts'},content,isError:false,details:{path:'src/db/schema.ts'}},f.ctx);
+    expect(edited.content[0].text).toContain('MEMORY_INTENTION_DUE src/db/schema.ts: migrate-after-schema v1 task/todo');
+    expect(edited.content[0].text).toContain('После правки схемы добавить миграцию в migrations/.');
+    expect(edited.content.slice(1)).toEqual(content);
+    // Один раз за запрос; посторонний файл не срабатывает.
+    expect(await f.handlers.tool_result({toolName:'read',input:{path:'src/db/schema.ts'},content,isError:false},f.ctx)).toBeUndefined();
+    expect(await f.handlers.tool_result({toolName:'read',input:{path:'src/other.ts'},content,isError:false},f.ctx)).toBeUndefined();
+    await f.handlers.before_agent_start({prompt:'Готово, миграция есть.'},f.ctx);
+    expect((await commit({...base,status:'done',expectedVersion:1,when:{paths:['src/db/*.ts']},
+      source:{origin:'user',quote:'Готово, миграция есть.'}})).isError).not.toBe(true);
+    await f.handlers.before_agent_start({prompt:'Ещё поле'},f.ctx);
+    expect(await f.handlers.tool_result({toolName:'read',input:{path:'src/db/schema.ts'},content,isError:false},f.ctx)).toBeUndefined();
   } finally {f.clean();}
 });
 

@@ -2,7 +2,7 @@ import type { ExtensionAPI } from '@oh-my-pi/pi-coding-agent';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, resolve, relative } from 'node:path';
-import { MemoryStore, architectureCheck, gitBranch, normalizedRecordText, scrub } from '../memory/core';
+import { MemoryStore, architectureCheck, gitBranch, normalizedRecordText, scrub, type WorkCheck } from '../memory/core';
 import { readSettings, writeSettings } from '../memory/settings';
 import { packContext } from '../memory/context-pack';
 import { provenanceNote, readBasis, isAdrRead } from '../memory/provenance';
@@ -23,6 +23,23 @@ const textOf = (content: any): string => typeof content === 'string' ? content :
 const reads = new Set(['read','grep','find','glob','ls','project_memory']);
 // Инструменты записи OMP: по ним узнаём ручную правку документов памяти.
 const writes = new Set(['write','edit','apply_patch','multi_edit']);
+// ЗАМЕРЕНО 2026-10-26 на OMP 18.12.6, ai1/qwen38-flash-next, -p: побочный запрос куратора шёл
+// дольше 30 с, OMP прервал session_stop («Extension handler timed out», timeoutMs 30000) — у
+// большинства обработчиков бюджет 30 с (docs/extensions.md). Прежние 45 с перед сжатием им не
+// помещались. Своё ожидание короче бюджета: отказ куратора сообщается им самим, а не таймаутом OMP.
+const CURATOR_WAIT_MS = 25_000;
+// Успешная команда считается проверкой по словам, а не по путям: `bun test`, `npm run typecheck`,
+// `cargo clippy`, `make check`, `python -m pytest`. Чтение, навигация и git ничего не проверяют,
+// даже со словом test в аргументах; `build.js` и `tests/` — пути, не команды. Это эвристика
+// навигационного журнала: ошибка в ней не меняет записей реестра и их доказательств.
+const CHECK_WORD = /^(?:tests?|checks?|lint|build|verify|typecheck|tsc|pytest|vitest|jest|mocha|ctest|clippy|mypy|ruff|eslint|vet|smoke)(?:[:_-][\w:-]*)?$/i;
+const NOT_CHECK = new Set(['cat','ls','dir','grep','rg','find','echo','printf','git','head','tail','type','less','more','sed','awk','cd','mkdir','rm','cp','mv','touch']);
+function checkCommand(command: string): boolean {
+  return command.split(/&&|\|\||[;|\n]/).some(segment => {
+    const words = segment.trim().split(/\s+/).map(w => w.replace(/^['"]+|['"]+$/g, '')).filter(Boolean);
+    return words.length > 0 && !NOT_CHECK.has(words[0].toLowerCase()) && words.some(w => CHECK_WORD.test(w));
+  });
+}
 // ПАМЯТЬ ВКЛЮЧАЕТСЯ ЯВНО, ПО ПРОЕКТУ. Расширение ставится глобально и грузится всюду,
 // где запущен omp. Без этой проверки оно заводило `.memory/runtime/state.sqlite` в любом
 // каталоге — в том числе в чужих репозиториях, где память не нужна, а `.gitignore` её не
@@ -305,9 +322,11 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
   }
   function key() { return `${run}:${generation}`; }
   // Журнал работы из вызовов инструментов, без модели (идеи oats Plan/Progress/Next и пассивных
-  // записей engram): состояние todo, изменённые файлы, упавшие команды. Форма событий сверена с
-  // исходниками OMP 18.12.6: todo — details.phases[].tasks[].status, bash — details.exitCode
-  // только при ненулевом коде, правки — input.path или hashline-заголовки в input.
+  // записей engram): состояние todo, изменённые файлы, упавшие команды, успешные проверки. Форма
+  // событий сверена с исходниками OMP 18.12.6: todo — details.phases[].tasks[].status, bash —
+  // details.exitCode только при ненулевом коде, timedOut/async у прерванных и ушедших в фон
+  // (tools/bash.ts #buildCompletedResult/#buildBackgroundStartResult), правки — input.path или
+  // hashline-заголовки в input.
   function recordWork(ctx: any, event: any) {
     if (event.isError && event.toolName !== 'bash') return;
     if (event.toolName === 'todo') {
@@ -324,7 +343,10 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
     if (event.toolName === 'bash') {
       const code = event.details?.exitCode;
       const command = event.input?.command;
-      if (typeof command === 'string' && typeof code === 'number' && code !== 0) get(ctx).recordWork(run, { command: { text: command, exitCode: code } });
+      if (typeof command !== 'string') return;
+      if (typeof code === 'number' && code !== 0) get(ctx).recordWork(run, { command: { text: command, exitCode: code } });
+      else if (!event.isError && code === undefined && !event.details?.timedOut && !event.details?.async && checkCommand(command))
+        get(ctx).recordWork(run, { check: command });
       return;
     }
     if (!writes.has(event.toolName)) return;
@@ -333,15 +355,25 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
       if (!path.startsWith('..') && !path.toLowerCase().startsWith('.memory/runtime/')) get(ctx).recordWork(run, { file: path });
   }
   function workJournal(s: MemoryStore): string {
-    const log = s.previousWork(run);
+    // После сжатия — журнал сжатого запуска даже при чекпоинте: сводка пересказывает итоги проверок,
+    // журнал хранит последний наблюдённый исход и видит правки файлов после него.
+    const latest = compacted ? s.latestWork() : null;
+    const log = latest && latest.files.length + latest.commands.length + (latest.checks?.length ?? 0) ? latest : s.previousWork(run);
     if (!log) return '';
     const parts: string[] = [];
     if (log.todo) parts.push(`todo ${log.todo.phase ? `"${log.todo.phase}" ` : ''}${log.todo.done}/${log.todo.total} done${log.todo.current ? `, in progress: ${log.todo.current}` : ''}.`);
     if (log.files.length) parts.push('Files changed: ' + log.files.slice(-8).join(', ') + (log.files.length > 8 ? ` (+${log.files.length - 8} more)` : '') + '.');
     if (log.commands.length) parts.push('Failed commands: ' + log.commands.map(c => `\`${c.text}\` exit ${c.exitCode}`).join('; ') + '.');
+    if (log.checks?.length) parts.push('Passed checks: ' + log.checks.map(c => {
+      const changed = s.changedSinceCheck(log, c);
+      return `\`${c.text}\` (${changed.length ? `changed since: ${changed.slice(0, 4).join(', ')}${changed.length > 4 ? ` (+${changed.length - 4} more)` : ''}; rerun before relying on it` : 'files unchanged since'})`;
+    }).join('; ') + '.');
     if (!parts.length) return '';
-    return ('AUTOMATIC WORK JOURNAL of the previous run, recorded by code from tool calls because no checkpoint was saved after it. '
-      + 'Navigation, not evidence: check the current files before relying on it. ' + parts.join(' ')).slice(0, 900) + '\n';
+    const head = log === latest
+      ? (latest.run === run ? 'WORK JOURNAL of this run before compaction' : 'WORK JOURNAL of the run before compaction')
+        + ', recorded by code from tool calls; the summary may be older than these results. '
+      : 'AUTOMATIC WORK JOURNAL of the previous run, recorded by code from tool calls because no checkpoint was saved after it. ';
+    return (head + 'Navigation, not evidence: check the current files before relying on it. ' + parts.join(' ')).slice(0, 900) + '\n';
   }
   // КУРАТОР. Минус «модель забыла сохранить — ничего не подстрахует» закрывается побочным ходом той
   // же модели сессии (идея review/flush pi-hermes-memory, но без второй модели и фоновой очереди).
@@ -349,57 +381,87 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
   // историю ничего не добавляет и вызовы инструментов отбрасывает. tools не передаётся: каталог
   // основного хода сохраняет кэш промпта, а tools:false на части моделей отказывает при истории с
   // вызовами инструментов. minimizeEffort — самое низкое усилие там, где кэш при этом сохраняется.
-  // Модель только называет слова пользователя; ID сообщения находит код, запись — всегда proposed,
-  // без чекпоинта: следующий шаг агента не подменяется.
+  // Модель только называет слова; ID сообщения находит код, запись — всегда proposed, без
+  // чекпоинта: следующий шаг агента не подменяется.
   const CURATOR_PROMPT = [
     'HUIMEM MEMORY CURATOR. This is a side request, not a turn of the conversation: do not answer the user and do not call tools.',
     'Find durable project facts and decisions that the USER stated in their own messages in this conversation and that are not saved yet in the memory registry shown in the memory block.',
-    'Return ONLY a JSON array of at most 5 items: [{"id":"short-ascii-slug","kind":"fact"|"decision","text":"one sentence","quote":"exact words"}].',
-    'quote: contiguous words copied character for character from ONE user message, never from your own replies, tool output, files or summaries; at most 300 characters.',
+    'Return ONLY a JSON array of at most 5 such items: [{"id":"short-ascii-slug","kind":"fact"|"decision","text":"one sentence","quote":"exact words"}].',
+    'Their quote: contiguous words copied character for character from ONE user message, never from your own replies, tool output, files or summaries; at most 300 characters.',
     'Skip greetings, one-off commands, questions, temporary plans and anything already saved. If nothing qualifies, return [].',
   ].join('\n');
+  // Идея REM (arXiv 2610.27377): завершённое исправление — короткая процедура «симптом, причина,
+  // исправление, когда применимо». Предлагается только при наблюдённом исправлении: та же проверка
+  // упала и потом прошла, а проверенные файлы с тех пор не менялись. Успех подтверждает журнал, не
+  // слова модели; причину агент называл сам, поэтому основание — его ответ, статус — proposed.
+  function observedFix(s: MemoryStore, forRun: string): WorkCheck | undefined {
+    const log = forRun ? s.work(forRun) : null;
+    return log?.checks?.findLast(c => c.recovered !== undefined && !s.changedSinceCheck(log, c).length);
+  }
+  function curatorPrompt(fix: WorkCheck | undefined) {
+    if (!fix) return CURATOR_PROMPT;
+    return CURATOR_PROMPT + '\n' + [
+      `This request fixed a failing check: \`${fix.text}\` failed with exit ${fix.recovered}, then passed after changes to ${Object.keys(fix.files).join(', ')}.`,
+      'You MAY add ONE more item: {"id":"short-ascii-slug","kind":"procedure","text":"Symptom: ...; Cause: ...; Fix: ...; Applies when: ...","quote":"exact words"}.',
+      'Its quote: contiguous words copied character for character from ONE of YOUR OWN replies in this request that states the cause or the fix; at most 300 characters.',
+      'Do not state a cause your replies did not state; without such words, omit the procedure.',
+    ].join('\n');
+  }
   let curating: Promise<void> | undefined;
   // Последнее сообщение пользователя, после которого куратор уже ходил: один проход на запрос.
   let curatedThrough = '';
   const curatorReady = (ctx: any) => active && !subagent && !commitsPaused(ctx) && typeof ctx.runEphemeralTurn === 'function'
     && !!sourceEpisode && sourceEpisode !== curatedThrough && readSettings(ctx.cwd).curator !== 'off';
-  function curatorItems(reply: string) {
+  function curatorItems(reply: string, procedure: boolean) {
     const start = reply.indexOf('['), end = reply.lastIndexOf(']');
     if (start < 0 || end < start) return [];
     let raw: unknown;
     try { raw = JSON.parse(reply.slice(start, end + 1)); } catch { return []; }
     if (!Array.isArray(raw)) return [];
-    return raw.slice(0, 5).flatMap((x: any) => {
+    const items = raw.slice(0, 6).flatMap((x: any) => {
       const kind = x?.kind, text = typeof x?.text === 'string' ? x.text.trim() : '', quote = typeof x?.quote === 'string' ? x.quote.trim() : '';
-      if ((kind !== 'fact' && kind !== 'decision') || !text || !quote || text.length > 600 || quote.length > 400) return [];
+      if (!(kind === 'fact' || kind === 'decision' || (procedure && kind === 'procedure')) || !text || !quote || text.length > 600 || quote.length > 400) return [];
       const slug = String(x.id ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60)
         || createHash('sha256').update(quote).digest('hex').slice(0, 10);
-      return [{ id: 'auto:' + slug, kind: kind as 'fact' | 'decision', text, quote }];
+      return [{ id: 'auto:' + slug, kind: kind as 'fact' | 'decision' | 'procedure', text, quote }];
     });
+    const facts = items.filter(i => i.kind !== 'procedure').slice(0, 5);
+    return [...facts, ...items.filter(i => i.kind === 'procedure').slice(0, 1)];
   }
   function curate(ctx: any, reason: 'turn' | 'compaction', signal?: AbortSignal): Promise<void> {
     if (curating) return curating;
     curatedThrough = sourceEpisode;
-    const runAtStart = run;
+    const runAtStart = run, sourceAtStart = sourceEpisode;
     curating = (async () => {
-      const reply = await ctx.runEphemeralTurn({ promptText: CURATOR_PROMPT, minimizeEffort: true, replyMaxBytes: 16384, signal });
-      const s = get(ctx), items = curatorItems(String(reply?.replyText ?? ''));
+      const fix = observedFix(get(ctx), runAtStart);
+      const reply = await ctx.runEphemeralTurn({ promptText: curatorPrompt(fix), minimizeEffort: true, replyMaxBytes: 16384, signal });
+      const s = get(ctx), items = curatorItems(String(reply?.replyText ?? ''), !!fix);
+      const since: string | undefined = s.episode(sourceAtStart)?.time;
       const current = s.latestRecords().filter(r => r.data.status !== 'retired');
       const quotes = new Set(current.map(r => String(r.data.source?.quote ?? '')));
       const texts = new Set(current.map(r => r.data.kind + '\n' + normalizedRecordText(String(r.data.text ?? ''))));
       const saved: string[] = [], skipped: string[] = [];
       for (const item of items) {
-        const episode = s.userEpisodeQuoting(item.quote);
-        if (!episode || s.current(item.id) || quotes.has(item.quote) || texts.has(item.kind + '\n' + normalizedRecordText(item.text))) { skipped.push(item.id); continue; }
+        // Для процедуры код находит точный отрезок ответа агента, даже если модель сняла разметку.
+        const userEpisode = item.kind === 'procedure' ? null : s.userEpisodeQuoting(item.quote);
+        const found = item.kind === 'procedure' ? (since ? s.assistantEpisodeQuoting(item.quote, since) : null)
+          : userEpisode ? { id: userEpisode, quote: item.quote } : null;
+        const known = !found ? 'quote-not-found' : s.current(item.id) ? 'id-exists' : quotes.has(found.quote) || texts.has(item.kind + '\n' + normalizedRecordText(item.text)) ? 'already-saved' : '';
+        if (known || !found) { skipped.push(`${item.id}:${known}`); continue; }
+        // Процедура закреплена на проверенных файлах: их смена делает её STALE, как и итог проверки.
+        const verified = item.kind === 'procedure' && fix ? {
+          text: `${item.text} Verified by code: \`${fix.text}\` exited ${fix.recovered}, then passed after the fix.`,
+          dependsOn: Object.entries(fix.files).flatMap(([path, hash]) => hash ? [{ path, hash }] : []).slice(0, 20),
+        } : { text: item.text };
         try {
-          s.commit(runAtStart, [{ id: item.id, kind: item.kind, status: 'proposed', text: item.text, expectedVersion: 0,
-            source: { episode, quote: item.quote }, ...(item.kind === 'decision' ? { rationale: item.quote } : {}) }], 'curator', { checkpoint: false });
+          s.commit(runAtStart, [{ id: item.id, kind: item.kind, status: 'proposed', expectedVersion: 0, ...verified,
+            source: { episode: found.id, quote: found.quote }, ...(item.kind === 'decision' ? { rationale: found.quote } : {}) }], 'curator', { checkpoint: false });
           saved.push(`${item.id} (${item.kind})`);
-          quotes.add(item.quote);
-        } catch { skipped.push(item.id); }
+          quotes.add(found.quote);
+        } catch (e) { skipped.push(`${item.id}:${String(e).slice(0, 80)}`); }
       }
-      trace(s, ctx, 'curator', JSON.stringify({ reason, offered: items.length, saved, skipped }).slice(0, 480));
-      if (saved.length) notify(ctx, `huimem curator: proposed ${saved.length} record(s) quoted from your messages: ${saved.join(', ')}. `
+      trace(s, ctx, 'curator', JSON.stringify({ reason, offered: items.length, fix: fix?.text, saved, skipped }).slice(0, 480));
+      if (saved.length) notify(ctx, `huimem curator: proposed ${saved.length} record(s) with quotes checked by code: ${saved.join(', ')}. `
         + 'They stay proposed until confirmed; /huimem curator off disables this.', 'info');
     })().catch(e => notify(ctx, 'huimem curator failed: ' + String(e) + ' Nothing was saved by it.', 'warning'))
       .finally(() => { curating = undefined; });
@@ -729,6 +791,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
     }
     // @vshulcz/pi-deja (pi.dev, 10.2026) recalls prior work when a file is touched. Here only navigation:
     // records whose source or dependency is this code file, once per file per request; .memory/ is in the block.
+    // Там же — задачи с условием when.paths: момент наступил, напоминание одно за запрос на задачу.
     if(active && !event.isError && Array.isArray(event.content) && (event.toolName==='read' || writes.has(event.toolName))) {
       const written=event.toolName!=='read';
       const targets=written ? mutationPaths(event.input,event.toolName!=='write')
@@ -737,8 +800,15 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
       try {
         for(const target of new Set(targets)) {
           const rel=relative(ctx.cwd,resolve(ctx.cwd,target)).replaceAll('\\','/');
+          if(rel.toLowerCase().startsWith('.memory/')) continue;
+          const due=get(ctx).intentionsForPath(target).filter(t=>!fileNotes.has('intent:'+t.id));
+          for(const t of due) {
+            fileNotes.add('intent:'+t.id);
+            note+=`MEMORY_INTENTION_DUE ${rel}: ${t.id} v${t.version} task/${t.status} — "${t.text.slice(0,300)}". `
+              +'This task was saved to be done when such a file is touched. Do it now if this work calls for it; then save a one-off task as done with the same ID, keep a standing rule open; if it no longer applies, update or retire it.\n';
+          }
           const seen=(written ? 'write:' : 'read:')+rel.toLowerCase();
-          if(rel.toLowerCase().startsWith('.memory/') || fileNotes.has(seen)) continue;
+          if(fileNotes.has(seen)) continue;
           const found=get(ctx).recordsForPath(target);
           if(!found.length) continue;
           fileNotes.add(seen);
@@ -773,10 +843,13 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
       const unsaved = changedSomething && !commitsPaused(ctx) && !s.checkpoint(key());
       // Ход что-то менял и ничего не сохранил — тот самый случай «модель забыла»: куратор берёт его
       // на себя и называет результат сам, поэтому CHECKPOINT_MISSING поверх него был бы шумом. Ход
-      // не ждёт куратора: побочный запрос не мешает следующему ходу основной модели.
-      const curated = unsaved && curatorReady(ctx);
-      // Без интерфейса (-p, RPC) процесс завершается сразу после хода и оборвал бы запрос: там ждём.
-      if (curated) { const pending = curate(ctx, 'turn'); if (!ctx.hasUI) await pending; }
+      // не ждёт куратора: побочный запрос не мешает следующему ходу основной модели. Наблюдённое
+      // исправление проверки зовёт куратора и при сохранённом чекпоинте: чекпоинт — следующий шаг,
+      // а не процедура на будущее.
+      const curated = (unsaved || (changedSomething && !!observedFix(s, run))) && curatorReady(ctx);
+      // Без интерфейса (-p, RPC) процесс завершается сразу после хода и оборвал бы запрос: там ждём,
+      // но не дольше бюджета обработчика OMP.
+      if (curated) { const pending = curate(ctx, 'turn', ctx.hasUI ? undefined : AbortSignal.timeout(CURATOR_WAIT_MS)); if (!ctx.hasUI) await pending; }
       const missing = unsaved && !curated && !toolHidden();
       // Ненастроенная проверка — обычное состояние нового проекта, а не событие хода:
       // о нём сообщают /huimem и op=status. Уведомление после первого ответа каждого процесса
@@ -807,10 +880,11 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
   });
   pi.on('session_before_compact', async (_event: any, ctx) => {
     if (!active) return;
-    // Перед сжатием куратор ждётся: после него ход разговора будет только пересказом. Предел 45 с,
-    // чтобы сжатие не зависело от медленного провайдера; сбой куратора сжатие не отменяет.
+    // Перед сжатием куратор ждётся: после него ход разговора будет только пересказом. Предел — в
+    // бюджете обработчика OMP, чтобы сжатие не зависело от медленного провайдера; сбой куратора
+    // сжатие не отменяет.
     compacted = true; nearCompaction = undefined;
-    if (curatorReady(ctx)) await curate(ctx, 'compaction', AbortSignal.timeout(45_000));
+    if (curatorReady(ctx)) await curate(ctx, 'compaction', AbortSignal.timeout(CURATOR_WAIT_MS));
     try { get(ctx).probe(); } catch (e) { healthFailure(ctx,e); return { cancel: true }; }
   });
   // Пути, которые сворачивают историю мимо session_before_compact (shake, snapcompact, overflow).
@@ -834,6 +908,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
       + 'SOURCE, exactly one: a current user decision — source={origin:"user",quote:"exact words from the current user message"}, the episode ID is filled by code; a file observation — source={origin:"file",path:"project-relative path",quote:"exact text from the file"}, the hash is computed by code. An accepted decision cannot rest on a file, and a quote from your own message can only support a proposed record. When the user answers a question of yours — "1. Yes", "2. It is the repository" — add source.answers=<ID of your message with the question>, listed in the block as a recent assistant source: the numbered answer alone proves nothing without it.\n'
       + 'A question you are waiting on the user for is a record too: kind=question, status=open, text = the question as you ask it. Its source is the request that left the gap — source={origin:"user",quote:"the exact words you cannot act on"} — because a question you are asking right now is not a saved message yet; a question you asked in an earlier turn can use source={origin:"episode",episode:"<that message ID>",quote:"the question"}. An open question stays in the memory block until it is saved again as answered, with links to the records the answer produced, or dropped. Keep what blocks work there rather than only in prose.\n'
       + 'dependsOn=[{id}|{path}] names what a claim relies on; code pins their versions and hashes. A dependency change marks the record STALE with a reason. Without dependsOn, file-backed records also track canonical documents; immutable conversation sources do not become stale merely because a document changed. STALE clears only through a new version saved with current dependencies.\n'
+      + 'A task to do later, when certain files are touched — "when you change the schema, add a migration" — takes when={paths:["src/db/*.ts"]}: 1-5 project-relative globs. While the task is todo, doing or blocked, the first read or edit of a matching file in a request starts with MEMORY_INTENTION_DUE; save a one-off task as done with the same ID once done, keep a standing rule open, or retire it.\n'
       + 'LIMITS: at most 30 changes per commit; summary is required and at most 2000 characters even when changes=[]; task=<task id> ties the summary (the next step) to that task.\n'
       + 'READS: recall query=<text>, or id=<record> (a task also returns its last checkpoint), or id=<record>,<record>,… for up to 10 records in one call — the block names the records it had to omit, so read them by ID instead of guessing; episodes query=<text> with optional role=user|assistant and limit=1-10 ranks matching windows. Read original pages with episodes id=<id> offset=<hit.offset>, or start at offset=0 and follow nextOffset until null. Offsets are non-negative safe integers in UTF-16 units, require id and must not split a surrogate pair. Pages default to 2400 units, or limit=<units> up to 12000 per page, and keep the original role; copy source quotes from their verbatim text, not search ellipses. history id=<record>; status; doctor — read-only diagnosis of records, sources, task drift and settings.\n'
       + 'EVIDENCE CHECKS, instead of your own SQL over the memory database: evidence id=<record> re-checks that record against its own source; evidence id=<episode> quote=<text> says whether that message really contains the quote; evidence path=<file> quote=<text> does the same for a file; evidence with neither id nor path re-checks every record and names the unconfirmed ones. These checks are code, not a model call.',
@@ -858,6 +933,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
         expectedVersion: z.number().int().min(0),
         rationale: z.string().optional(), links: z.array(z.string()).optional(),
         dependsOn: z.array(z.object({ id: z.string().optional(), version: z.number().int().optional(), path: z.string().optional(), hash: z.string().optional() })).optional(),
+        when: z.object({ paths: z.array(z.string()) }).optional(),
         source: z.object({ origin: z.enum(['user','file','episode']).optional(), episode: z.string().optional(), path: z.string().optional(), hash: z.string().optional(), quote: z.string(),
           answers: z.string().optional() }),
       })).optional(),

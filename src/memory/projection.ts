@@ -26,7 +26,8 @@ export function stageProjection(db:Database) {
       (c.rationale ? `Recorded rationale (verify against source):\n${quote(c.rationale)}\n\n` : '')+
       `Source: ${JSON.stringify(c.source.path ? {path:c.source.path,hash:c.source.hash} : {episode:c.source.episode})}\n`+
       (c.links?.length ? `Related records: ${c.links.join(', ')}\n` : '')+
-      (c.dependsOn?.length ? `Depends on: ${c.dependsOn.map((d:any)=>d.path ?? `${d.id} v${d.version}`).join(', ')}\n` : ''));
+      (c.dependsOn?.length ? `Depends on: ${c.dependsOn.map((d:any)=>d.path ?? `${d.id} v${d.version}`).join(', ')}\n` : '')+
+      (c.when?.paths?.length ? `Due when touched: ${c.when.paths.join(', ')}\n` : ''));
   }
   db.query('INSERT INTO projection(id,body,last_hash) VALUES(1,?,NULL) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(parts.join('\n'));
 }
