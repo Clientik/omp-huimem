@@ -7,9 +7,9 @@
   <strong>English</strong> · <a href="docs/i18n/README.ru.md">Русский</a> · <a href="docs/i18n/README.zh-CN.md">简体中文</a>
 </p>
 
-Keep project knowledge across sessions without running another model. Current facts live in readable files; evidence and revision history live in local SQLite. One OMP extension, no memory server, embeddings service, or background LLM.
+Keep project knowledge across sessions without a second model. Current facts live in readable files; evidence and revision history live in local SQLite. One OMP extension, no memory server, embeddings service, or separate memory model; the optional curator is one side request of the model your session already uses.
 
-> **Preview v0.8.7 · Runtime checked with OMP 18.12.6; earlier releases also tested with 18.11.0.** Upstream Pi is not supported. Memory makes context easier to recover and inspect; it does not eliminate hallucinations.
+> **Preview v0.9.0 · Runtime checked with OMP 18.12.6; earlier releases also tested with 18.11.0.** Upstream Pi is not supported. Memory makes context easier to recover and inspect; it does not eliminate hallucinations.
 
 ## Why use it?
 
@@ -22,6 +22,30 @@ For developers working with an AI agent who want to stop explaining the same pro
 - **Bounded context.** The extension supplies a memory block of up to 9,000 characters: the rules, a list of the canonical files, and the records that match the question. The agent reads full sources when it needs them.
 
 ## Install
+
+**New in v0.9.0 — memory that does not depend on the model remembering to save:**
+
+- **Fixed: the agent ignored the task.** Every earlier release put the memory block after the
+  user's request. On OMP 18.12.6 with Opus in `-p` mode the model answered the block ("I'm ready.
+  What would you like to work on?") and did nothing; without the plugin the same request worked.
+  The block now goes right before the latest user request, so the request is always last.
+- **Automatic work journal.** Code records the agent's todo progress, changed files and failed
+  commands from tool calls. If a run ends without a saved checkpoint, the next run sees an
+  `AUTOMATIC WORK JOURNAL` line; a checkpoint saved by the agent replaces it. Navigation only.
+- **Curator, on by default.** After a turn that changed something and saved nothing, and before
+  compaction, one side request of the session model (`runEphemeralTurn`, lowest effort that keeps
+  the prompt cache) names durable facts and decisions from your own messages. Code finds the user
+  message that contains each quote verbatim; invented quotes are dropped. Records are saved as
+  `auto:<slug>` with status `proposed`, never accepted, and without a checkpoint. The cost is one
+  extra model request over the cached conversation per such turn; `/huimem curator off` stops it.
+- **Before compaction, not after.** Near the estimated compaction point the block says
+  `CONTEXT_NEARLY_FULL` once per compaction cycle, until the agent saves.
+- **Backlog hint.** With 30 or more unreviewed messages, the user is told once per process that
+  `/huimem learn` can review them. The model is not told and nothing starts by itself.
+- **One memory per project.** `/huimem init` sets `memory.backend: 'off'` in the project's
+  `.omp/config.yml`, also in an existing file: one line is edited, comments and other keys stay.
+  OMP's own `local` memory is not "off": it injects summaries of up to 5,000 tokens and runs
+  background model calls. The global config is left to you.
 
 **New in v0.8.7 — works out of the box:**
 
@@ -261,7 +285,7 @@ You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model
 **Legacy ADRs:** `/huimem adr-audit` lists ADRs without a basis section that can be moved into the contract, and writes nothing. `/huimem adr-audit apply` inserts the user's quote from the registry as the basis and keeps every original line under an "Interpretation [?]" heading, after a byte-exact backup to `.memory/adr-backup/`. A document is migrated only when exactly one accepted decision names it by path, its rationale is an exact excerpt of the quote, and the quote is re-checked at migration time against the stored message, which must exist and belong to the user; otherwise it is reported as `UNVERIFIED` and nothing is written. v0.5.0 skipped that last check: if you ran `apply` with it on an edited, merged or restored database, compare each migrated basis with the original message. Linked conversation decisions show STALE afterwards. In a preregistered 20-vs-20 test the migrated documents had no outright misattribution, but a reliability gain over unmigrated ones was not statistically proven.
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.8.7
+omp plugin install github:Clientik/omp-huimem#v0.9.0
 ```
 
 > [!IMPORTANT]
@@ -283,7 +307,7 @@ After `init`, ask the agent to use the `initmem` skill to map the actual code. D
 **Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 and again with 18.11.0 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
 ```sh
-git clone --branch v0.8.7 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.9.0 https://github.com/Clientik/omp-huimem.git
 # Run from your working project, using the cloned repository's absolute path:
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```

@@ -16,6 +16,8 @@ export type Dependency = { id: string; version?: number } | { path: string; hash
 export type Change = { id: string; kind: string; text: string; status: string; expectedVersion: number; authorityHash?: string; sourcePolicyHash?: string;
   source: Source; rationale?: string; links?: string[]; dependsOn?: Dependency[] };
 export type CurrentRecord=Change & {version:number;freshness:string;staleReasons?:string[]};
+export type WorkTodo = { phase: string; done: number; total: number; current?: string };
+export type WorkLog = { todo?: WorkTodo; files: string[]; commands: { text: string; exitCode: number }[] };
 type CachedRecord = { id:string; version:number; versionCount:number; serialized:string; data:Change;
   recordWords:string[]; quoteWords:string[]; pathWords:string[]; own:string[] };
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -235,6 +237,38 @@ export class MemoryStore {
   events(limit = 20) {
     return this.db.query(`SELECT run,kind,detail,time FROM events ORDER BY seq DESC LIMIT ${Math.min(200, Math.max(1, limit))}`).all() as any[];
   }
+  // Журнал работы запуска: что агент сделал инструментами (todo, файлы, упавшие команды). Строится
+  // кодом без модели, не доказательство и не реестр — навигация для следующего запуска, если агент
+  // не сохранил свой чекпоинт. Живёт в events (kind=worklog, одна строка на запуск): новая таблица
+  // уронила бы прежние сборки на FOREIGN_SCHEMA, а events они знают.
+  static readonly WORKLOG_LIMITS = { files: 12, commands: 4, text: 160 } as const;
+  recordWork(run: string, entry: { todo?: WorkTodo; file?: string; command?: { text: string; exitCode: number } }) {
+    const clip = (s: string) => scrub(s).slice(0, MemoryStore.WORKLOG_LIMITS.text);
+    this.mutate('metadata',()=>this.db.transaction(() => {
+      const row = this.db.query("SELECT detail FROM events WHERE run=? AND kind='worklog' ORDER BY seq DESC LIMIT 1").get(run) as {detail:string}|null;
+      const log: WorkLog = row ? JSON.parse(row.detail) : { files: [], commands: [] };
+      if (entry.todo) log.todo = { phase: clip(entry.todo.phase), done: entry.todo.done, total: entry.todo.total,
+        ...(entry.todo.current ? { current: clip(entry.todo.current) } : {}) };
+      if (entry.file) {
+        const file = clip(entry.file);
+        log.files = [...log.files.filter(f => f !== file), file].slice(-MemoryStore.WORKLOG_LIMITS.files);
+      }
+      if (entry.command) log.commands = [...log.commands, { text: clip(entry.command.text), exitCode: entry.command.exitCode }]
+        .slice(-MemoryStore.WORKLOG_LIMITS.commands);
+      this.db.query("DELETE FROM events WHERE run=? AND kind='worklog'").run(run);
+      this.db.query("INSERT INTO events(run,kind,detail,time) VALUES(?,'worklog',?,?)").run(run, JSON.stringify(log), new Date().toISOString());
+      this.db.exec(`DELETE FROM events WHERE seq NOT IN (SELECT seq FROM events ORDER BY seq DESC LIMIT ${MemoryStore.EVENTS_KEPT})`);
+    }).immediate());
+  }
+  // Журнал последнего другого запуска, если после него никто не сохранил чекпоинт: сохранённая
+  // агентом сводка главнее автоматического следа.
+  previousWork(currentRun: string): (WorkLog & { time: string }) | null {
+    const row = this.db.query("SELECT detail,time FROM events WHERE kind='worklog' AND run<>? ORDER BY seq DESC LIMIT 1").get(currentRun) as {detail:string;time:string}|null;
+    if (!row) return null;
+    const checkpoint = this.latestCheckpoint();
+    if (checkpoint && checkpoint.time >= row.time) return null;
+    return { ...JSON.parse(row.detail), time: row.time };
+  }
   // Место в журналах делится между агентами: иначе веер подагентов вытесняет историю главного.
   private trim(table: string, perRun: number, total: number) {
     this.db.exec(`DELETE FROM ${table} WHERE seq NOT IN (
@@ -336,6 +370,12 @@ export class MemoryStore {
     return id;
   }
   episode(id: string) { return this.db.query('SELECT * FROM episodes WHERE id=?').get(id) as any; }
+  // Последнее сообщение пользователя, где цитата стоит дословно: куратор называет слова, ID
+  // сообщения находит код. Сообщения ассистента не ищутся: принятое из них не вырастет.
+  userEpisodeQuoting(quote: string): string | null {
+    const row = this.db.query("SELECT id FROM episodes WHERE role='user' AND instr(text,?)>0 ORDER BY time DESC LIMIT 1").get(quote) as {id:string}|null;
+    return row?.id ?? null;
+  }
   fileSource(path: string, quote: string): Source {
     const text = sourceText(this.root, path);
     if (!quote || !text.includes(quote) || scrub(quote) !== quote) throw new Error('SOURCE: invalid quote');
@@ -767,7 +807,9 @@ export class MemoryStore {
   }
   // scope.task — ID задачи, к которой относится сводка; без него берётся единственная задача среди
   // изменений. scope.branch — ветка git на момент записи, только для диагностики: ветка не задача.
-  commit(run: string, changes: Change[], summary: string, scope: { task?: string; branch?: string | null } = {}) {
+  // scope.checkpoint=false сохраняет записи без чекпоинта запуска: так пишет куратор, чтобы не
+  // подменять следующий шаг, который агент сохранил или сохранит сам.
+  commit(run: string, changes: Change[], summary: string, scope: { task?: string; branch?: string | null; checkpoint?: false } = {}) {
     // Отказ должен говорить, ЧТО не так. Раньше все случаи давали одинаковый
     // INVALID_CHECKPOINT, и модель трижды повторяла один и тот же неверный вызов,
     // не понимая причины (замерено на живой сессии 2026-09-08). Проверку не
@@ -813,6 +855,7 @@ export class MemoryStore {
         const own = changes.find(c => c.id === task), stored = this.latestRow(task)?.data;
         if ((own ?? stored)?.kind !== 'task') throw new Error(`INVALID_TASK_SCOPE: ${task} is not a saved task record; save the task first or omit task`);
       } else if (changedTasks.length === 1) task = changedTasks[0];
+      if (scope.checkpoint === false) { if (changes.length) stageProjection(this.db); this.probe(); return; }
       const previous=this.db.query('SELECT c.summary,s.task,s.branch FROM checkpoints c LEFT JOIN checkpoint_scope s ON s.run=c.run WHERE c.run=?').get(run) as any;
       if(!changes.length && previous?.summary===summary && (previous.task ?? null)===(task ?? null)
         && (previous.branch ?? null)===(scope.branch ?? null)) return;

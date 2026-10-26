@@ -186,6 +186,153 @@ test('a session without the project_memory tool is told so instead of being invi
   } finally { f.clean(); }
 });
 
+// Минус «модель забыла сохранить — ничего не подстрахует». Журнал строится из вызовов
+// инструментов без модели (идея oats Plan/Progress/Next и пассивных записей engram) и виден
+// следующему ходу, пока агент не сохранил собственный чекпоинт.
+const memoryBlock=async(f:any,prompt:string)=>{
+  await f.handlers.before_agent_start({prompt},f.ctx);
+  const e=await f.handlers.context({messages:[]},f.ctx);
+  return e?.messages?.find((m:any)=>m.customType==='project-memory-context')?.content as string ?? '';
+};
+const noticeOf=(f:any,part:string)=>{
+  const {promise,resolve}=Promise.withResolvers<void>();
+  const notify=f.ctx.ui.notify;
+  f.ctx.ui.notify=(s:string,level?:string)=>{notify(s,level);if(String(s).includes(part)) resolve();};
+  return promise;
+};
+// ЗАМЕРЕНО 2026-10-26 на реальном OMP 18.12.6 (Opus, -p): блок последним сообщением после запроса
+// модель принимала за новое обращение и отвечала «I'm ready. What would you like to work on?», не
+// выполнив задачу. Запрос пользователя должен оставаться последним, и в цепочке инструментов тоже.
+test('the memory block goes before the latest user request, never after it',async()=>{
+  const f=fixture(); try {
+    await f.handlers.before_agent_start({prompt:'Создай notes.txt'},f.ctx);
+    const user={role:'user',content:'Создай notes.txt'};
+    const first=(await f.handlers.context({messages:[user]},f.ctx)).messages;
+    expect(first.map((m:any)=>m.customType ?? m.role)).toEqual(['project-memory-context','user']);
+    const call={role:'assistant',content:[{type:'toolCall',id:'1',name:'write',arguments:{}}]},result={role:'toolResult',toolCallId:'1',content:[]};
+    const loop=(await f.handlers.context({messages:[{role:'user',content:'раньше'},{role:'assistant',content:'ок'},...first,call,result]},f.ctx)).messages;
+    expect(loop.map((m:any)=>m.customType ?? m.role)).toEqual(['user','assistant','project-memory-context','user','assistant','toolResult']);
+  } finally { f.clean(); }
+});
+test('the next run sees an automatic work journal until the agent saves a checkpoint',async()=>{
+  const f=fixture(); try {
+    writeFileSync(join(f.dir,'.memory/settings.json'),JSON.stringify({curator:'off'}));
+    await memoryBlock(f,'Делаем этап 1');
+    const text=[{type:'text',text:'ok'}];
+    await f.handlers.tool_result({toolName:'todo',input:{op:'start'},isError:false,content:text,details:{op:'start',phases:[{name:'Этап 1',
+      tasks:[{content:'Исследование',status:'completed'},{content:'Стиль',status:'in_progress'},{content:'Бриф',status:'pending'}]}]}},f.ctx);
+    await f.handlers.tool_result({toolName:'edit',input:{path:'docs/brief.md'},isError:false,content:text,details:{path:'docs/brief.md'}},f.ctx);
+    await f.handlers.tool_result({toolName:'bash',input:{command:'dotnet test'},isError:true,content:text,details:{exitCode:1}},f.ctx);
+    await f.handlers.session_stop({},f.ctx);
+    const next=await memoryBlock(f,'Продолжай');
+    expect(next).toContain('AUTOMATIC WORK JOURNAL');
+    expect(next).toContain('1/3 done');
+    expect(next).toContain('in progress: Стиль');
+    expect(next).toContain('docs/brief.md');
+    expect(next).toContain('`dotnet test` exit 1');
+    // Сохранённый агентом чекпоинт — главный источник следующего шага; журнал уступает ему.
+    await f.tools.project_memory.execute('id',{op:'commit',changes:[],summary:'Стиль в работе; следующий шаг — бриф'},null,null,f.ctx);
+    expect(await memoryBlock(f,'Ещё')).not.toContain('AUTOMATIC WORK JOURNAL');
+  } finally { f.clean(); }
+});
+
+// Минус «сохранение только после сжатия». HISTORY_COMPACTED говорит о сжатии, когда ход
+// разговора уже пересказан. Здесь — до него: один раз за цикл сжатия, пока агент не сохранил.
+// Порог расширению недоступен, он оценивается по .omp/config.yml проекта и профиля.
+test('a run close to compaction is told once to save before history becomes a summary',async()=>{
+  const f=fixture(); try {
+    mkdirSync(join(f.dir,'.omp'),{recursive:true});
+    writeFileSync(join(f.dir,'.omp/config.yml'),'compaction:\n  thresholdPercent: 55\n');
+    let tokens=30_000;
+    f.ctx.getContextUsage=()=>({tokens,contextWindow:100_000,percent:tokens/1000});
+    expect(await memoryBlock(f,'Работаем')).not.toContain('CONTEXT_NEARLY_FULL');
+    tokens=50_000;
+    const near=await f.handlers.context({messages:[]},f.ctx);
+    expect(JSON.stringify(near)).toContain('CONTEXT_NEARLY_FULL');
+    expect(JSON.stringify(near)).toContain('55%');
+    await f.tools.project_memory.execute('id',{op:'commit',changes:[],summary:'Сохранил перед сжатием'},null,null,f.ctx);
+    expect(JSON.stringify(await f.handlers.context({messages:[]},f.ctx))).not.toContain('CONTEXT_NEARLY_FULL');
+    // Тот же цикл сжатия — повторно не говорится, даже в новом запросе.
+    expect(await memoryBlock(f,'Дальше')).not.toContain('CONTEXT_NEARLY_FULL');
+    await f.handlers.session_before_compact({},f.ctx);
+    expect(await memoryBlock(f,'После сжатия')).toContain('CONTEXT_NEARLY_FULL');
+  } finally { f.clean(); }
+});
+
+// Минус «без /huimem learn старые диалоги не разбираются». Пользователь узнаёт о накопленном
+// один раз за процесс, уровнем сведения; модель об этом не слышит и ничего не запускает.
+test('the user is told once per process when unreviewed messages pile up',async()=>{
+  const f=fixture(); try {
+    const s=new MemoryStore(f.dir);
+    try { for(let n=0;n<30;n++) s.capture('old','user',`Сообщение номер ${n}`); } finally { s.close(); }
+    await memoryBlock(f,'Работаем');
+    await f.handlers.session_stop({},f.ctx);
+    const hint=f.levels.filter((l:any)=>l.message.includes('LEARN_SUGGESTED'));
+    expect(hint).toHaveLength(1);
+    expect(hint[0].level).toBe('info');
+    expect(hint[0].message).toContain('/huimem learn');
+    await memoryBlock(f,'Ещё');
+    await f.handlers.session_stop({},f.ctx);
+    expect(f.levels.filter((l:any)=>l.message.includes('LEARN_SUGGESTED'))).toHaveLength(1);
+    expect(await memoryBlock(f,'Снова')).not.toContain('LEARN_SUGGESTED');
+  } finally { f.clean(); }
+});
+
+// Минус «старые диалоги не разбираются сами». Куратор — побочный запрос OMP на той же модели
+// с минимальным усилием (идея review/flush pi-hermes-memory), но всё найденное проходит обычную
+// проверку кода: цитата обязана дословно стоять в сообщении пользователя, статус только proposed.
+test('the curator proposes source-checked records when a turn changed something and saved nothing',async()=>{
+  const f=fixture(); try {
+    const calls:any[]=[];
+    f.ctx.runEphemeralTurn=async(options:any)=>{calls.push(options);return {assistantMessage:{},replyText:JSON.stringify([
+      {id:'Camera Inertia',kind:'decision',text:'При Shift камера разгоняется по инерции.',quote:'при Shift камера по инерции увеличивает скорость',rationale:'как в wargame'},
+      {id:'release-date',kind:'fact',text:'Игра выйдет в 2027.',quote:'выпуск в 2027 году'},
+    ])};};
+    await memoryBlock(f,'Добавь плавности: при Shift камера по инерции увеличивает скорость, как в wargame.');
+    await f.handlers.tool_result({toolName:'edit',input:{path:'game/RtsCamera.cs'},isError:false,content:[{type:'text',text:'ok'}],details:{path:'game/RtsCamera.cs'}},f.ctx);
+    const curated=noticeOf(f,'curator');
+    await f.handlers.session_stop({},f.ctx);
+    await curated;
+    const read=()=>{const s=new MemoryStore(f.dir);try{return s.current('auto:camera-inertia');}finally{s.close();}};
+    expect(read()).toMatchObject({kind:'decision',status:'proposed'});
+    const evidence=await f.tools.project_memory.execute('id',{op:'evidence',id:'auto:camera-inertia'},null,null,f.ctx);
+    expect(evidence.details).toMatchObject({role:'user',match:true});
+    const s=new MemoryStore(f.dir);
+    try {
+      // Выдуманная цитата не сохраняется; куратор не пишет чекпоинт и не затирает следующий шаг агента.
+      expect(s.current('auto:release-date')).toBeNull();
+      expect(s.latestCheckpoint()).toBeNull();
+    } finally { s.close(); }
+    // Та же модель сессии, минимальное усилие; каталог инструментов не трогается ради кэша промпта.
+    expect(calls[0]).toMatchObject({minimizeEffort:true});
+    expect(calls[0].tools).toBeUndefined();
+    expect(f.notices.map(String).some(x=>x.includes('auto:camera-inertia'))).toBe(true);
+    expect(f.notices.map(String).some(x=>x.includes('CHECKPOINT_MISSING'))).toBe(false);
+  } finally { f.clean(); }
+});
+
+test('the curator runs before compaction and can be switched off by the user',async()=>{
+  const f=fixture(); try {
+    let calls=0;
+    f.ctx.runEphemeralTurn=async()=>{calls++;return {assistantMessage:{},replyText:JSON.stringify([
+      {id:'palette',kind:'fact',text:'Палитра — приглушённая охра.',quote:'палитра приглушённая охра'}])};};
+    await memoryBlock(f,'Запомни: палитра приглушённая охра.');
+    // Сжатие ждёт куратора: потом исходный ход разговора будет уже пересказом.
+    await f.handlers.session_before_compact({},f.ctx);
+    const s=new MemoryStore(f.dir);
+    try { expect(s.current('auto:palette')).toMatchObject({status:'proposed'}); } finally { s.close(); }
+    await f.commands.huimem.handler('curator off',f.ctx);
+    expect(String(f.notices.at(-1)?.content)).toContain('Curator: OFF');
+    const before=calls;
+    await memoryBlock(f,'Правим камеру');
+    await f.handlers.tool_result({toolName:'write',input:{path:'a.txt'},isError:false,content:[{type:'text',text:'ok'}]},f.ctx);
+    await f.handlers.session_stop({},f.ctx);
+    await f.handlers.session_before_compact({},f.ctx);
+    expect(calls).toBe(before);
+    expect(f.notices.map(String).some(x=>x.includes('CHECKPOINT_MISSING'))).toBe(true);
+  } finally { f.clean(); }
+});
+
 // ЗАМЕРЕНО 2026-10-17: четыре подагента за 385 секунд стёрли журнал вставок целиком, и
 // проверить на живой сессии, дошли ли однократные уведомления 0.6.6, оказалось нечем.
 test('one-shot notices leave a durable trace',async()=>{

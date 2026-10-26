@@ -47,6 +47,7 @@ const HELP = [
   '  /huimem resume       allow commits again',
   '  /huimem personal on|off   explicitly allow or disable profile-owned personal memory (not project settings)',
   '  /huimem learn        review one source packet and curate useful Wiki knowledge in one ordinary main-agent turn',
+  '  /huimem curator on|off   side request of the session model that proposes missed records (default on)',
   '  /huimem learn status inspect the review backlog without a model turn',
   '  /huimem              memory state for this project',
   '  /huimem recall <N>   recall budget in characters (' + LIMITS.recallBudget.min + '–' + LIMITS.recallBudget.max + ')',
@@ -123,6 +124,17 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
         ? `Memory is ON from the next message: the block is injected again, messages are recorded and project_memory works. File: ${SETTINGS_PATH}`
         : `Memory is OFF from the next message: no memory block, no recorded messages, no commits. Saved records and files stay untouched; /huimem on restores it. File: ${SETTINGS_PATH}`);
     }
+    // Куратор — побочный ход основной модели после хода, который что-то менял и ничего не сохранил,
+    // и перед сжатием истории. Включён по умолчанию; выключает его только пользователь.
+    if (verb === 'curator') {
+      if (!deps.deployed(ctx)) return say(deps.notEnabled);
+      if (value !== 'on' && value !== 'off')
+        return say(`Curator: ${readSettings(ctx.cwd).curator === 'off' ? 'OFF' : 'ON'}. Usage: /huimem curator on|off. File: ${SETTINGS_PATH}`);
+      writeSettings(ctx.cwd, { curator: value === 'on' ? 'auto' : 'off' });
+      return say(value === 'on'
+        ? 'Curator: ON. After a turn that changed something without saving, and before compaction, one side request of the session model proposes records quoted from your messages; they stay proposed.'
+        : 'Curator: OFF. No side requests; save with project_memory commit or /huimem learn.');
+    }
 
     // Память включается явной командой в выбранном проекте, а не сама в каждом каталоге:
     // иначе база со стенограммой появлялась бы в чужих репозиториях (замерено 2026-09-08).
@@ -145,6 +157,13 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
           registered = `Canonical set: added ${design}, the design document this init created, so the block lists it.`;
         }
       }
+      // Нативная память OMP строит свой блок системного промпта при создании сессии (sdk.ts:3998 в
+      // OMP 18.12.6), поэтому выключение целиком действует с нового окна.
+      const native = r.ompMemory.state === 'set'
+        ? `OMP native memory: set memory.backend: 'off' in .omp/config.yml (was ${r.ompMemory.previous ?? 'inherited from the global config'}), so only huimem keeps memory in this project. Fully applies in a new OMP window.`
+        : r.ompMemory.state === 'manual'
+          ? `OMP native memory: .omp/config.yml was left untouched (its memory section is not a plain block). Set memory.backend: 'off' there by hand so two memories do not run at once.`
+          : '';
       return say([
         wasEnabled ? `Project memory was already enabled in ${r.root}; only missing files were added.`
           : `Project memory ENABLED in ${r.root}. It works from your next message; no restart needed.`,
@@ -152,6 +171,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
         r.differs.length ? 'Existing files kept as they are (not overwritten):\n  ' + r.differs.join('\n  ') : '',
         merge.length ? 'These may lack the memory rules shipped in the plugin starter/: ' + merge.join(', ') + '. Merge them by hand if you want those rules.' : '',
         r.gitignoreAdded.length ? '.gitignore: added ' + r.gitignoreAdded.join(', ') + ' so the local transcript database stays out of git.' : '.gitignore already excludes the memory database.',
+        native,
         registered,
         '',
         'Next: ask the agent to use the initmem skill to map the real code.',
@@ -367,7 +387,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       else if (writer === PLUGIN_VERSION) build += ' · database stamped by this version';
       try {
         const progress=learningStatus(s);
-        learning=`${progress.pendingSources} pending source(s) · ${progress.reviewedBatches} reviewed packet(s); no background model`;
+        learning=`${progress.pendingSources} pending source(s) · ${progress.reviewedBatches} reviewed packet(s)`;
       } catch(error) {learning='ERROR: '+String(error);}
     } catch (e) { counts = 'ERROR: ' + String(e); }
     const a = on ? deps.architecture(ctx) : { configured: false, ok: false, failures: [] };
@@ -393,6 +413,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
         `Required records:   ${cfg.required.length ? cfg.required.join(', ') : 'none'}`,
         `Added documents:    ${cfg.documents.length ? cfg.documents.join(', ') : 'none (the plugin set only)'}`,
         `Subagent block:     ${cfg.subagentBlock}${deps.subagent(ctx) ? ' (this session is a subagent)' : ''}`,
+        `Curator:            ${cfg.curator === 'off' ? 'OFF (/huimem curator on)' : 'ON: side request of the session model, proposed records only'}`,
         `Settings file:      ${settingsFileExists ? SETTINGS_PATH : 'none, defaults apply'}`,
         err ? `Health:             ${err}` : 'Health:             no errors',
         '',

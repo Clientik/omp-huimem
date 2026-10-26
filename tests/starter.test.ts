@@ -98,3 +98,40 @@ test('init keeps existing files byte-exact, appends only missing ignore lines, a
     expect(readFileSync(join(root, '.gitignore'), 'utf8')).toBe(ignore);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+// Пользователь 2026-10-26: включая память в проекте, init должен выключить нативную память OMP, иначе
+// на каждом ходу работают две памяти. Глобальный mnemopi проект наследует, если сам ничего не задал.
+// Существующий .omp/config.yml правится одной строкой: комментарии и чужие ключи остаются как были.
+test('init switches native OMP memory off in an existing project config and never rewrites the rest', () => {
+  const root = mkdtempSync(join(import.meta.dir, 'starter-test-'));
+  const NL = String.fromCharCode(10);
+  const config = join(root, '.omp/config.yml');
+  const read = () => readFileSync(config, 'utf8');
+  try {
+    mkdirSync(join(root, '.omp'));
+    const plain = '# мои настройки' + NL + 'edit:' + NL + '  mode: hashline' + NL;
+    writeFileSync(config, plain);
+    expect(initProject(root).ompMemory).toEqual({ state: 'set', previous: null });
+    expect(read().startsWith(plain)).toBe(true);
+    expect(Bun.YAML.parse(read())).toEqual({ edit: { mode: 'hashline' }, memory: { backend: 'off' } });
+    const after = read();
+    expect(initProject(root).ompMemory).toEqual({ state: 'already', previous: 'off' });
+    expect(read()).toBe(after);
+
+    const nested = 'memory:' + NL + '    backend: mnemopi   # глобальная' + NL + '    extra: 1' + NL + 'plan:' + NL + '    defaultOnStartup: false' + NL;
+    writeFileSync(config, nested);
+    expect(initProject(root).ompMemory).toEqual({ state: 'set', previous: 'mnemopi' });
+    expect(Bun.YAML.parse(read())).toEqual({ memory: { backend: 'off', extra: 1 }, plan: { defaultOnStartup: false } });
+    expect(read()).toContain('# глобальная');
+
+    writeFileSync(config, 'memory:' + NL + '  dir: x' + NL);
+    expect(initProject(root).ompMemory).toEqual({ state: 'set', previous: null });
+    expect(Bun.YAML.parse(read())).toEqual({ memory: { dir: 'x', backend: 'off' } });
+
+    // Форму, которую строкой не поправить, init не трогает и называет.
+    const flow = 'memory: {backend: local}' + NL;
+    writeFileSync(config, flow);
+    expect(initProject(root).ompMemory).toEqual({ state: 'manual', previous: 'local' });
+    expect(read()).toBe(flow);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

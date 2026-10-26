@@ -19,8 +19,13 @@ export const SETTINGS_PATH = '.memory/settings.json';
 // они возвращают находки родителю, а сохраняет родитель. 'short' — состояние, правила
 // доказательств, список файлов и записи; 'off' — ничего; 'full' — как у главного агента.
 export type SubagentBlock = 'short' | 'full' | 'off';
+// curator — побочный проход основной модели сессии с минимальным усилием, который предлагает
+// пропущенные записи (только proposed, цитата проверяется кодом). 'auto' по умолчанию: память из
+// коробки не должна зависеть от того, вспомнила ли модель сохранить. 'off' — только по просьбе.
+export type Curator = 'auto' | 'off';
 export type Settings = { enabled: boolean; recallBudget: number; injectionLimit: number;
-  required: string[]; documents: string[]; subagentBlock: SubagentBlock };
+  required: string[]; documents: string[]; subagentBlock: SubagentBlock; curator: Curator };
+const curatorMode = (v: unknown): Curator => v === 'off' ? 'off' : 'auto';
 const subagentBlock = (v: unknown): SubagentBlock => v === 'full' || v === 'off' ? v : 'short';
 export const REQUIRED_MAX = 10;
 export const DOCUMENTS_MAX = 10;
@@ -67,7 +72,7 @@ function readRaw(root: string): Record<string, unknown> {
     return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
   } catch { return {}; }
 }
-const KNOWN = ['enabled', 'recallBudget', 'injectionLimit', 'required', 'documents', 'subagentBlock'];
+const KNOWN = ['enabled', 'recallBudget', 'injectionLimit', 'required', 'documents', 'subagentBlock', 'curator'];
 export function unknownKeys(root: string): Record<string, unknown> {
   return Object.fromEntries(Object.entries(readRaw(root)).filter(([k]) => !KNOWN.includes(k)));
 }
@@ -83,11 +88,12 @@ export function readSettings(root: string): Settings {
       required: requiredIds(raw?.required),
       documents: documentList(raw?.documents),
       subagentBlock: subagentBlock(raw?.subagentBlock),
+      curator: curatorMode(raw?.curator),
     };
   } catch {
     // Повреждённый или отсутствующий файл не должен ронять сессию: работаем на значениях
     // по умолчанию. Молчаливой подмены нет — /huimem показывает, что читается сейчас.
-    return { enabled: true, recallBudget: LIMITS.recallBudget.default, injectionLimit: LIMITS.injectionLimit.default, required: [], documents: [], subagentBlock: 'short' };
+    return { enabled: true, recallBudget: LIMITS.recallBudget.default, injectionLimit: LIMITS.injectionLimit.default, required: [], documents: [], subagentBlock: 'short', curator: 'auto' };
   }
 }
 
@@ -100,6 +106,7 @@ export function writeSettings(root: string, next: Partial<Settings>): Settings {
     required: requiredIds(merged.required),
     documents: documentList(merged.documents),
     subagentBlock: subagentBlock(merged.subagentBlock),
+    curator: curatorMode(merged.curator),
   };
   // Известные поля перезаписываются проверенными значениями, чужие остаются нетронутыми.
   writeFileSync(resolve(root, SETTINGS_PATH), JSON.stringify({ ...unknownKeys(root), ...value }, null, 2) + '\n');
