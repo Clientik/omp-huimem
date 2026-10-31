@@ -9,6 +9,7 @@ node_modules/
 .env.*
 *.log
 *.tgz
+bench/results/
 
 # Local editor/OS and Python cache files are not part of the plugin.
 .DS_Store
