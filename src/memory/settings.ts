@@ -23,8 +23,19 @@ export type SubagentBlock = 'short' | 'full' | 'off';
 // пропущенные записи (только proposed, цитата проверяется кодом). 'auto' по умолчанию: память из
 // коробки не должна зависеть от того, вспомнила ли модель сохранить. 'off' — только по просьбе.
 export type Curator = 'auto' | 'off';
+// Автоматика, которая работает без вызова модели и без просьбы пользователя. Каждая часть
+// включена по умолчанию и выключается в /huimem → Automation, чтобы проект выбирал сам, сколько
+// автоматического текста и уведомлений ему нужно:
+// journal — журнал работы из вызовов инструментов и строка AUTOMATIC WORK JOURNAL в блоке;
+// fileNotes — MEMORY_FILE_RECORDS и MEMORY_INTENTION_DUE в результатах чтения и правки файлов;
+// reminders — CONTEXT_NEARLY_FULL в блоке, уведомления CHECKPOINT_MISSING и LEARN_SUGGESTED;
+// statusLine — строка huimem в нижней панели OMP.
+export const AUTOMATION = ['journal', 'fileNotes', 'reminders', 'statusLine'] as const;
+export type Automation = typeof AUTOMATION[number];
 export type Settings = { enabled: boolean; recallBudget: number; injectionLimit: number;
-  required: string[]; documents: string[]; subagentBlock: SubagentBlock; curator: Curator };
+  required: string[]; documents: string[]; subagentBlock: SubagentBlock; curator: Curator } & Record<Automation, boolean>;
+const automation = (raw: Partial<Record<Automation, unknown>> | undefined) =>
+  Object.fromEntries(AUTOMATION.map(k => [k, raw?.[k] !== false])) as Record<Automation, boolean>;
 const curatorMode = (v: unknown): Curator => v === 'off' ? 'off' : 'auto';
 const subagentBlock = (v: unknown): SubagentBlock => v === 'full' || v === 'off' ? v : 'short';
 export const REQUIRED_MAX = 10;
@@ -72,7 +83,7 @@ function readRaw(root: string): Record<string, unknown> {
     return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
   } catch { return {}; }
 }
-const KNOWN = ['enabled', 'recallBudget', 'injectionLimit', 'required', 'documents', 'subagentBlock', 'curator'];
+const KNOWN = ['enabled', 'recallBudget', 'injectionLimit', 'required', 'documents', 'subagentBlock', 'curator', ...AUTOMATION];
 export function unknownKeys(root: string): Record<string, unknown> {
   return Object.fromEntries(Object.entries(readRaw(root)).filter(([k]) => !KNOWN.includes(k)));
 }
@@ -89,11 +100,12 @@ export function readSettings(root: string): Settings {
       documents: documentList(raw?.documents),
       subagentBlock: subagentBlock(raw?.subagentBlock),
       curator: curatorMode(raw?.curator),
+      ...automation(raw),
     };
   } catch {
     // Повреждённый или отсутствующий файл не должен ронять сессию: работаем на значениях
     // по умолчанию. Молчаливой подмены нет — /huimem показывает, что читается сейчас.
-    return { enabled: true, recallBudget: LIMITS.recallBudget.default, injectionLimit: LIMITS.injectionLimit.default, required: [], documents: [], subagentBlock: 'short', curator: 'auto' };
+    return { enabled: true, recallBudget: LIMITS.recallBudget.default, injectionLimit: LIMITS.injectionLimit.default, required: [], documents: [], subagentBlock: 'short', curator: 'auto', ...automation(undefined) };
   }
 }
 
@@ -107,6 +119,7 @@ export function writeSettings(root: string, next: Partial<Settings>): Settings {
     documents: documentList(merged.documents),
     subagentBlock: subagentBlock(merged.subagentBlock),
     curator: curatorMode(merged.curator),
+    ...automation(merged),
   };
   // Известные поля перезаписываются проверенными значениями, чужие остаются нетронутыми.
   writeFileSync(resolve(root, SETTINGS_PATH), JSON.stringify({ ...unknownKeys(root), ...value }, null, 2) + '\n');

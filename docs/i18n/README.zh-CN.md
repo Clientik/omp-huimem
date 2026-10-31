@@ -23,6 +23,14 @@
 
 ## 安装
 
+**下一版本（尚未发布）：可见、可配置的自动化。**
+
+- **自动化设置。** 整理器、工作日志、文件提示、保存提醒和状态栏默认全部开启，可在 `/huimem` →
+  *Automation* 中或用 `/huimem auto <名称>|all on|off` 逐项关闭；`/huimem auto` 列出每一项的作用和代价。
+- **状态栏。** OMP 底栏显示 `huimem 12 rec · 2 proposed · curator`：通知消失后仍能看到等待你确认的提议。
+- **检查点会列出其后被修改的文件：** `[changed since this checkpoint: …; recheck claims about them]`，
+  其中的“测试通过”不再被当作当前状态。
+
 **v0.9.1：检查过什么、检查是否仍然有效，以及如何修复。**
 
 - **通过的检查。** 编辑之后成功的 `bash` 检查（`bun test`、`npm run typecheck`、`cargo clippy`、

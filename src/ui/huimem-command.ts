@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { LIMITS, REQUIRED_MAX, DOCUMENTS_MAX, documentPath, readSettings, writeSettings, SETTINGS_PATH } from '../memory/settings';
+import { AUTOMATION, LIMITS, REQUIRED_MAX, DOCUMENTS_MAX, documentPath, readSettings, writeSettings, SETTINGS_PATH, type Automation, type Settings } from '../memory/settings';
 import { apply, audit } from '../memory/adr-audit';
 import { initProject } from '../memory/starter';
 import { diagnoseMemory, formatDoctor } from '../memory/doctor';
@@ -36,7 +36,24 @@ export type CommandDeps = {
   toolHidden: () => boolean;
   // Native ctx.agent.kind, with the older session-file fallback, is shown for provenance inspection.
   subagent: (ctx: any) => boolean;
+  // Строка huimem в нижней панели OMP пересчитывается после смены настроек из этой команды.
+  refreshStatus: (ctx: any) => void;
 };
+
+// Автоматика в одном месте: имя для команды, ключ настройки, подпись и во что она обходится.
+// Куратор хранится прежним полем curator ('auto'|'off'), остальное — булевыми полями.
+type AutoKey = Automation | 'curator';
+const AUTO: { name: string; key: AutoKey; label: string; cost: string }[] = [
+  { name: 'curator', key: 'curator', label: 'Curator', cost: 'After an unsaved turn and before compaction, one side request of the session model proposes records; quotes are checked by code, records stay proposed. One extra model request per such turn.' },
+  { name: 'journal', key: 'journal', label: 'Work journal', cost: 'Code records todo progress, changed files, failed commands and passed checks from tool calls; the next run sees them when no checkpoint was saved. No model calls.' },
+  { name: 'files', key: 'fileNotes', label: 'File notes', cost: 'The first read or edit of a file names records that cite it and tasks due for it: one line in that tool result.' },
+  { name: 'reminders', key: 'reminders', label: 'Save reminders', cost: 'CONTEXT_NEARLY_FULL in the block before compaction; CHECKPOINT_MISSING and LEARN_SUGGESTED notifications.' },
+  { name: 'status', key: 'statusLine', label: 'Status line', cost: 'Records, proposals waiting for you and curator state in the OMP footer.' },
+];
+const autoOn = (cfg: Settings, key: AutoKey) => key === 'curator' ? cfg.curator !== 'off' : cfg[key];
+const autoPatch = (key: AutoKey, on: boolean): Partial<Settings> => key === 'curator' ? { curator: on ? 'auto' : 'off' } : { [key]: on };
+// Проверка полноты: каждая настройка автоматики названа в AUTO.
+if (AUTOMATION.some(key => !AUTO.some(a => a.key === key))) throw new Error('AUTO must list every automation setting');
 
 const HELP = [
   'Usage:',
@@ -48,6 +65,7 @@ const HELP = [
   '  /huimem personal on|off   explicitly allow or disable profile-owned personal memory (not project settings)',
   '  /huimem learn        review one source packet and curate useful Wiki knowledge in one ordinary main-agent turn',
   '  /huimem curator on|off   side request of the session model that proposes missed records (default on)',
+  '  /huimem auto [<name>|all on|off]   automation: ' + AUTO.map(a => a.name).join(', ') + ' (all on by default)',
   '  /huimem learn status inspect the review backlog without a model turn',
   '  /huimem              memory state for this project',
   '  /huimem recall <N>   recall budget in characters (' + LIMITS.recallBudget.min + '–' + LIMITS.recallBudget.max + ')',
@@ -131,9 +149,25 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
       if (value !== 'on' && value !== 'off')
         return say(`Curator: ${readSettings(ctx.cwd).curator === 'off' ? 'OFF' : 'ON'}. Usage: /huimem curator on|off. File: ${SETTINGS_PATH}`);
       writeSettings(ctx.cwd, { curator: value === 'on' ? 'auto' : 'off' });
+      deps.refreshStatus(ctx);
       return say(value === 'on'
         ? 'Curator: ON. After a turn that changed something without saving, and before compaction, one side request of the session model proposes records quoted from your messages; they stay proposed.'
         : 'Curator: OFF. No side requests; save with project_memory commit or /huimem learn.');
+    }
+    // Вся автоматика одной подкомандой: показать, переключить одну часть или всё сразу.
+    if (verb === 'auto') {
+      if (!deps.deployed(ctx)) return say(deps.notEnabled);
+      const [name, state] = (value ?? '').split(/\s+/).filter(Boolean);
+      const cfg = readSettings(ctx.cwd);
+      const list = () => AUTO.map(a => `${a.name.padEnd(10)} ${autoOn(readSettings(ctx.cwd), a.key) ? 'ON ' : 'OFF'}  ${a.cost}`).join('\n');
+      if (!name) return say(`Automation in this project (${SETTINGS_PATH}):\n${list()}\nUsage: /huimem auto <name>|all on|off`);
+      const targets = name === 'all' ? AUTO : AUTO.filter(a => a.name === name);
+      if (!targets.length || (state !== 'on' && state !== 'off'))
+        return say(`Usage: /huimem auto <${AUTO.map(a => a.name).join('|')}|all> on|off`);
+      writeSettings(ctx.cwd, Object.assign({}, ...targets.map(a => autoPatch(a.key, state === 'on'))));
+      deps.refreshStatus(ctx);
+      const changed = targets.filter(a => autoOn(cfg, a.key) !== (state === 'on')).map(a => a.name);
+      return say(`Automation ${state.toUpperCase()}: ${targets.map(a => a.name).join(', ')}${changed.length ? '' : ' (already so)'}.\n${list()}`);
     }
 
     // Память включается явной командой в выбранном проекте, а не сама в каждом каталоге:
@@ -414,6 +448,7 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
         `Added documents:    ${cfg.documents.length ? cfg.documents.join(', ') : 'none (the plugin set only)'}`,
         `Subagent block:     ${cfg.subagentBlock}${deps.subagent(ctx) ? ' (this session is a subagent)' : ''}`,
         `Curator:            ${cfg.curator === 'off' ? 'OFF (/huimem curator on)' : 'ON: side request of the session model, proposed records only'}`,
+        `Automation:         ${AUTO.map(a => `${a.name} ${autoOn(cfg, a.key) ? 'on' : 'OFF'}`).join(', ')} (/huimem auto)`,
         `Settings file:      ${settingsFileExists ? SETTINGS_PATH : 'none, defaults apply'}`,
         err ? `Health:             ${err}` : 'Health:             no errors',
         '',
@@ -425,10 +460,10 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
   pi.registerCommand('huimem', {
     description: 'huimem project memory: settings screen, or subcommands (/huimem help)',
     handler: async (args: any, ctx: any) => {
-      const [verb, value] = String(args ?? '').trim().split(/\s+/).filter(Boolean);
+      const [verb, ...rest] = String(args ?? '').trim().split(/\s+/).filter(Boolean);
       // Экран открывается только в интерактивном терминале; в RPC, -p и json остаётся текст.
       if (!verb && ctx?.hasUI && ctx?.mode === 'tui' && typeof ctx.ui?.select === 'function') return settingsScreen(ctx);
-      return run(verb, value, ctx);
+      return run(verb, rest.join(' ') || undefined, ctx);
     },
   });
 
@@ -472,6 +507,9 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
           async () => { await run(hidden ? 'omp' : 'doctor', undefined, ctx); return true; }],
         ['Curate Wiki from sources', 'Starts one intentional main-agent turn; summaries never become evidence.',
           async () => {await run('learn',undefined,ctx);return true;}],
+        [`Automation: ${AUTO.filter(a => autoOn(cfg, a.key)).length}/${AUTO.length} on`,
+          'Curator, work journal, file notes, save reminders, status line: what runs by itself and what it costs.',
+          async () => automationScreen(ctx)],
         ['Advanced settings', 'Limits, required records, commits pause, personal memory, architecture rules, ADR migration.',
           async () => advancedScreen(ctx)],
         ['Diagnostics', 'Search index, readable registry, last memory block, OMP settings that affect memory.',
@@ -491,6 +529,21 @@ export function registerSettingsCommand(pi: any, deps: CommandDeps) {
   async function pickItem(ctx: any, title: string, items: MenuItem[], cursor: number): Promise<number> {
     const pick = await ctx.ui.select(title, items.map(([label, description]) => ({ label, description })), { initialIndex: cursor });
     return items.findIndex(([label]) => label === pick);
+  }
+  // Каждая часть автоматики — переключатель с ценой в описании; «всё» — одним пунктом.
+  function automationScreen(ctx: any) {
+    const note = (text: string) => ctx.ui.notify(text, 'info');
+    return subScreen(ctx, 'Automation · all on by default · Enter toggles', async () => {
+      const cfg = readSettings(ctx.cwd);
+      const all = AUTO.every(a => autoOn(cfg, a.key));
+      return [
+        ...AUTO.map(a => [`${a.label}: ${autoOn(cfg, a.key) ? 'ON' : 'OFF'}`, a.cost,
+          async () => { await run('auto', `${a.name} ${autoOn(cfg, a.key) ? 'off' : 'on'}`, ctx, note); }] as MenuItem),
+        [all ? 'Switch all automation OFF' : 'Switch all automation ON',
+          all ? 'Manual mode: memory works only through project_memory calls and /huimem commands.' : 'Restore the defaults: every part on.',
+          async () => { await run('auto', `all ${all ? 'off' : 'on'}`, ctx, note); }],
+      ];
+    });
   }
   // Подменю: Back или Esc возвращают на главный экран; длинный отчёт закрывает весь экран,
   // чтобы его можно было прочитать. Курсор остаётся на последнем пункте.

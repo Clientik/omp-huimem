@@ -23,6 +23,16 @@ For developers working with an AI agent who want to stop explaining the same pro
 
 ## Install
 
+**Next release (not published yet) — automation you can see and switch:**
+
+- **Automation settings.** Curator, work journal, file notes, save reminders and the status line are
+  each on by default and switch off one by one in `/huimem` → *Automation* or with
+  `/huimem auto <name>|all on|off`; `/huimem auto` lists what each part does and costs.
+- **Status line.** The OMP footer shows `huimem 12 rec · 2 proposed · curator`: proposals waiting for
+  you are visible after the notification is gone.
+- **A checkpoint names files changed since it was saved:** `[changed since this checkpoint: …;
+  recheck claims about them]`, so its "tests are green" no longer reads as current.
+
 **New in v0.9.1 — what was checked, whether it still holds, and how it was fixed:**
 
 - **Passed checks.** A successful `bash` check (`bun test`, `npm run typecheck`, `cargo clippy`,

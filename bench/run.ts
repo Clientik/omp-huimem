@@ -62,6 +62,7 @@ function prepare(task: Task, condition: string, dir: string) {
         // Без чекпоинта: иначе блок показал бы сводку «прошлой сессии», а журнал работы скрылся бы.
         save: changes => { for (let i = 0; i < changes.length; i += 30) s.commit(history, changes.slice(i, i + 30), 'history', { checkpoint: false }); },
         work: entry => s.recordWork('bench-previous-run', entry),
+        checkpoint: summary => { s.commit('bench-previous-run', [], summary); },
       };
       task.seed?.(memory);
       // База помечена версией условия: иначе блок открылся бы сводкой обновления, которой нет в работе.
@@ -70,8 +71,10 @@ function prepare(task: Task, condition: string, dir: string) {
   }
   if (task.after) write(dir, task.after);
 }
+// Что агент делал с памятью: op и ID сохранённых записей. Нужно, чтобы видеть не только число
+// вызовов, но и засоряет ли он реестр записями по мелочам.
 function sessionUsage(dir: string) {
-  const usage = { requests: 0, toolCalls: 0, memoryCalls: 0, tokens: 0, freshTokens: 0 };
+  const usage = { requests: 0, toolCalls: 0, memoryCalls: 0, memoryOps: [] as string[], tokens: 0, freshTokens: 0 };
   for (const name of readdirSync(dir, { recursive: true }) as string[]) {
     if (!name.endsWith('.jsonl')) continue;
     for (const line of readFileSync(join(dir, name), 'utf8').split('\n')) {
@@ -82,7 +85,12 @@ function sessionUsage(dir: string) {
       usage.requests++;
       const calls = (message.content ?? []).filter((p: { type?: string }) => p?.type === 'toolCall');
       usage.toolCalls += calls.length;
-      usage.memoryCalls += calls.filter((p: { name?: string }) => p.name === 'project_memory').length;
+      for (const call of calls as { name?: string; arguments?: { op?: string; action?: string; changes?: { id?: string }[] } }[]) {
+        if (call.name !== 'project_memory') continue;
+        usage.memoryCalls++;
+        const a = call.arguments ?? {};
+        usage.memoryOps.push([a.op, a.action].filter(Boolean).join('.') + (a.changes?.length ? ':' + a.changes.map(c => c.id).join(',') : ''));
+      }
       usage.tokens += message.usage?.totalTokens ?? 0;
       usage.freshTokens += (message.usage?.input ?? 0) + (message.usage?.output ?? 0);
     }
@@ -91,7 +99,7 @@ function sessionUsage(dir: string) {
 }
 const normalize = (s: string) => s.replace(/\r\n/g, '\n');
 type BenchRow = { task: string; condition: string; repeat: number; pass: boolean; detail: string; exitCode: number; timedOut: boolean; wallMs: number;
-  requests: number; toolCalls: number; memoryCalls: number; tokens: number; freshTokens: number; answer: string; stderr?: string };
+  requests: number; toolCalls: number; memoryCalls: number; memoryOps: string[]; tokens: number; freshTokens: number; answer: string; stderr?: string };
 async function run(task: Task, condition: string, repeat: number): Promise<BenchRow> {
   const root = mkdtempSync(join(work, `${task.id}-${condition}-`));
   const dir = join(root, 'project'), sessions = join(root, 'sessions');

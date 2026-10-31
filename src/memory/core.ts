@@ -20,7 +20,9 @@ export type WorkTodo = { phase: string; done: number; total: number; current?: s
 // Успешная проверка запуска и хеши файлов, изменённых им к её моменту (null — файл не читается).
 // recovered — код выхода той же команды, упавшей раньше в этом запуске: наблюдённое исправление.
 export type WorkCheck = { text: string; files: Record<string, string | null>; recovered?: number };
-export type WorkLog = { todo?: WorkTodo; files: string[]; commands: { text: string; exitCode: number }[]; checks?: WorkCheck[] };
+// checkpoint — сводка этого запуска и хеши его файлов на момент её сохранения (см. pinCheckpointFiles).
+export type WorkLog = { todo?: WorkTodo; files: string[]; commands: { text: string; exitCode: number }[]; checks?: WorkCheck[];
+  checkpoint?: { run: string; files: Record<string, string | null> } };
 type CachedRecord = { id:string; version:number; versionCount:number; serialized:string; data:Change;
   recordWords:string[]; quoteWords:string[]; pathWords:string[]; own:string[] };
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -701,9 +703,10 @@ export class MemoryStore {
   // показывается только под её ID, а без задачи — отдельной строкой.
   checkpointView(query: string, limit = 3) {
     const rows = this.checkpointRows();
-    const unscoped = rows.find(r => !r.task) ?? null;
+    const row = rows.find(r => !r.task);
+    const unscoped = row ? { ...row, changed: this.checkpointChanges(row.run) } : null;
     const terms = queryTerms(query);
-    const seen = new Set<string>(), tasks: { task: string; status: string; summary: string; time: string; branch: string | null; matched: boolean }[] = [];
+    const seen = new Set<string>(), tasks: { task: string; run: string; status: string; summary: string; time: string; branch: string | null; matched: boolean }[] = [];
     for (const r of rows) {
       if (!r.task || seen.has(r.task)) continue;
       seen.add(r.task);
@@ -712,14 +715,28 @@ export class MemoryStore {
       const record = this.latestRow(r.task)?.data;
       const matched = !!record && terms.length > 0 && termScore(terms, record.text + ' ' + record.id) > 0;
       if (!record || record.status === 'retired' || (record.status === 'done' && !matched)) continue;
-      tasks.push({ task: r.task, status: record.status, summary: r.summary, time: r.time, branch: r.branch ?? null, matched });
+      tasks.push({ task: r.task, run: r.run, status: record.status, summary: r.summary, time: r.time, branch: r.branch ?? null, matched });
     }
     tasks.sort((a, b) => Number(b.matched) - Number(a.matched) || b.time.localeCompare(a.time));
-    return { unscoped, tasks: tasks.slice(0, limit), omitted: Math.max(0, tasks.length - limit) };
+    return { unscoped, tasks: tasks.slice(0, limit).map(t => ({ ...t, changed: this.checkpointChanges(t.run) })), omitted: Math.max(0, tasks.length - limit) };
   }
   taskCheckpoint(task: string) {
     const row=this.checkpointRows(task)[0];
     return row ? {summary:row.summary,time:row.time,branch:row.branch} : null;
+  }
+  // Сводка — утверждение агента о коде («проверено», «тесты зелёные»), и после неё код мог измениться.
+  // Хеши файлов запуска на момент сводки лежат в его журнале; UPDATE без новой строки сохраняет
+  // время журнала, чтобы сводка по-прежнему его скрывала. Ключ чекпоинта — run:generation, журнала — run.
+  private pinCheckpointFiles(checkpointRun: string) {
+    const run = checkpointRun.split(':')[0], log = this.work(run);
+    if (!log?.files.length) return;
+    log.checkpoint = { run: checkpointRun, files: Object.fromEntries(log.files.map(f => [f, this.fileHash(f)])) };
+    this.db.query("UPDATE events SET detail=? WHERE run=? AND kind='worklog'").run(JSON.stringify(log), run);
+  }
+  // Файлы запуска, изменённые после его сводки, включая впервые тронутые после неё.
+  checkpointChanges(checkpointRun: string): string[] {
+    const log = this.work(checkpointRun.split(':')[0]);
+    return log?.checkpoint?.run === checkpointRun ? this.changedSinceCheck(log, { text: '', files: log.checkpoint.files }) : [];
   }
   // ЗАМЕРЕНО 2026-10-17 на живой базе HUICAD (audit/huicad-after-0.6.6): поиск был одной
   // подстрокой «LIKE %запрос% ORDER BY time DESC LIMIT 5», а возвращал substr(text,1,1600).
@@ -964,6 +981,7 @@ export class MemoryStore {
         SELECT c.run,s.task,c.summary,c.time,s.branch FROM checkpoints c
         JOIN checkpoint_scope s ON s.run=c.run WHERE c.run=? AND s.task IS NOT NULL`).run(run);
       this.db.query('INSERT OR REPLACE INTO checkpoints VALUES (?,?,?)').run(run, summary, time);
+      this.pinCheckpointFiles(run);
       if (task || scope.branch) this.db.query('INSERT OR REPLACE INTO checkpoint_scope VALUES (?,?,?)').run(run, task ?? null, scope.branch ?? null);
       else this.db.query('DELETE FROM checkpoint_scope WHERE run=?').run(run);
       if(changes.length) stageProjection(this.db);
