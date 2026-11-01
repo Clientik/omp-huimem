@@ -80,6 +80,13 @@ export const scrub = (s: string) => s
   .replace(/((?:api[_-]?key|password|secret|token)\s*[:=]\s*)["']?[^\s"',;]+/gi, '$1[REDACTED]');
 // One comparison key for "the same statement": trimmed, whitespace-collapsed, case-folded text.
 export const normalizedRecordText = (text: string) => text.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+// Тот же ли это commit записи: всё, что пишет модель, без закреплённых кодом версий и хешей.
+function sameContent(stored: Change, next: Change): boolean {
+  const key = (c: Change) => JSON.stringify([c.kind, c.status, c.text, c.rationale ?? null,
+    c.source.episode ?? null, c.source.path ?? null, c.source.quote, c.source.answers ?? null,
+    [...(c.links ?? [])].sort(), (c.dependsOn ?? []).map(d => 'id' in d ? 'id:' + d.id : 'path:' + d.path).sort(), c.when ?? null]);
+  return key(stored) === key(next);
+}
 // ЗАМЕРЕНО 2026-10-26 на ai1/qwen38-flash-next: ответ агента в Markdown (`total()`, **Причина:**), а
 // цитата из него у модели — без этой разметки и с другими пробелами. Сравнение идёт без `*_ и с
 // одним пробелом, но возвращается точный отрезок оригинала: сохранённая цитата остаётся дословной
@@ -939,15 +946,25 @@ export class MemoryStore {
       throw new Error('INVALID_CHECKPOINT: summary is REQUIRED and must be non-empty, even when changes=[]. Describe the state and the next step.');
     if (summary.length > 2000) throw new Error('INVALID_CHECKPOINT: summary longer than 2000 characters');
     if (scrub(summary) !== summary) throw new Error('SECRET_PATTERN');
+    // ЗАМЕРЕНО 2026-11-01 на ai1/qwen38-flash-next: модель повторила уже сохранённый commit (чтобы
+    // добавить сводку) по прежней expectedVersion и дважды получила VERSION_CONFLICT. Повтор того же
+    // содержимого — не конфликт: новой версии нет, запись названа в unchanged, сводка сохраняется.
+    // Другое содержимое по устаревшей версии по-прежнему конфликт: чужое исправление не затирается.
+    const unchanged: string[] = [];
     this.mutate(changes.length?'records':'metadata',()=>this.db.transaction(() => {
       const {hash:authorityHash,policyHash} = this.authority();
       if (new Set(changes.map(c => c.id)).size !== changes.length) throw new Error('DUPLICATE_ID');
       for (const c of changes) {
         this.validate(c);
         // Для версии и существования записи свежесть не нужна: latestRow не хеширует канонические файлы.
-        if ((this.latestRow(c.id)?.version ?? 0) !== c.expectedVersion) throw new Error('VERSION_CONFLICT: ' + c.id);
+        const latest = this.latestRow(c.id), version = latest?.version ?? 0;
+        if (version !== c.expectedVersion) {
+          if (latest && version === c.expectedVersion + 1 && sameContent(latest.data, c)) { unchanged.push(c.id); continue; }
+          throw new Error('VERSION_CONFLICT: ' + c.id);
+        }
         for (const link of c.links ?? []) if (!this.latestRow(link) && !changes.some(x => x.id === link)) throw new Error('MISSING_LINK');
       }
+      const fresh = changes.filter(c => !unchanged.includes(c.id));
       // Зависимости закрепляются на текущей версии записи или хеше файла. Переданные версия или хеш,
       // не совпавшие с текущими, отклоняются: запись не должна опираться на прочитанное раньше.
       const pin = (c: Change) => c.dependsOn?.map((d: any) => {
@@ -964,18 +981,18 @@ export class MemoryStore {
         return { id: d.id, version };
       });
       const time = new Date().toISOString();
-      for (const c of changes) this.db.query('INSERT INTO versions VALUES (?,?,?,?)').run(c.id, c.expectedVersion + 1, JSON.stringify({...c,authorityHash,
+      for (const c of fresh) this.db.query('INSERT INTO versions VALUES (?,?,?,?)').run(c.id, c.expectedVersion + 1, JSON.stringify({...c,authorityHash,
         sourcePolicyHash:c.kind==='fact' && c.source.path ? policyHash : undefined, dependsOn: pin(c)}), time);
       if (authorityHash !== this.authority().hash) throw new Error('AUTHORITY_CHANGED: reread canonical files and retry');
-      const changedTasks = changes.filter(c => c.kind === 'task').map(c => c.id);
+      const changedTasks = fresh.filter(c => c.kind === 'task').map(c => c.id);
       let task = scope.task;
       if (task !== undefined) {
         const own = changes.find(c => c.id === task), stored = this.latestRow(task)?.data;
         if ((own ?? stored)?.kind !== 'task') throw new Error(`INVALID_TASK_SCOPE: ${task} is not a saved task record; save the task first or omit task`);
       } else if (changedTasks.length === 1) task = changedTasks[0];
-      if (scope.checkpoint === false) { if (changes.length) stageProjection(this.db); this.probe(); return; }
+      if (scope.checkpoint === false) { if (fresh.length) stageProjection(this.db); this.probe(); return; }
       const previous=this.db.query('SELECT c.summary,s.task,s.branch FROM checkpoints c LEFT JOIN checkpoint_scope s ON s.run=c.run WHERE c.run=?').get(run) as any;
-      if(!changes.length && previous?.summary===summary && (previous.task ?? null)===(task ?? null)
+      if(!fresh.length && previous?.summary===summary && (previous.task ?? null)===(task ?? null)
         && (previous.branch ?? null)===(scope.branch ?? null)) return;
       this.db.query(`INSERT OR REPLACE INTO checkpoint_archive(run,task,summary,time,branch)
         SELECT c.run,s.task,c.summary,c.time,s.branch FROM checkpoints c
@@ -984,10 +1001,10 @@ export class MemoryStore {
       this.pinCheckpointFiles(run);
       if (task || scope.branch) this.db.query('INSERT OR REPLACE INTO checkpoint_scope VALUES (?,?,?)').run(run, task ?? null, scope.branch ?? null);
       else this.db.query('DELETE FROM checkpoint_scope WHERE run=?').run(run);
-      if(changes.length) stageProjection(this.db);
+      if(fresh.length) stageProjection(this.db);
       this.probe();
     }).immediate());
-    return { saved: changes.length, checkpoint: run, projection: this.sync() };
+    return { saved: changes.length - unchanged.length, ...(unchanged.length ? { unchanged } : {}), checkpoint: run, projection: this.sync() };
   }
   private snapshotRecords():CachedRecord[] {
     this.checkRevision();

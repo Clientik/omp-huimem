@@ -141,6 +141,6 @@ test('checkpoint view and commit validation do not rehash canonical files; resul
     calls=0;
     s.commit('t4',[],'шаг t2 обновлён',{task:'t2'});
     expect(calls).toBeLessThanOrEqual(2);
-    expect(()=>s.commit('x',[{...task(s,'t1','Экспорт счетов'),expectedVersion:0}],'конфликт')).toThrow('VERSION_CONFLICT');
+    expect(()=>s.commit('x',[{...task(s,'t1','Экспорт счетов'),text:'Экспорт счетов иначе',expectedVersion:0}],'конфликт')).toThrow('VERSION_CONFLICT');
   } finally { proto.authority=orig; }
 }));

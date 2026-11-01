@@ -428,6 +428,22 @@ function gitBranch(root) {
 }
 var scrub = (s) => s.replace(/-----BEGIN ((?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY)-----[\s\S]*?(?:-----END \1-----|$)/g, "[REDACTED]").replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9._-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{40,}|xox[baprs]-[A-Za-z0-9_-]{20,}|xapp-[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16})\b/g, "[REDACTED]").replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s/@]+@/gi, "$1[REDACTED]@").replace(/((?:api[_-]?key|password|secret|token)\s*[:=]\s*)["']?[^\s"',;]+/gi, "$1[REDACTED]");
 var normalizedRecordText = (text) => text.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+function sameContent(stored, next) {
+  const key = (c) => JSON.stringify([
+    c.kind,
+    c.status,
+    c.text,
+    c.rationale ?? null,
+    c.source.episode ?? null,
+    c.source.path ?? null,
+    c.source.quote,
+    c.source.answers ?? null,
+    [...c.links ?? []].sort(),
+    (c.dependsOn ?? []).map((d) => ("id" in d) ? "id:" + d.id : "path:" + d.path).sort(),
+    c.when ?? null
+  ]);
+  return key(stored) === key(next);
+}
 function markdownQuote(text, quote2) {
   if (text.includes(quote2))
     return quote2;
@@ -1432,18 +1448,26 @@ class MemoryStore {
       throw new Error("INVALID_CHECKPOINT: summary longer than 2000 characters");
     if (scrub(summary) !== summary)
       throw new Error("SECRET_PATTERN");
+    const unchanged = [];
     this.mutate(changes.length ? "records" : "metadata", () => this.db.transaction(() => {
       const { hash: authorityHash, policyHash } = this.authority();
       if (new Set(changes.map((c) => c.id)).size !== changes.length)
         throw new Error("DUPLICATE_ID");
       for (const c of changes) {
         this.validate(c);
-        if ((this.latestRow(c.id)?.version ?? 0) !== c.expectedVersion)
+        const latest = this.latestRow(c.id), version = latest?.version ?? 0;
+        if (version !== c.expectedVersion) {
+          if (latest && version === c.expectedVersion + 1 && sameContent(latest.data, c)) {
+            unchanged.push(c.id);
+            continue;
+          }
           throw new Error("VERSION_CONFLICT: " + c.id);
+        }
         for (const link of c.links ?? [])
           if (!this.latestRow(link) && !changes.some((x) => x.id === link))
             throw new Error("MISSING_LINK");
       }
+      const fresh = changes.filter((c) => !unchanged.includes(c.id));
       const pin = (c) => c.dependsOn?.map((d) => {
         if (typeof d.path === "string") {
           const h = hash2(sourceText(this.root, d.path));
@@ -1462,7 +1486,7 @@ class MemoryStore {
         return { id: d.id, version };
       });
       const time = new Date().toISOString();
-      for (const c of changes)
+      for (const c of fresh)
         this.db.query("INSERT INTO versions VALUES (?,?,?,?)").run(c.id, c.expectedVersion + 1, JSON.stringify({
           ...c,
           authorityHash,
@@ -1471,7 +1495,7 @@ class MemoryStore {
         }), time);
       if (authorityHash !== this.authority().hash)
         throw new Error("AUTHORITY_CHANGED: reread canonical files and retry");
-      const changedTasks = changes.filter((c) => c.kind === "task").map((c) => c.id);
+      const changedTasks = fresh.filter((c) => c.kind === "task").map((c) => c.id);
       let task = scope.task;
       if (task !== undefined) {
         const own = changes.find((c) => c.id === task), stored = this.latestRow(task)?.data;
@@ -1480,13 +1504,13 @@ class MemoryStore {
       } else if (changedTasks.length === 1)
         task = changedTasks[0];
       if (scope.checkpoint === false) {
-        if (changes.length)
+        if (fresh.length)
           stageProjection(this.db);
         this.probe();
         return;
       }
       const previous = this.db.query("SELECT c.summary,s.task,s.branch FROM checkpoints c LEFT JOIN checkpoint_scope s ON s.run=c.run WHERE c.run=?").get(run);
-      if (!changes.length && previous?.summary === summary && (previous.task ?? null) === (task ?? null) && (previous.branch ?? null) === (scope.branch ?? null))
+      if (!fresh.length && previous?.summary === summary && (previous.task ?? null) === (task ?? null) && (previous.branch ?? null) === (scope.branch ?? null))
         return;
       this.db.query(`INSERT OR REPLACE INTO checkpoint_archive(run,task,summary,time,branch)
         SELECT c.run,s.task,c.summary,c.time,s.branch FROM checkpoints c
@@ -1497,11 +1521,11 @@ class MemoryStore {
         this.db.query("INSERT OR REPLACE INTO checkpoint_scope VALUES (?,?,?)").run(run, task ?? null, scope.branch ?? null);
       else
         this.db.query("DELETE FROM checkpoint_scope WHERE run=?").run(run);
-      if (changes.length)
+      if (fresh.length)
         stageProjection(this.db);
       this.probe();
     }).immediate());
-    return { saved: changes.length, checkpoint: run, projection: this.sync() };
+    return { saved: changes.length - unchanged.length, ...unchanged.length ? { unchanged } : {}, checkpoint: run, projection: this.sync() };
   }
   snapshotRecords() {
     this.checkRevision();
@@ -5411,7 +5435,7 @@ INDEX: op=index action=status inspects the rebuildable local search sidecar; act
 ` + `A question you are waiting on the user for is a record too: kind=question, status=open, text = the question as you ask it. Its source is the request that left the gap \u2014 source={origin:"user",quote:"the exact words you cannot act on"} \u2014 because a question you are asking right now is not a saved message yet; a question you asked in an earlier turn can use source={origin:"episode",episode:"<that message ID>",quote:"the question"}. An open question stays in the memory block until it is saved again as answered, with links to the records the answer produced, or dropped. Keep what blocks work there rather than only in prose.
 ` + `dependsOn=[{id}|{path}] names what a claim relies on; code pins their versions and hashes. A dependency change marks the record STALE with a reason. Without dependsOn, file-backed records also track canonical documents; immutable conversation sources do not become stale merely because a document changed. STALE clears only through a new version saved with current dependencies.
 ` + `A task to do later, when certain files are touched \u2014 "when you change the schema, add a migration" \u2014 takes when={paths:["src/db/*.ts"]}: 1-5 project-relative globs. While the task is todo, doing or blocked, the first read or edit of a matching file in a request starts with MEMORY_INTENTION_DUE; save a one-off task as done with the same ID once done, keep a standing rule open, or retire it.
-` + `LIMITS: at most 30 changes per commit; summary is required and at most 2000 characters even when changes=[]; task=<task id> ties the summary (the next step) to that task.
+` + `LIMITS: at most 30 changes per commit; summary (the state and the next step, at most 2000 characters) saves the checkpoint and is required when changes=[]; records sent without it are saved without a checkpoint. task=<task id> ties the summary to that task. What you just did belongs in summary: a task created already done is moved there, not into the registry. Save records a later session needs: decisions and reasons, constraints, open tasks, facts not readable from the code.
 ` + `READS: recall query=<text>, or id=<record> (a task also returns its last checkpoint), or id=<record>,<record>,\u2026 for up to 10 records in one call \u2014 the block names the records it had to omit, so read them by ID instead of guessing; episodes query=<text> with optional role=user|assistant and limit=1-10 ranks matching windows. Read original pages with episodes id=<id> offset=<hit.offset>, or start at offset=0 and follow nextOffset until null. Offsets are non-negative safe integers in UTF-16 units, require id and must not split a surrogate pair. Pages default to 2400 units, or limit=<units> up to 12000 per page, and keep the original role; copy source quotes from their verbatim text, not search ellipses. history id=<record>; status; doctor \u2014 read-only diagnosis of records, sources, task drift and settings.
 ` + "EVIDENCE CHECKS, instead of your own SQL over the memory database: evidence id=<record> re-checks that record against its own source; evidence id=<episode> quote=<text> says whether that message really contains the quote; evidence path=<file> quote=<text> does the same for a file; evidence with neither id nor path re-checks every record and names the unconfirmed ones. These checks are code, not a model call.",
     parameters: z.object({
@@ -5682,10 +5706,26 @@ INDEX: op=index action=status inspects the rebuildable local search sidecar; act
               }
               return change;
             });
+            const linked = new Set([
+              ...p.task ? [String(p.task)] : [],
+              ...changes.flatMap((c) => [...c.links ?? [], ...(c.dependsOn ?? []).flatMap((d) => d.id ? [d.id] : [])])
+            ]);
+            const isReport = (c) => c.kind === "task" && c.status === "done" && c.expectedVersion === 0 && !c.when && !linked.has(c.id);
+            const reports = changes.filter(isReport), kept = changes.filter((c) => !isReport(c));
+            const summary = [String(p.summary ?? "").trim(), ...reports.map((c) => String(c.text).trim())].filter(Boolean).join(" ").slice(0, 2000);
+            const noSummary = !String(p.summary ?? "").trim() && kept.length > 0;
             data = {
-              ...s.commit(key(), changes, p.summary ?? "", { task: p.task ?? undefined, branch: gitBranch(ctx.cwd) }),
+              ...s.commit(key(), kept, noSummary ? "records only" : summary, { task: p.task ?? undefined, branch: gitBranch(ctx.cwd), ...noSummary ? { checkpoint: false } : {} }),
               architecture: architecture.configured ? architecture : { configured: false }
             };
+            if (reports.length)
+              data.reportsInSummary = reports.map((c) => c.id);
+            if (reports.length)
+              data.reportsNote = "A task created already done reports work of this run; its text went into the checkpoint summary instead of the registry. Save a task to the registry while it is open, or when later sessions need its outcome.";
+            if (noSummary) {
+              delete data.checkpoint;
+              data.checkpointSkipped = "Records are saved; no checkpoint, because summary was empty. Do not resend these records: if the state or the next step matters, commit changes=[] with summary.";
+            }
             if (scope === "project" && nearCompaction?.run === run)
               nearCompaction.saved = true;
             if (scope === "project")
@@ -5694,7 +5734,7 @@ INDEX: op=index action=status inspects the rebuildable local search sidecar; act
               notify(ctx, "Evidence saved; readable registry " + data.projection.state + ". Do not repeat commit: use /huimem sync. " + (data.projection.error ?? ""));
             if (architecture.configured && !architecture.ok)
               notify(ctx, "ARCHITECTURE_FAILED: " + architecture.failures.join("; "));
-            const ids = changes.map((change) => String(change.id));
+            const ids = kept.map((change) => String(change.id));
             if (ids.length)
               try {
                 const stale = wikiStaleFor(s, ids);

@@ -932,7 +932,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
       + 'A question you are waiting on the user for is a record too: kind=question, status=open, text = the question as you ask it. Its source is the request that left the gap — source={origin:"user",quote:"the exact words you cannot act on"} — because a question you are asking right now is not a saved message yet; a question you asked in an earlier turn can use source={origin:"episode",episode:"<that message ID>",quote:"the question"}. An open question stays in the memory block until it is saved again as answered, with links to the records the answer produced, or dropped. Keep what blocks work there rather than only in prose.\n'
       + 'dependsOn=[{id}|{path}] names what a claim relies on; code pins their versions and hashes. A dependency change marks the record STALE with a reason. Without dependsOn, file-backed records also track canonical documents; immutable conversation sources do not become stale merely because a document changed. STALE clears only through a new version saved with current dependencies.\n'
       + 'A task to do later, when certain files are touched — "when you change the schema, add a migration" — takes when={paths:["src/db/*.ts"]}: 1-5 project-relative globs. While the task is todo, doing or blocked, the first read or edit of a matching file in a request starts with MEMORY_INTENTION_DUE; save a one-off task as done with the same ID once done, keep a standing rule open, or retire it.\n'
-      + 'LIMITS: at most 30 changes per commit; summary is required and at most 2000 characters even when changes=[]; task=<task id> ties the summary (the next step) to that task.\n'
+      + 'LIMITS: at most 30 changes per commit; summary (the state and the next step, at most 2000 characters) saves the checkpoint and is required when changes=[]; records sent without it are saved without a checkpoint. task=<task id> ties the summary to that task. What you just did belongs in summary: a task created already done is moved there, not into the registry. Save records a later session needs: decisions and reasons, constraints, open tasks, facts not readable from the code.\n'
       + 'READS: recall query=<text>, or id=<record> (a task also returns its last checkpoint), or id=<record>,<record>,… for up to 10 records in one call — the block names the records it had to omit, so read them by ID instead of guessing; episodes query=<text> with optional role=user|assistant and limit=1-10 ranks matching windows. Read original pages with episodes id=<id> offset=<hit.offset>, or start at offset=0 and follow nextOffset until null. Offsets are non-negative safe integers in UTF-16 units, require id and must not split a surrogate pair. Pages default to 2400 units, or limit=<units> up to 12000 per page, and keep the original role; copy source quotes from their verbatim text, not search ellipses. history id=<record>; status; doctor — read-only diagnosis of records, sources, task drift and settings.\n'
       + 'EVIDENCE CHECKS, instead of your own SQL over the memory database: evidence id=<record> re-checks that record against its own source; evidence id=<episode> quote=<text> says whether that message really contains the quote; evidence path=<file> quote=<text> does the same for a file; evidence with neither id nor path re-checks every record and names the unconfirmed ones. These checks are code, not a model call.',
     parameters: z.object({
@@ -1140,8 +1140,22 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
               }
               return change; // Previously saved callers may still provide explicit verified IDs/hashes.
             });
-            data = { ...s.commit(key(), changes, p.summary ?? '', { task: p.task ?? undefined, branch: gitBranch(ctx.cwd) }),
+            // ЗАМЕРЕНО 2026-11-01 на ai1/qwen38-flash-next: 6 из 9 сохранённых записей были задачами,
+            // созданными сразу выполненными, — отчётом о только что сделанной работе, а повторные
+            // вызовы шли после отказа за пустую сводку при непустых changes. Отчёт уходит в сводку,
+            // записи без сводки сохраняются без чекпоинта; оба исхода названы в ответе.
+            const linked = new Set<string>([...(p.task ? [String(p.task)] : []),
+              ...changes.flatMap((c: any) => [...(c.links ?? []), ...(c.dependsOn ?? []).flatMap((d: any) => d.id ? [d.id] : [])])]);
+            const isReport = (c: any) => c.kind === 'task' && c.status === 'done' && c.expectedVersion === 0 && !c.when && !linked.has(c.id);
+            const reports = changes.filter(isReport), kept = changes.filter((c: any) => !isReport(c));
+            const summary = [String(p.summary ?? '').trim(), ...reports.map((c: any) => String(c.text).trim())].filter(Boolean).join(' ').slice(0, 2000);
+            const noSummary = !String(p.summary ?? '').trim() && kept.length > 0;
+            data = { ...s.commit(key(), kept, noSummary ? 'records only' : summary,
+              { task: p.task ?? undefined, branch: gitBranch(ctx.cwd), ...(noSummary ? { checkpoint: false as const } : {}) }),
               architecture: architecture.configured ? architecture : { configured: false } };
+            if (reports.length) data.reportsInSummary = reports.map((c: any) => c.id);
+            if (reports.length) data.reportsNote = 'A task created already done reports work of this run; its text went into the checkpoint summary instead of the registry. Save a task to the registry while it is open, or when later sessions need its outcome.';
+            if (noSummary) { delete data.checkpoint; data.checkpointSkipped = 'Records are saved; no checkpoint, because summary was empty. Do not resend these records: if the state or the next step matters, commit changes=[] with summary.'; }
             if (scope === 'project' && nearCompaction?.run === run) nearCompaction.saved = true;
             if (scope === 'project') refreshStatus(ctx);
             if(data.projection.state==='pending' || data.projection.state==='conflict')
@@ -1150,7 +1164,7 @@ export default function install(pi: ExtensionAPI, options: {agentDir?: string} =
             // ЗАМЕРЕНО 2026-10-25 на ai1/qwen38-flash-next: разбор вызвал wiki plan до своего commit и не
             // узнал, что commit сделал страницу STALE. Подсказки после сохранения: сбой подсказки не
             // превращает уже сохранённый commit в ошибку, иначе модель повторила бы его.
-            const ids=changes.map((change: any) => String(change.id));
+            const ids=kept.map((change: any) => String(change.id));
             if (ids.length) try {
               const stale=wikiStaleFor(s,ids);
               if (stale.pages.length) data.wikiStale={...stale,note:'These derived pages cite records this commit changed and are now STALE. If a page is still useful: wiki action=read id=<page>, then publish it with expectedHash and the current record versions; otherwise leave it STALE.'};

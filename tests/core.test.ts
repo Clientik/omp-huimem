@@ -182,7 +182,7 @@ test('records citing a file are found by its source or dependency path, retired 
 }));
 test('stale concurrent update rolls back complete batch', () => withStore((s, dir) => {
   const other = new MemoryStore(dir); const a = fact(s); s.commit('a', [a], 'first');
-  expect(() => other.commit('b', [{ ...a, id: 'new' }, a], 'conflict')).toThrow('VERSION_CONFLICT');
+  expect(() => other.commit('b', [{ ...a, id: 'new' }, { ...a, text: a.text + ' (иначе)' }], 'conflict')).toThrow('VERSION_CONFLICT');
   expect(other.current('new')).toBeNull(); expect(other.checkpoint('b')).toBeNull(); other.close();
 }));
 test('invented evidence and assistant acceptance rejected', () => withStore(s => {

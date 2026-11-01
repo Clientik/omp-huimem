@@ -310,6 +310,54 @@ test('a checkpoint says which files of its run changed since it was saved',async
     expect(changed).toContain('add готов и проверен, bun test зелёный [changed since this checkpoint: src/calc.ts; recheck claims about them]');
   } finally { f.clean(); }
 });
+// ЗАМЕРЕНО 2026-11-01 на ai1/qwen38-flash-next (bench, 12 прогонов с сохранёнными сессиями): 6 из 9
+// сохранённых записей — задачи, созданные сразу выполненными («Релиз 1.0 подготовлен»), то есть отчёт о
+// только что сделанной работе, а повторы вызова — после отказа «summary is REQUIRED» при непустых
+// changes; один раз модель повторила вызов слово в слово. Отчёт идёт в сводку, записи без сводки
+// сохраняются без чекпоинта: ни отказа, ни лишнего запроса к модели.
+test('a task created already done goes into the summary, and records without a summary save without a checkpoint',async()=>{
+  const f=fixture(); try {
+    await memoryBlock(f,'Подготовь релиз 1.0; порт теперь 9091.');
+    const commit=(args:any)=>f.tools.project_memory.execute('id',{op:'commit',...args},null,null,f.ctx);
+    const report={id:'release-1.0',kind:'task',status:'done',text:'Релиз 1.0 подготовлен: строка в CHANGELOG.',expectedVersion:0,source:{origin:'user',quote:'Подготовь релиз 1.0'}};
+    const port={id:'server-port',kind:'fact',status:'active',text:'Порт сервера — 9091.',expectedVersion:0,source:{origin:'user',quote:'порт теперь 9091'}};
+    const first=await commit({summary:'',changes:[report,port]});
+    expect(first.isError).not.toBe(true);
+    expect(first.details).toMatchObject({saved:1,checkpointSkipped:expect.stringContaining('summary was empty')});
+    expect(first.details.reportsInSummary).toEqual(['release-1.0']);
+    const s=new MemoryStore(f.dir);
+    try {
+      expect(s.current('release-1.0')).toBeNull();
+      expect(s.current('server-port')!.text).toBe('Порт сервера — 9091.');
+      expect(s.latestCheckpoint()).toBeNull();
+    } finally { s.close(); }
+    // Со сводкой отчёт дописывается к ней, а не в реестр.
+    const second=await commit({summary:'Релиз готов.',changes:[{...report,id:'release-notes'}]});
+    expect(second.details).toMatchObject({saved:0,reportsInSummary:['release-notes']});
+    const after=new MemoryStore(f.dir);
+    try {
+      expect(after.current('release-notes')).toBeNull();
+      expect(after.latestCheckpoint().summary).toBe('Релиз готов. Релиз 1.0 подготовлен: строка в CHANGELOG.');
+    } finally { after.close(); }
+    // Задача, на которую ссылаются, или задача сводки остаётся записью.
+    const linked=await commit({summary:'Связано',task:'kept-task',changes:[{...report,id:'kept-task'}]});
+    expect(linked.details.saved).toBe(1);
+    // Без записей и без сводки — прежний отказ.
+    expect(String((await commit({summary:'',changes:[]})).content[0].text)).toContain('INVALID_CHECKPOINT');
+    // ЗАМЕРЕНО 2026-11-01: после «сохранено без чекпоинта» модель повторила тот же commit со сводкой
+    // и получила VERSION_CONFLICT, дважды подряд. Повтор того же содержимого по прежней версии —
+    // не конфликт: новой версии нет, сводка сохраняется. Другое содержимое — по-прежнему конфликт.
+    const repeat=await commit({summary:'Порт обновлён.',changes:[port]});
+    expect(repeat.isError).not.toBe(true);
+    expect(repeat.details).toMatchObject({saved:0,unchanged:['server-port']});
+    const kept=new MemoryStore(f.dir);
+    try {
+      expect(kept.history('server-port')).toHaveLength(1);
+      expect(kept.latestCheckpoint().summary).toBe('Порт обновлён.');
+    } finally { kept.close(); }
+    expect(String((await commit({summary:'Другое',changes:[{...port,text:'Порт сервера — 9092.'}]})).content[0].text)).toContain('VERSION_CONFLICT');
+  } finally { f.clean(); }
+});
 
 // Минус «сохранение только после сжатия». HISTORY_COMPACTED говорит о сжатии, когда ход
 // разговора уже пересказан. Здесь — до него: один раз за цикл сжатия, пока агент не сохранил.
@@ -2242,7 +2290,8 @@ test('real commit failures keep the legacy error, add a code-specific fix, and w
     const good = { id: 'db', kind: 'decision', status: 'accepted', expectedVersion: 0, text: 'SQLite', rationale: 'один файл', source: { origin: 'user', quote: 'Используем SQLite. Причина: один файл.' } };
     expect((await tool.execute('ok', { op: 'commit', summary: 's', changes: [good] }, null, null, f.ctx)).isError).not.toBe(true);
     const cases: [string, any][] = [
-      ['VERSION_CONFLICT', { ...good }],
+      // Другое содержимое по устаревшей версии; повтор того же содержимого — не конфликт.
+      ['VERSION_CONFLICT', { ...good, text: 'PostgreSQL' }],
       ['MISSING_LINK', { ...good, id: 'orm', links: ['nope'] }],
       ['INVALID_STATUS', { ...good, id: 'x', kind: 'fact', status: 'accepted' }],
       ['SOURCE_ORIGIN_REQUIRED', { ...good, id: 'y', source: { quote: 'Используем SQLite. Причина: один файл.' } }],

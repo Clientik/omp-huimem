@@ -32,6 +32,10 @@ For developers working with an AI agent who want to stop explaining the same pro
   you are visible after the notification is gone.
 - **A checkpoint names files changed since it was saved:** `[changed since this checkpoint: …;
   recheck claims about them]`, so its "tests are green" no longer reads as current.
+- **Less registry noise.** A task created already done is a report of this run: its text goes into
+  the checkpoint summary, not the registry. Records sent without a summary are saved without a
+  checkpoint instead of being refused, and resending the same content is not a version conflict.
+  On six tasks with nothing new to remember, records saved dropped from 9 to 2.
 
 **New in v0.9.1 — what was checked, whether it still holds, and how it was fixed:**
 
