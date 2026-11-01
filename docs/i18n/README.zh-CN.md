@@ -9,7 +9,7 @@
 
 在不同会话之间保留项目知识，无需运行第二个模型。当前事实保存在可读文件中，证据和版本历史保存在本地 SQLite 中。只需一个 OMP 扩展，无需独立的记忆服务器、向量嵌入服务或单独的记忆模型；可选的整理器只是当前会话模型的一次旁路请求。
 
-> **预览版 v0.9.1，运行验证使用 OMP 18.12.6；早期版本也测试过 18.11.0。** 暂不支持原版 Pi。这个插件帮助恢复和检查上下文，但不能消除模型幻觉。
+> **预览版 v0.9.2，运行验证使用 OMP 18.12.6；早期版本也测试过 18.11.0。** 暂不支持原版 Pi。这个插件帮助恢复和检查上下文，但不能消除模型幻觉。
 
 ## 适合谁？
 
@@ -23,7 +23,7 @@
 
 ## 安装
 
-**下一版本（尚未发布）：可见、可配置的自动化。**
+**v0.9.2：可见、可配置的自动化，注册表更少杂项。**
 
 - **自动化设置。** 整理器、工作日志、文件提示、保存提醒和状态栏默认全部开启，可在 `/huimem` →
   *Automation* 中或用 `/huimem auto <名称>|all on|off` 逐项关闭；`/huimem auto` 列出每一项的作用和代价。
@@ -290,7 +290,7 @@ Observational Memory 与 LLM Wiki 的取舍。不添加后台 observer/reflector
 **旧 ADR：** `/huimem adr-audit` 列出缺少「依据」部分、可迁移到约定结构的 ADR，不写入任何内容。`/huimem adr-audit apply` 将记录库中用户的原话写入依据部分，并把全部原始行保留在「解释 [?]」标题下，写入前先逐字节备份到 `.memory/adr-backup/`。只有当恰好一条已接受决策按路径明确指向该文档、其理由逐字包含在引文中，并且迁移时会再次将引文与已保存的消息核对（该消息必须存在且属于用户）时才会迁移；否则显示 `UNVERIFIED`，不写入任何内容。v0.5.0 缺少最后这项核对：如果你曾在被修改、合并或恢复过的数据库上用它执行 `apply`，请将每个迁移后的依据与原始消息逐一核对。迁移后，相关的对话决策会显示 STALE。在预先登记的 20 对 20 测试中，迁移后的文档没有出现明确的错误归因，但相对未迁移文档的可靠性提升在统计上未得到证明。
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.9.1
+omp plugin install github:Clientik/omp-huimem#v0.9.2
 ```
 
 > [!IMPORTANT]
@@ -311,7 +311,7 @@ omp plugin install github:Clientik/omp-huimem#v0.9.1
 **安装状态：** 已在 Windows + OMP 18.1.5 与 18.11.0 上完整验证 GitHub 安装流程——插件安装、注册并在实际会话中运行。直接加载同样可用：
 
 ```sh
-git clone --branch v0.9.1 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.9.2 https://github.com/Clientik/omp-huimem.git
 # 在工作项目中运行，使用克隆仓库的绝对路径：
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```

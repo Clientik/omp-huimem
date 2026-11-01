@@ -204,7 +204,7 @@ function writeSettings(root, next) {
 }
 
 // src/memory/version.ts
-var PLUGIN_VERSION = "0.9.1";
+var PLUGIN_VERSION = "0.9.2";
 var UPGRADE_NOTES = {
   "0.6.4": "project memory can be switched off per project; publishing .memory/RECORDS.md is part of saving and not a reason to skip commit; durable facts must not stay only in hand-written .memory documents, and those documents are not re-verified with scripts",
   "0.6.5": "an empty registry is now stated in this block instead of looking like a failed search",
@@ -223,7 +223,8 @@ var UPGRADE_NOTES = {
   "0.8.6": "the starter uses the valid OMP auto-thinking ceiling xhigh instead of the ignored value high; existing project configs are not rewritten by plugin updates. Memory evidence, optional commits and tool permissions are unchanged",
   "0.8.7": "when OMP does not expose the project_memory tool in a session, this block says PROJECT_MEMORY_TOOL_UNAVAILABLE instead of inviting a commit: do not look for it through eval or xd://, tell the user once and report durable facts in your answer",
   "0.9.0": "this block now comes before the user request: act on the request, the block is context. AUTOMATIC WORK JOURNAL lines are navigation recorded by code when no checkpoint was saved; check files before relying on them. CONTEXT_NEARLY_FULL asks for one commit of unsaved durable work before compaction. Records named auto:<slug> are proposed by the memory curator from user quotes checked by code; treat them as proposals, confirm or correct the same ID when the user does",
-  "0.9.1": 'AUTOMATIC WORK JOURNAL also lists passed checks: "files unchanged since" or "changed since \u2026; rerun before relying on it"; right after compaction the journal of that run is shown even with a checkpoint. When a check failed and then passed, the curator may propose one procedure (auto:<slug>, proposed) quoting your own reply; it turns STALE when the checked files change. Related rows carry relation; a STALE match brings the current version of its changed basis. A task may carry when={paths:[globs]}: the first read or edit of a matching file starts with MEMORY_INTENTION_DUE \u2014 do it, then save a one-off task as done or keep a standing rule open. Among equal matches the question type decides: how \u2014 procedure, why \u2014 decision, what next \u2014 task'
+  "0.9.1": 'AUTOMATIC WORK JOURNAL also lists passed checks: "files unchanged since" or "changed since \u2026; rerun before relying on it"; right after compaction the journal of that run is shown even with a checkpoint. When a check failed and then passed, the curator may propose one procedure (auto:<slug>, proposed) quoting your own reply; it turns STALE when the checked files change. Related rows carry relation; a STALE match brings the current version of its changed basis. A task may carry when={paths:[globs]}: the first read or edit of a matching file starts with MEMORY_INTENTION_DUE \u2014 do it, then save a one-off task as done or keep a standing rule open. Among equal matches the question type decides: how \u2014 procedure, why \u2014 decision, what next \u2014 task',
+  "0.9.2": 'a checkpoint line may end with [changed since this checkpoint: files; recheck claims about them]: its "checked" or "tests pass" no longer covers those files. Put what you just did in summary: a task created already done goes into the summary, not the registry; records sent without summary are saved without a checkpoint; resending the same content is reported as unchanged, not a conflict. The user can switch automation parts off (/huimem auto), so some notes may be absent'
 };
 function compareVersions(a, b) {
   const parts = (v) => v.split(".").map((n) => Number.parseInt(n, 10) || 0);

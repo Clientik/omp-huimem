@@ -9,7 +9,7 @@
 
 Keep project knowledge across sessions without a second model. Current facts live in readable files; evidence and revision history live in local SQLite. One OMP extension, no memory server, embeddings service, or separate memory model; the optional curator is one side request of the model your session already uses.
 
-> **Preview v0.9.1 · Runtime checked with OMP 18.12.6; earlier releases also tested with 18.11.0.** Upstream Pi is not supported. Memory makes context easier to recover and inspect; it does not eliminate hallucinations.
+> **Preview v0.9.2 · Runtime checked with OMP 18.12.6; earlier releases also tested with 18.11.0.** Upstream Pi is not supported. Memory makes context easier to recover and inspect; it does not eliminate hallucinations.
 
 ## Why use it?
 
@@ -23,7 +23,7 @@ For developers working with an AI agent who want to stop explaining the same pro
 
 ## Install
 
-**Next release (not published yet) — automation you can see and switch:**
+**New in v0.9.2 — automation you can see and switch, less registry noise:**
 
 - **Automation settings.** Curator, work journal, file notes, save reminders and the status line are
   each on by default and switch off one by one in `/huimem` → *Automation* or with
@@ -334,7 +334,7 @@ You need [OMP](https://github.com/can1357/oh-my-pi) with a configured main model
 **Legacy ADRs:** `/huimem adr-audit` lists ADRs without a basis section that can be moved into the contract, and writes nothing. `/huimem adr-audit apply` inserts the user's quote from the registry as the basis and keeps every original line under an "Interpretation [?]" heading, after a byte-exact backup to `.memory/adr-backup/`. A document is migrated only when exactly one accepted decision names it by path, its rationale is an exact excerpt of the quote, and the quote is re-checked at migration time against the stored message, which must exist and belong to the user; otherwise it is reported as `UNVERIFIED` and nothing is written. v0.5.0 skipped that last check: if you ran `apply` with it on an edited, merged or restored database, compare each migrated basis with the original message. Linked conversation decisions show STALE afterwards. In a preregistered 20-vs-20 test the migrated documents had no outright misattribution, but a reliability gain over unmigrated ones was not statistically proven.
 
 ```sh
-omp plugin install github:Clientik/omp-huimem#v0.9.1
+omp plugin install github:Clientik/omp-huimem#v0.9.2
 ```
 
 > [!IMPORTANT]
@@ -356,7 +356,7 @@ After `init`, ask the agent to use the `initmem` skill to map the actual code. D
 **Installation status:** installing from GitHub was tested end to end on Windows with OMP 18.1.5 and again with 18.11.0 — the plugin installed, registered, and ran across live sessions. Direct loading also works:
 
 ```sh
-git clone --branch v0.9.1 https://github.com/Clientik/omp-huimem.git
+git clone --branch v0.9.2 https://github.com/Clientik/omp-huimem.git
 # Run from your working project, using the cloned repository's absolute path:
 omp --extension /absolute/path/omp-huimem/dist/index.js
 ```
